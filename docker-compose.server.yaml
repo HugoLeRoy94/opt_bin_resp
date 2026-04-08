@@ -26,3 +26,8 @@ services:
       - http_proxy=${http_proxy:-}
       - https_proxy=${https_proxy:-}
       - no_proxy=${no_proxy:-}
+
+# to run a script :
+# docker compose -f docker-compose.server.yaml run -d --rm gpu-runner python [path of the script in the container]
+
+# -d to run it silently

@@ -1,0 +1,9 @@
+numpy
+scipy
+matplotlib
+pytest
+pandas
+jupyter
+ipykernel
+seaborn
+umap-learn

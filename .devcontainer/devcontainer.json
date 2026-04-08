@@ -1,0 +1,20 @@
+{
+    "name": "Optimization GPU",
+    "dockerComposeFile": "../docker-compose.yaml",
+    "service": "jupyter-gpu",
+    "workspaceFolder": "/app",
+    "customizations": {
+        "vscodium": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter"
+            ]
+        }
+    },
+    "remoteUser": "devuser",
+    "containerEnv": {
+        "http_proxy": "${localEnv:http_proxy}",
+        "https_proxy": "${localEnv:https_proxy}",
+        "no_proxy": "${localEnv:no_proxy}"
+    }
+}

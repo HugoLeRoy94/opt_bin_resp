@@ -1,0 +1,33 @@
+services:
+  jupyter-gpu:
+    user: "1000:1000"
+    build: 
+      context: .
+      args:
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
+    shm_size: '2gb' # use the host memory capacity
+    container_name: optimize_binary
+    ports:
+      - "8889:8888"
+    volumes:
+      - ./unit_test:/app/unit_test/:z
+      - ./data:/app/data:z
+      - ./src:/app/src:ro,z
+      - ./objectives:/app/objectives:ro,z
+      - ./run:/app/run:z
+      - ./analysis:/app/analysis:z
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-}
+      - HOME=/tmp
+      - JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime

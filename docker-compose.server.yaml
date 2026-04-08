@@ -1,0 +1,28 @@
+services:
+  gpu-runner:
+    user: "root"
+    build: 
+      context: .
+      args:
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
+    shm_size: '2gb' # use the host memory capacity
+    volumes:
+      - ./unit_test:/app/unit_test/:z
+      - ./data:/app/data:z
+      - ./src:/app/src:ro,z
+      - ./objectives:/app/objectives:ro,z
+      - ./run:/app/run:z
+      - ./analysis:/app/analysis:z
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-}

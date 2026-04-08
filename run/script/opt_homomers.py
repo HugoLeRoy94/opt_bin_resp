@@ -22,47 +22,52 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger
 
-n_units=5
+n_units_list = [5, 10, 15, 20, 30, 50]
 k_sub = 5
 n_families = 1
 N_train = 2**17
 N_test = 2**14
+
 CONF = {
-        "n_units": n_units,
-        "n_families": n_families,
-        "latent_dim": 3,
-        "k_sub": k_sub,
-        "batch_size": N_train,
-        "epochs": 5000,
-        "lr": 0.05,
-        "cov_weight":10.,
-        "n_bins":2,
-        "bin_temp":0.05,
-        "receptor_indices":torch.tensor([[i for _ in range(k_sub)] for i in range(n_units)],dtype=torch.long), # size must be smaller or equal to n_units
-        "init_means":[np.random.randint(1,8) for _ in range(n_families)], # size must be n_families
-        "shape_sigma": 1.,
-        "tolerant":False, # set whether we want tolerance for heteromers on the covariance loss
-        "optimizer":"Adam",
-        "momentum":0.9,
-        "exact_loss":True,
-        "temperature":0.1
-    }
+    "n_families": n_families,
+    "latent_dim": 10,
+    "k_sub": k_sub,
+    "batch_size": N_train,
+    "epochs": 5000,
+    "lr": 0.05,
+    "cov_weight": 10.,
+    "n_bins": 2,
+    "bin_temp": 0.05,
+    "init_means": [np.random.randint(1, 8) for _ in range(n_families)], # Fixed initial state across runs
+    "shape_sigma": 10.,
+    "tolerant": False,
+    "optimizer": "Adam",
+    "momentum": 0.9,
+    "exact_loss": True,
+    "temperature": 0.1
+}
 
-env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)
+for n_units in n_units_list:
+    print(f"\n--- Starting training for n_units = {n_units} ---")
+    
+    CONF["n_units"] = n_units
+    CONF["receptor_indices"] = torch.tensor([[i for _ in range(k_sub)] for i in range(n_units)], dtype=torch.long)
 
-logger = ExperimentLogger(base_path="/app/data/", experiment_name="opt_homomers")
-logger.save_config(CONF)
+    env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)
 
-train_out = train(CONF, env, rec, loss_fn, optimize,measurement_fns=[full_array_entropy,mean_receptor_distance,])
+    logger = ExperimentLogger(base_path="/app/data/", experiment_name=f"opt_homomers_n_units_{n_units}")
+    logger.save_config(CONF)
 
-# Save training statistics 
-epochs_run = len(next(iter(train_out.values())))
-for i in range(epochs_run):
-    stats = {k: v[i] for k, v in train_out.items()}
-    logger.save_stats(i, stats)
+    train_out = train(CONF, env, rec, loss_fn, optimize,measurement_fns=[full_array_entropy,mean_receptor_distance,])
 
-# Save the final checkpoint (best model)
-logger.save_checkpoint(
-    epoch=CONF["epochs"], env=env, physics=rec, 
-    receptor_indices=CONF["receptor_indices"], is_best=True
-)
+    # Save training statistics 
+    epochs_run = len(next(iter(train_out.values())))
+    for i in range(epochs_run):
+        stats = {k: v[i] for k, v in train_out.items()}
+        logger.save_stats(i, stats)
+
+    # Save the final checkpoint (best model)
+    logger.save_checkpoint(
+        epoch=CONF["epochs"], env=env, physics=rec, 
+        receptor_indices=CONF["receptor_indices"], is_best=True
+    )

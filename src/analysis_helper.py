@@ -110,8 +110,6 @@ def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None)
 def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axes=None):
     """
     Creates a SINGLE comprehensive summary plot for all ligand families.
-    If a DiscreteProxyLoss is provided, it uses the soft-binned probabilities
-    for visualization, ensuring consistency with the loss function.
     """
     device = env.unit_latent.device
     N_Receptors = receptor_indices.shape[0]
@@ -144,8 +142,6 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
         ax_main.set_xscale('log')
     
     global_p_active = np.zeros(N_Receptors)
-    global_p_inactive = np.zeros(N_Receptors)
-    use_binned_probs = isinstance(loss_fn, DiscreteProxyLoss) and loss_fn.n_bins == 2
 
     for f_idx in range(n_families):
         c_sweep_tensor, c_pdf_tensor = env.get_concentration_sweep(f_idx, n_points=n_points)
@@ -157,16 +153,6 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
 
         p_plot_active = p_o_np
         
-        if use_binned_probs:
-            p_o_tensor = torch.from_numpy(p_o_np).to(device)
-            soft_assign = loss_fn.compute_soft_assignment(p_o_tensor) # (points, R, bins)
-            
-            p_plot_active = soft_assign[..., -1].cpu().numpy()
-            p_plot_inactive = soft_assign[..., 0].cpu().numpy()
-
-            family_p_inactive = np.sum(p_plot_inactive * c_weights[:, None], axis=0)
-            global_p_inactive += (family_p_inactive / n_families)
-
         for r in range(N_Receptors):
             ax_main.plot(c_sweep_np, p_plot_active[:, r], color=colors[r], lw=2.5, alpha=1.)
             
@@ -176,8 +162,7 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
         family_p_active = np.sum(p_plot_active * c_weights[:, None], axis=0)
         global_p_active += (family_p_active / n_families)
         
-    if not use_binned_probs:
-        global_p_inactive = 1.0 - global_p_active
+    global_p_inactive = 1.0 - global_p_active
 
     ax_main.set_ylabel("Activity Probability $p(a=1)$", fontsize=9)
     ax_main.tick_params(labelbottom=False, direction='in') 

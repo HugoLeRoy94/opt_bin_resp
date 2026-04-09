@@ -25,7 +25,7 @@ from src import (LigandEnvironment,
                 marginal_entropy,
                 full_array_entropy,
                 total_correlation)
-from objectives import DiscreteProxyLoss,TolerantDiscreteProxyLoss,DiscreteExactLoss
+from objectives import DiscreteProxyLoss,DiscreteExactLoss
 
 
 def initialize(CONF:dict,SymmetricEnv=False)->tuple[LigandEnvironment,BaseReceptor,nn.Module,optim.Optimizer]:
@@ -47,28 +47,13 @@ def initialize(CONF:dict,SymmetricEnv=False)->tuple[LigandEnvironment,BaseRecept
     physics = BinaryReceptor(CONF["n_units"], CONF["k_sub"],temperature=CONF["temperature"]).to(device)
     
     if CONF.get("exact_loss", False):
-        loss_fn = DiscreteExactLoss(n_bins=CONF.get('n_bins', 2),
-                                    bin_temp=CONF.get("bin_temp", 0.05)).to(device)
-    elif CONF.get("tolerant", False):
-        loss_fn = TolerantDiscreteProxyLoss(env=env,
-                                            receptor_indices=CONF["receptor_indices"],
-                                            n_units=CONF["n_units"],
-                                            cov_weight = CONF["cov_weight"],
-                                            n_bins=CONF['n_bins'],
-                                            bin_temp=CONF["bin_temp"]).to(device)
+        loss_fn = DiscreteExactLoss().to(device)
     else:
         loss_fn = DiscreteProxyLoss(cov_weight = CONF["cov_weight"],
-                                    n_bins=CONF['n_bins'],
                                     bin_temp=CONF["bin_temp"]).to(device)
-    if CONF['optimizer'] == "Adam":
-        optimizer = optim.Adam(list(env.parameters()) + 
-                                list(physics.parameters()),
-                                lr=CONF["lr"])
-    elif CONF['optimizer'] == "SGD":
-        optimizer = optim.SGD(list(env.parameters()) + 
-                                list(physics.parameters()),
-                                lr = CONF['lr'],
-                                momentum=CONF['momentum'])
+    optimizer = optim.Adam(list(env.parameters()) + 
+                            list(physics.parameters()),
+                            lr=CONF["lr"])
     
     return env,physics,loss_fn,optimizer
 

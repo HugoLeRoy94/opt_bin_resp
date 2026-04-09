@@ -140,7 +140,7 @@ class ExperimentLoader(BaseIO):
         
         # 3. Rebuild empty objects based on config
         strat = LogNormalConcentration(n_families=c['n_families'], init_mean=5.0)
-        e = LigandEnvironment(c['n_units'], c['n_families'], conc_model=strat)
+        e = LigandEnvironment(c['n_units'], c['n_families'], latent_dim=c.get('latent_dim', 3), conc_model=strat)
         p = BinaryReceptor(c['n_units'], c['k_sub'])
         l = ExactInformationLoss(k_knn=c.get('k_knn', 5)) # Use .get() for safety
         

@@ -7,7 +7,7 @@ from .loss import (BaseInformationLoss,
 from .bin_loss import (compute_discrete_joint_entropy,
                         DiscreteProxyLoss,
                         DiscreteExactLoss)
-from .tolerant_bin_loss import TolerantDiscreteProxyLoss
+#from .tolerant_bin_loss import TolerantDiscreteProxyLoss
                    
 
 __all__ = ["BaseInformationLoss",
@@ -15,5 +15,5 @@ __all__ = ["BaseInformationLoss",
             "ExactInformationLoss",
             "compute_discrete_joint_entropy",
             "DiscreteProxyLoss",
-            "TolerantDiscreteProxyLoss",
+            #"TolerantDiscreteProxyLoss",
             "DiscreteExactLoss"]

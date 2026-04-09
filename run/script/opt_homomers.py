@@ -22,29 +22,35 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger
 
-n_units_list = [5, 10, 15, 20, 30, 50]
+n_units_list = [5]#, 10, 15, 20, 30, 50]
 k_sub = 5
 n_families = 1
 N_train = 2**17
 N_test = 2**14
 
 CONF = {
+    # environment
+        # energies
     "n_families": n_families,
     "latent_dim": 10,
-    "k_sub": k_sub,
-    "batch_size": N_train,
-    "epochs": 5000,
-    "lr": 0.05,
-    "cov_weight": 10.,
-    "n_bins": 2,
-    "bin_temp": 0.05,
-    "init_means": [np.random.randint(1, 8) for _ in range(n_families)], # Fixed initial state across runs
+        # concentration
+    "init_means": [np.random.randint(1, 8) for _ in range(n_families)], # Fixed 
     "shape_sigma": 10.,
-    "tolerant": False,
-    "optimizer": "Adam",
-    "momentum": 0.9,
-    "exact_loss": True,
-    "temperature": 0.1
+    # receptor 
+    "k_sub": k_sub, # number of sub-units
+    "temperature": 0.1, # temperature of the sigmoid that approximate a binary answer
+    "n_units" : 0, # number of genes
+    "receptor_indices" : torch.tensor([[i for _ in range(k_sub)] for i in range(0)], dtype=torch.long), # actual receptors considered
+    
+    # training characteristics
+    "batch_size": N_train,
+    "epochs": 500,
+    "n_bins": 2, # binary activation
+
+
+    "lr": 0.05, # learning rate
+    "exact_loss": True # type of loss
+    
 }
 
 for n_units in n_units_list:
@@ -60,8 +66,12 @@ for n_units in n_units_list:
 
     train_out = train(CONF, env, rec, loss_fn, optimize,measurement_fns=[full_array_entropy,mean_receptor_distance,])
 
+    print(train_out)
+
     # Save training statistics 
     epochs_run = len(next(iter(train_out.values())))
+    print(next(iter(train_out.values())))
+    print(epochs_run)
     for i in range(epochs_run):
         stats = {k: v[i] for k, v in train_out.items()}
         logger.save_stats(i, stats)

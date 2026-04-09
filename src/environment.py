@@ -244,6 +244,9 @@ class LigandEnvironment(nn.Module):
         return self._sample_from_ids(batch_size, f_ids)
 
     def _sample_from_ids(self, batch_size: int, family_ids: torch.Tensor):
+        """
+        Sample ligands from a specific family. By drawing a position in the chemical space and a base energy
+        """
         # 1. Sample physical concentrations
         concs = self.concentration_model.sample(batch_size, family_ids)
         

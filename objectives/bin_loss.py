@@ -28,8 +28,8 @@ def compute_discrete_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         
         # Use clamp to prevent log2(0) while maintaining stable gradients
         p_a_safe = torch.clamp(p_a, min=1e-12)
-        log_k_p = torch.log(p_a_safe) / math.log(K)
-        joint_h = -torch.sum(p_a * log_k_p)
+        log_2_p = torch.log2(p_a_safe)
+        joint_h = -torch.sum(p_a * log_2_p)
         
     else:
         # ------------------------------------------------------
@@ -61,31 +61,22 @@ def compute_discrete_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         
         # 5. Monte Carlo average: Expected value of [-log_K P(state)]
         p_a_safe = torch.clamp(p_a, min=1e-12)
-        log_k_p = torch.log(p_a_safe) / math.log(K)
-        joint_h = -log_k_p.mean()
+        log_2_p = torch.log2(p_a_safe)
+        joint_h = -log_2_p.mean()
 
     return joint_h
 
 class DiscreteExactLoss(nn.Module):
     """
-    Maximizes the exact discrete joint entropy of the array.
+    Maximizes the exact discrete binary joint entropy of the array.
     Ideal for systems where components must be correlated (like a thermometer code).
     """
-    def __init__(self, n_bins: int = 2, bin_temp: float = 0.05):
+    def __init__(self):
         super().__init__()
-        self.n_bins = n_bins
-        self.bin_temp = bin_temp
-        centers = torch.linspace(0.0, 1.0, n_bins)
-        self.register_buffer('bin_centers', centers)
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
-        if self.n_bins == 2:
-            # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
-            return torch.stack([1.0 - activity, activity], dim=-1)
-        act_expanded = activity.unsqueeze(-1)
-        centers_expanded = self.bin_centers.view(1, 1, -1)
-        dist_sq = (act_expanded - centers_expanded) ** 2
-        return torch.softmax(-dist_sq / self.bin_temp, dim=-1)
+        # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
+        return torch.stack([1.0 - activity, activity], dim=-1)
 
     def forward(self, activity: torch.Tensor):
         soft_assign = self.compute_soft_assignment(activity)
@@ -94,62 +85,45 @@ class DiscreteExactLoss(nn.Module):
 
 class DiscreteProxyLoss(nn.Module):
     """
-    Maximizes the discrete Shannon entropy of the marginals using a Differentiable Soft Histogram,
+    Maximizes the discrete binary Shannon entropy of the marginals,
     while minimizing a penalty term to encourage receptor independence or diversity.
     """
-    def __init__(self, cov_weight: float = 1.0, n_bins: int = 2, bin_temp: float = 0.05, penalty_type: str = 'repulsion'):
+    def __init__(self, cov_weight: float = 1.0, penalty_type: str = 'repulsion'):
         """
         Args:
             cov_weight: Weight for the penalty term.
-            n_bins: Number of discrete activation levels (2 = binary).
-            bin_temp: Temperature for the soft binning. Lower = sharper, harder bins.
             penalty_type: The type of penalty to apply. Can be 'repulsion' (penalizes
                           similar activation profiles) or 'covariance' (penalizes linear
                           correlation). Defaults to 'repulsion'.
         """
         super().__init__()
         self.cov_weight = cov_weight
-        self.n_bins = n_bins
-        self.bin_temp = bin_temp
         self.penalty_type = penalty_type
 
         if self.penalty_type not in ['repulsion', 'covariance']:
             raise ValueError("penalty_type must be 'repulsion' or 'covariance'")
-        
-        # Define the centers of the bins, evenly spaced between 0.0 and 1.0
-        # Register as a buffer so it moves to the GPU automatically
-        centers = torch.linspace(0.0, 1.0, n_bins)
-        self.register_buffer('bin_centers', centers)
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
         """
-        Computes soft assignments of continuous activity to discrete bins.
+        Computes binary soft assignments from continuous activity.
 
         Args:
             activity (torch.Tensor): Continuous activity tensor of shape (Batch, R).
 
         Returns:
-            torch.Tensor: Soft assignment tensor of shape (Batch, R, n_bins).
+            torch.Tensor: Soft assignment tensor of shape (Batch, R, 2).
         """
-        if self.n_bins == 2:
-            return torch.stack([1.0 - activity, activity], dim=-1)
-        act_expanded = activity.unsqueeze(-1)
-        centers_expanded = self.bin_centers.view(1, 1, -1)
-        
-        dist_sq = (act_expanded - centers_expanded) ** 2
-        soft_assign = torch.softmax(-dist_sq / self.bin_temp, dim=-1)
-        
-        return soft_assign
+        return torch.stack([1.0 - activity, activity], dim=-1)
 
     def compute_soft_marginal_probabilities(self, activity: torch.Tensor) -> torch.Tensor:
         """
-        Computes marginal probabilities for each bin using a soft-assignment.
+        Computes marginal probabilities for binary states.
 
         Args:
             activity (torch.Tensor): Continuous activity tensor of shape (Batch, R).
 
         Returns:
-            torch.Tensor: Marginal probabilities of shape (R, n_bins).
+            torch.Tensor: Marginal probabilities of shape (R, 2).
         """
         soft_assign = self.compute_soft_assignment(activity)
         p_marginal = soft_assign.mean(dim=0)
@@ -157,7 +131,7 @@ class DiscreteProxyLoss(nn.Module):
 
     def _compute_soft_histogram_entropy(self, activity: torch.Tensor) -> torch.Tensor:
         """
-        Computes the discrete Shannon entropy using soft assignments.
+        Computes the discrete binary Shannon entropy.
         activity shape: (Batch, R)
         Returns shape: (R,) - entropy in bits.
         """
@@ -167,11 +141,11 @@ class DiscreteProxyLoss(nn.Module):
         # 2. Clamp to prevent log2(0) crashes
         p_marginal = torch.clamp(p_marginal, min=1e-12)
         
-        # 3. Calculate log base K using the change-of-base formula: ln(p) / ln(K)
-        log_k_p = torch.log(p_marginal) / math.log(self.n_bins)
+        # 3. Calculate log2(p)
+        log_2_p = torch.log2(p_marginal)
         
-        # 4. Exact Normalized Shannon Entropy
-        entropy = -torch.sum(p_marginal * log_k_p, dim=-1)
+        # 4. Exact Shannon Entropy in bits
+        entropy = -torch.sum(p_marginal * log_2_p, dim=-1)
         
         return entropy
 

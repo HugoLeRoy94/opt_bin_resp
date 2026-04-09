@@ -1,6 +1,10 @@
 import torch
 import itertools
 import random
+import numpy as np
+
+def exp_distrib(l,beta=0.371177):
+    return beta*np.exp(-beta * l )
 
 def generate_receptor_indices(n_units, k_sub, n_sensors):
     """
@@ -92,3 +96,68 @@ def generate_cascading_receptors(n_units, k_sub, n_sensors):
         remaining -= take_n
         
     return torch.tensor(selected_combos, dtype=torch.long)
+
+def generate_exp_distributed_receptors(N_receptors, n_units, k_sub):
+    """
+    Generates a list of receptor combinations where the number of unique genes
+    (subunits) in each combination follows the exponential distribution.
+    """
+    # 1. Calculate probabilities for each possible number of unique genes (1 to k_sub)
+    l_values = np.arange(1, k_sub + 1)
+    probs = exp_distrib(l_values)
+    probs = probs / np.sum(probs)  # Normalize probabilities
+    
+    # 2. Sample the number of unique genes for N_receptors based on the distribution
+    sampled_genes = np.random.choice(l_values, size=N_receptors, p=probs)
+    unique, counts = np.unique(sampled_genes, return_counts=True)
+    composition_targets = {int(k): int(v) for k, v in zip(unique, counts)}
+    
+    # 3. Use the existing targeted generator to fetch the combinations
+    return generate_targeted_receptors(n_units, k_sub, composition_targets)
+
+def generate_bernoulli_receptors(N_receptors, n_units, k_sub, gene_probs):
+    """
+    Generates combinations (cells) where each gene's presence is determined by an 
+    independent Bernoulli trial using `gene_probs`. 
+    """
+    selected_combos = set()
+    combos_list = []
+    gene_probs = np.asarray(gene_probs)
+    
+    retries = 0
+    max_retries = 50 # Limit retries to prevent infinite loops and limit sampling bias
+    
+    while len(combos_list) < N_receptors:
+        # 1. Determine which genes are expressed in this cell via Bernoulli trials
+        expressed_mask = np.random.rand(n_units) < gene_probs
+        expressed_genes = np.where(expressed_mask)[0]
+        n_expressed = len(expressed_genes)
+        
+        # Constraint 1: Must express at least 1 gene, and cannot express more than k_sub
+        if n_expressed == 0 or n_expressed > k_sub:
+            continue
+            
+        # 2. Form a combo of length k_sub using EXACTLY the expressed genes
+        combo = list(expressed_genes)
+        if k_sub > n_expressed:
+            # Fill remaining slots weighted by the relative expression probabilities of the active genes
+            relative_probs = gene_probs[expressed_genes]
+            relative_probs = relative_probs / np.sum(relative_probs)
+            
+            remaining_slots = k_sub - n_expressed
+            combo.extend(np.random.choice(expressed_genes, size=remaining_slots, p=relative_probs))
+            
+        # Sort to match the standard tuple format (e.g. non-decreasing: [0, 1, 1, 1, 1])
+        combo = tuple(sorted(combo))
+        
+        # Constraint 2: Try to avoid duplicates, but accept if we're struggling to find novel ones
+        if combo in selected_combos and retries < max_retries:
+            retries += 1
+            continue
+            
+        # Accept the combination
+        selected_combos.add(combo)
+        combos_list.append(combo)
+        retries = 0 # Reset for the next combo
+        
+    return torch.tensor(combos_list, dtype=torch.long)

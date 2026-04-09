@@ -1,4 +1,6 @@
-# docker exec -e CUDA_VISIBLE_DEVICES=0 -it -d optimize_binary python3 /app/run/script/opt_homomers.py N_family
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
+
+# add -d for silent running
 
 import sys
 sys.path.append('/app')
@@ -45,7 +47,7 @@ CONF = {
     "k_sub": 5, # number of sub-units
     "temperature": 0.1, # temperature of the sigmoid that approximate a binary answer
     "n_units" : 0, # number of genes
-    "receptor_indices" : torch.tensor([[i for _ in range(k_sub)] for i in range(0)], dtype=torch.long), # actual receptors considered
+    "receptor_indices" : torch.tensor([[i for _ in range(5)] for i in range(0)], dtype=torch.long), # actual receptors considered
     
     # training characteristics
     "batch_size": N_train,
@@ -88,7 +90,7 @@ if __name__ == "__main__":
                 CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
                 CONF["shape_sigma"] = 1. / n_families
                 CONF["n_units"] = n_units
-                CONF["receptor_indices"] = torch.tensor([[i for _ in range(k_sub)] for i in range(n_units)], dtype=torch.long)
+                CONF["receptor_indices"] = torch.tensor([[i for _ in range(CONF['k_sub'])] for i in range(n_units)], dtype=torch.long)
 
                 env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)
 

@@ -8,7 +8,6 @@ services:
         https_proxy: ${https_proxy:-}
         no_proxy: ${no_proxy:-}
     shm_size: '2gb' # use the host memory capacity
-    container_name: optimize_binary
     ports:
       - "8889:8888"
     volumes:
@@ -18,7 +17,7 @@ services:
       - ./objectives:/app/objectives:ro,z
       - ./run:/app/run:z
       - ./analysis:/app/analysis:z
-    deploy:
+    deploy:   
       resources:
         reservations:
           devices:

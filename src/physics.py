@@ -69,7 +69,7 @@ class BaseReceptor(nn.Module, ABC):
         ligand shapes for a more accurate response.
         Otherwise, it uses the mean interaction energy.
         """
-        if env.distribution_type != 'gaussian' or not isinstance(self, BinaryReceptor):
+        if env.distribution_type != 'gaussian' or not isinstance(self, BinaryReceptor) or (quadrature_degree ** env.latent_dim > 100000):
             c_sweep, _ = env.get_concentration_sweep(family_id, n_points)
             c_reshaped = c_sweep.view(n_points, 1, 1)
 

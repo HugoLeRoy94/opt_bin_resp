@@ -22,11 +22,10 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger
 
-n_units_list = [5]#, 10, 15, 20, 30, 50]
+n_units_list = [500]#, 10, 15, 20, 30, 50]
 k_sub = 5
-n_families = 1
-N_train = 2**17
-N_test = 2**14
+n_families = 100
+N_train = 2**14
 
 CONF = {
     # environment
@@ -35,7 +34,8 @@ CONF = {
     "latent_dim": 10,
         # concentration
     "init_means": [np.random.randint(1, 8) for _ in range(n_families)], # Fixed 
-    "shape_sigma": 10.,
+    "shape_sigma": 1./n_families,
+    "avg_family_distance": 5.0, # Target average distance between family centers
     # receptor 
     "k_sub": k_sub, # number of sub-units
     "temperature": 0.1, # temperature of the sigmoid that approximate a binary answer

@@ -130,3 +130,40 @@ If your code needs to download data or packages, run these exports inside the co
 ```bash
 export http_proxy=[http://proxy.unige.it:8080/](http://proxy.unige.it:8080/)
 export https_proxy=[http://proxy.unige.it:8080/](http://proxy.unige.it:8080/)
+```
+
+## 4. Simulation Memory Limits & Scaling + +The simulation is highly optimized and avoids
+
+the exponential memory scaling often associated with high-dimensional integration (the "Curse of Dimensionality"). In the physics.py module, when calculating the expected activation over a Gaussian ligand family, the code dynamically falls back from a dense Gauss-Hermite quadrature grid to a mean-energy approximation whenever the grid size would exceed 100,000 points ($10^D > 100,000$). This prevents Out Of Memory (OOM) errors in high latent dimensions. 
+
+Here is how the computational memory footprint scales with respect to the main parameters:
+
+### 1. Ligand Generation & Distances: 
+$\mathcal{O}(B \cdot U \cdot D)$ 
+* Variables: Batch Size ($B$), Number of Units ($U$), Latent Dimension ($D$). 
+* Impact: Linear. A tensor of shape (B, U, D) is extremely lightweight (e.g., $B=2000, U=26, D=10 \approx 2$ MB).
+
+### 2. Receptor Physics (Combinatorics): 
+$\mathcal{O}(B \cdot R \cdot k_{sub})$ 
+* Variables: Batch Size ($B$), Number of Receptors ($R$), Subunits per receptor ($k_{sub}=5$). 
+* Impact: Linear. Even for 10,000 receptors, the energy tensor takes $\approx 400$ MB. Very manageable.
+### 3. Number of Families ($F$): 
+$\mathcal{O}(F \cdot D)$ 
+* Impact: Almost zero impact on training memory. Families only dictate the static coordinates of the environment. You could simulate $1,000,000$ families and it would only consume $\approx 40$ MB.
+### 4. Loss Calculation (The Bottleneck)
+The memory footprint heavily depends on which loss function strategy is utilized:
+
+* **`DiscreteProxyLoss` (Scalable Marginals + Penalty):** $\mathcal{O}(B \cdot R) + \mathcal{O}(R^2)$
+  * **Marginal Entropy:** A simple average over the batch. $\mathcal{O}(B \cdot R)$ ($\approx$ negligible).
+  * **Penalty Tensor (Covariance/Repulsion):** Creates an $(R, R)$ pairwise matrix between receptors. This quadratic term $\mathcal{O}(R^2)$ is the primary memory bottleneck. If $R=10,000$, this matrix takes $\approx 400$ MB.
+* **`DiscreteExactLoss` (True Joint Entropy):** $\mathcal{O}(B \cdot 2^R)$ or $\mathcal{O}(B \cdot M)$
+  * **Small Arrays ($R \le 10$):** Uses exact state enumeration. Memory scales exponentially as $\mathcal{O}(B \cdot 2^R)$. For $R=10, B=2000$, it takes $\approx 8$ MB.
+  * **Large Arrays ($R > 10$):** Dynamically switches to Monte Carlo estimation. Scales linearly as $(B, M)$, capped at $M=2048$ due to the subsampling trick. $\approx 16$ MB. *(Note: This loss completely avoids the $\mathcal{O}(R^2)$ penalty bottleneck!)*
+
+### Summary: 
+Maximum capacities on a standard 8GB-12GB GPU +Because everything scales either linearly or strictly quadratically for the number of receptors, you can comfortably run massive simulations: +* Max Latent Dimension ($D$): $\approx 1,000+$ 
+* Max Number of Families ($F$): $\approx 100,000+$ +* Max Number of Units ($U$): $\approx 1,000+$ 
+* Max Batch Size ($B$): $\approx 20,000$ 
+* Max Number of Receptors ($R$): $\approx 10,000$ (Limited entirely by the $\mathcal{O}(R^2)$ covariance/repulsion matrix) 
+
+Rule of Thumb: If you encounter a CUDA Out of Memory error, the first parameter to reduce is the Batch Size ($B$), followed by the Number of Receptors ($R$). The latent space dimension ($D$) and number of families ($F$) are virtually "free" to scale up!

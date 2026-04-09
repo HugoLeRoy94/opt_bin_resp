@@ -175,7 +175,8 @@ class NormalConcentration(ConcentrationModel):
 
 class LigandEnvironment(nn.Module):
     def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel, 
-                 latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian'):
+                 latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian',
+                 avg_family_distance: float = 5.0):
         """
         Args:
             n_units: Number of protein units
@@ -184,12 +185,14 @@ class LigandEnvironment(nn.Module):
             latent_dim: Dimensionality of the chemical latent space (trade-off space)
             shape_sigma: The fixed spatial spread (fuzziness) of the ligand families
             distribution_type: 'gaussian' or 'uniform'
+            avg_family_distance: Target average Euclidean distance between ligand families.
         """
         super().__init__()
         self.n_units = n_units
         self.n_families = n_families
         self.latent_dim = latent_dim
         self.shape_sigma = shape_sigma
+        self.avg_family_distance = avg_family_distance
         
         if distribution_type not in ['gaussian', 'uniform']:
             raise ValueError("distribution_type must be 'gaussian' or 'uniform'")
@@ -215,10 +218,22 @@ class LigandEnvironment(nn.Module):
 
     def _generate_family_centers(self, n_families: int, latent_dim: int) -> torch.Tensor:
         """
-        Default behavior: Random prototype centers on the unit hypersphere.
+        Default behavior: Prototype centers spread inside a uniform N-ball,
+        with the radius calculated to yield the requested average distance.
         """
-        fixed_families = torch.randn(n_families, latent_dim)
-        return torch.nn.functional.normalize(fixed_families, p=2, dim=1)
+        # 1. Empirically find the average distance in a unit N-ball
+        with torch.no_grad():
+            loc_mc = torch.zeros(20000, latent_dim)
+            unit_sampler = UniformNBall(loc=loc_mc, radius=1.0, dim=latent_dim)
+            p1, p2 = unit_sampler.rsample(), unit_sampler.rsample()
+            unit_avg_dist = torch.norm(p1 - p2, dim=-1).mean().item()
+            
+        # 2. Scale radius to match target average distance
+        target_radius = self.avg_family_distance / unit_avg_dist
+        
+        loc_centers = torch.zeros(n_families, latent_dim)
+        sampler = UniformNBall(loc=loc_centers, radius=target_radius, dim=latent_dim)
+        return sampler.rsample()
 
     @property
     def interaction_mu(self) -> torch.Tensor:
@@ -227,8 +242,7 @@ class LigandEnvironment(nn.Module):
         Returns the MEAN open-state energy for each unit against each family's exact center.
         Shape: (n_units, n_families)
         """
-        diff = self.unit_latent.unsqueeze(1) - self.family_latent.unsqueeze(0)
-        dist_sq = (diff ** 2).sum(dim=-1) 
+        dist_sq = torch.cdist(self.unit_latent, self.family_latent, p=2.0) ** 2
         
         mu_open = self.base_energy_u.unsqueeze(1) + dist_sq
         return mu_open
@@ -271,8 +285,7 @@ class LigandEnvironment(nn.Module):
             v_ligands = ligand_dist.rsample()
             
         # 4. Calculate Energies based on Distance
-        diff = v_ligands.unsqueeze(1) - self.unit_latent.unsqueeze(0)
-        dist_sq = (diff ** 2).sum(dim=-1) # Shape: (Batch, n_units)
+        dist_sq = torch.cdist(v_ligands, self.unit_latent, p=2.0) ** 2 # Shape: (Batch, n_units)
         
         E_open = self.base_energy_u + dist_sq
         
@@ -289,29 +302,38 @@ class SymmetricLigandEnvironment(LigandEnvironment):
     """
     def _generate_family_centers(self, n_families: int, latent_dim: int) -> torch.Tensor:
         if latent_dim < 2:
-            return torch.linspace(-1, 1, n_families).unsqueeze(-1)
+            points = torch.linspace(-1, 1, n_families).unsqueeze(-1)
             
-        if latent_dim == 2:
+        elif latent_dim == 2:
             angles = torch.linspace(0, 2 * math.pi, n_families + 1)[:-1]
             x = torch.cos(angles)
             y = torch.sin(angles)
-            return torch.stack([x, y], dim=1)
+            points = torch.stack([x, y], dim=1)
             
-        if latent_dim == 3 and n_families == 4:
-            return torch.tensor([
+        elif latent_dim == 3 and n_families == 4:
+            points = torch.tensor([
                 [ math.sqrt(8/9),  0.0,             -1/3],
                 [-math.sqrt(2/9),  math.sqrt(2/3),  -1/3],
                 [-math.sqrt(2/9), -math.sqrt(2/3),  -1/3],
                 [ 0.0,             0.0,              1.0]
             ], dtype=torch.float32)
 
-        if latent_dim == 3 and n_families == 6:
-            return torch.tensor([
+        elif latent_dim == 3 and n_families == 6:
+            points = torch.tensor([
                 [ 1.0,  0.0,  0.0], [-1.0,  0.0,  0.0],
                 [ 0.0,  1.0,  0.0], [ 0.0, -1.0,  0.0],
                 [ 0.0,  0.0,  1.0], [ 0.0,  0.0, -1.0]
             ], dtype=torch.float32)
 
-        # Fallback to the base class random initialization if no geometry is defined
-        print(f"Warning: No explicit geometric structure defined for D={latent_dim}, F={n_families}. Falling back to random normalized vectors.")
-        return super()._generate_family_centers(n_families, latent_dim)
+        else:
+            # Fallback to the base class random initialization if no geometry is defined
+            print(f"Warning: No explicit geometric structure defined for D={latent_dim}, F={n_families}. Falling back to random initialization.")
+            return super()._generate_family_centers(n_families, latent_dim)
+            
+        # Scale symmetrically structured points to match avg_family_distance
+        dist_matrix = torch.cdist(points, points, p=2.0)
+        n_pairs = n_families * (n_families - 1)
+        current_avg_dist = dist_matrix.sum().item() / n_pairs if n_pairs > 0 else 1.0
+        
+        scale_factor = self.avg_family_distance / current_avg_dist
+        return points * scale_factor

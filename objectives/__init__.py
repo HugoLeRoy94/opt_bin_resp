@@ -9,6 +9,8 @@ from .bin_loss import (compute_discrete_joint_entropy,
                         DiscreteExactLoss)
 #from .tolerant_bin_loss import TolerantDiscreteProxyLoss
                    
+from .family_mi_loss import MaximizeMutualInformationFamilyLoss
+from .concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
 __all__ = ["BaseInformationLoss",
             "ProxyInformationLoss",
@@ -16,4 +18,6 @@ __all__ = ["BaseInformationLoss",
             "compute_discrete_joint_entropy",
             "DiscreteProxyLoss",
             #"TolerantDiscreteProxyLoss",
-            "DiscreteExactLoss"]
+            "DiscreteExactLoss",
+            "MaximizeMutualInformationFamilyLoss",
+            "MaximizeMutualInformationConcentrationLoss"]

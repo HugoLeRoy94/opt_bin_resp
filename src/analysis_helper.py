@@ -456,3 +456,142 @@ def total_correlation(activity, loss_fn):
     h_marginals = marginal_entropy(activity, loss_fn)
     h_joint = full_array_entropy(activity, loss_fn)
     return h_marginals - h_joint
+
+class ConditionalEntropyFamily:
+    """
+    Measurement function to compute H(A | F), the conditional entropy 
+    of the array given the ligand family identity.
+    """
+    def __init__(self, env, physics, receptor_indices, n_samples=2000):
+        self.env = env
+        self.physics = physics
+        self.receptor_indices = receptor_indices
+        self.n_samples = n_samples
+        self.__name__ = "conditional_entropy_family"
+        
+    @torch.no_grad()
+    def __call__(self, activity, loss_fn):
+        n_families = self.env.n_families
+        if n_families == 0:
+            return 0.0
+            
+        total_cond_h = 0.0
+        for f_idx in range(n_families):
+            energies, concs, _ = self.env.sample_specific_family(batch_size=self.n_samples, family_id=f_idx)
+            act = self.physics(energies, concs, self.receptor_indices)
+            
+            if hasattr(loss_fn, 'compute_soft_assignment'):
+                soft_assign = loss_fn.compute_soft_assignment(act)
+                family_h = compute_discrete_joint_entropy(soft_assign)
+            elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
+                family_h = loss_fn.compute_knn_joint_entropy(act, k=5)
+            else:
+                family_h = torch.tensor(0.0)
+                
+            total_cond_h += family_h.item() if isinstance(family_h, torch.Tensor) else family_h
+            
+        return total_cond_h / n_families
+
+class MutualInformationFamily:
+    """
+    Measurement function to compute I(A ; F), the mutual information 
+    between the array activity and the ligand family identity.
+    """
+    def __init__(self, env, physics, receptor_indices, n_samples=2000):
+        self.env = env
+        self.physics = physics
+        self.receptor_indices = receptor_indices
+        self.n_samples = n_samples
+        self.__name__ = "mutual_information_family"
+        self.cond_h_fn = ConditionalEntropyFamily(env, physics, receptor_indices, n_samples)
+        
+    @torch.no_grad()
+    def __call__(self, activity, loss_fn):
+        # H(A) is calculated on the current mixed training batch
+        if hasattr(loss_fn, 'compute_soft_assignment'):
+            soft_assign = loss_fn.compute_soft_assignment(activity)
+            h_a = compute_discrete_joint_entropy(soft_assign)
+        elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
+            h_a = loss_fn.compute_knn_joint_entropy(activity, k=5)
+        else:
+            h_a = torch.tensor(0.0)
+            
+        h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
+        h_a_given_f = self.cond_h_fn(activity, loss_fn)
+        
+        return h_a_val - h_a_given_f
+
+class ConditionalEntropyConcentration:
+    """
+    Measurement function to compute H(A | C), the conditional entropy 
+    of the array given the ligand concentration.
+    """
+    def __init__(self, env, physics, receptor_indices, n_samples=2000, n_c_bins=10):
+        self.env = env
+        self.physics = physics
+        self.receptor_indices = receptor_indices
+        self.n_samples = n_samples
+        self.n_c_bins = n_c_bins
+        self.__name__ = "conditional_entropy_concentration"
+        
+    @torch.no_grad()
+    def __call__(self, activity, loss_fn):
+        # Sample a large batch to bin by concentration
+        energies, concs, _ = self.env.sample_batch(batch_size=self.n_samples * self.n_c_bins)
+        
+        # Sort by concentration to group them into continuous bins
+        sorted_concs, indices = torch.sort(concs)
+        sorted_energies = energies[indices]
+        
+        bin_size = len(concs) // self.n_c_bins
+        total_cond_h = 0.0
+        
+        for b in range(self.n_c_bins):
+            start_idx = b * bin_size
+            end_idx = start_idx + bin_size
+            
+            bin_energies = sorted_energies[start_idx:end_idx]
+            bin_concs = sorted_concs[start_idx:end_idx]
+            
+            act = self.physics(bin_energies, bin_concs, self.receptor_indices)
+            
+            if hasattr(loss_fn, 'compute_soft_assignment'):
+                soft_assign = loss_fn.compute_soft_assignment(act)
+                bin_h = compute_discrete_joint_entropy(soft_assign)
+            elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
+                bin_h = loss_fn.compute_knn_joint_entropy(act, k=5)
+            else:
+                bin_h = torch.tensor(0.0)
+                
+            total_cond_h += bin_h.item() if isinstance(bin_h, torch.Tensor) else bin_h
+            
+        return total_cond_h / self.n_c_bins
+
+class MutualInformationConcentration:
+    """
+    Measurement function to compute I(A ; C), the mutual information 
+    between the array activity and the ligand concentration.
+    """
+    def __init__(self, env, physics, receptor_indices, n_samples=2000, n_c_bins=10):
+        self.env = env
+        self.physics = physics
+        self.receptor_indices = receptor_indices
+        self.n_samples = n_samples
+        self.n_c_bins = n_c_bins
+        self.__name__ = "mutual_information_concentration"
+        self.cond_h_fn = ConditionalEntropyConcentration(env, physics, receptor_indices, n_samples, n_c_bins)
+        
+    @torch.no_grad()
+    def __call__(self, activity, loss_fn):
+        if hasattr(loss_fn, 'compute_soft_assignment'):
+            soft_assign = loss_fn.compute_soft_assignment(activity)
+            h_a = compute_discrete_joint_entropy(soft_assign)
+        elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
+            h_a = loss_fn.compute_knn_joint_entropy(activity, k=5)
+        else:
+            h_a = torch.tensor(0.0)
+            
+        h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
+        h_a_given_c = self.cond_h_fn(activity, loss_fn)
+        
+        return h_a_val - h_a_given_c

@@ -1,6 +1,11 @@
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
-
 # add -d for silent running
+
+# To run on GPU 1
+#docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm -e NVIDIA_VISIBLE_DEVICES=1 gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
+
+# To run on GPU 2
+#docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm -e NVIDIA_VISIBLE_DEVICES=2 gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
 
 import sys
 sys.path.append('/app')
@@ -23,7 +28,11 @@ from src import (generate_receptor_indices,
                 plot_latent_umap,
                 receptor_distances,
                 full_array_entropy,
-                mean_receptor_distance)
+                mean_receptor_distance,
+                ConditionalEntropyFamily,
+                MutualInformationFamily,
+                ConditionalEntropyConcentration,
+                MutualInformationConcentration)
 from run import initialize,train,test
 from src.IO import ExperimentLogger
 
@@ -98,7 +107,20 @@ if __name__ == "__main__":
                 logger = ExperimentLogger(base_path=base_dir, experiment_name=f"sample_{sample}")
                 logger.save_config(CONF)
 
-                train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=[full_array_entropy, mean_receptor_distance])
+                # Initialize our new tracking classes
+                cond_h_fam = ConditionalEntropyFamily(env, rec, CONF["receptor_indices"], n_samples=2000)
+                mi_fam = MutualInformationFamily(env, rec, CONF["receptor_indices"], n_samples=2000)
+                cond_h_conc = ConditionalEntropyConcentration(env, rec, CONF["receptor_indices"], n_samples=2000)
+                mi_conc = MutualInformationConcentration(env, rec, CONF["receptor_indices"], n_samples=2000)
+
+                train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=[
+                    full_array_entropy, 
+                    mean_receptor_distance,
+                    cond_h_fam,
+                    mi_fam,
+                    cond_h_conc,
+                    mi_conc
+                ])
 
                 # Save training statistics 
                 epochs_run = len(next(iter(train_out.values())))

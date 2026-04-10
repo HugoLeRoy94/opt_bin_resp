@@ -167,3 +167,36 @@ Maximum capacities on a standard 8GB-12GB GPU +Because everything scales either 
 * Max Number of Receptors ($R$): $\approx 10,000$ (Limited entirely by the $\mathcal{O}(R^2)$ covariance/repulsion matrix) 
 
 Rule of Thumb: If you encounter a CUDA Out of Memory error, the first parameter to reduce is the Batch Size ($B$), followed by the Number of Receptors ($R$). The latent space dimension ($D$) and number of families ($F$) are virtually "free" to scale up!
+
+# Tmux cheat sheet
+
+### 📋 Tmux Quick Cheat Sheet
+
+| Category | Action | Command / Shortcut |
+| :--- | :--- | :--- |
+| **Sessions** | **Start** a new session | `tmux` |
+| | **Start** session with name | `tmux new -s <name>` |
+| | **List** all sessions | `tmux ls` |
+| | **Attach** to last session | `tmux attach` |
+| | **Attach** to specific session | `tmux attach -t <name>` |
+| | **Kill/Delete** a session | `tmux kill-session -t <name>` |
+| **Inside Tmux** | **Detach** (Leave it running) | `Ctrl + b` then `d` |
+| | **Scroll** mode (Arrows to move) | `Ctrl + b` then `[` (Press `q` to exit scroll) |
+| | **New Window** | `Ctrl + b` then `c` |
+| | **Switch Window** | `Ctrl + b` then `0-9` (The window number) |
+| | **Split Vertically** | `Ctrl + b` then `%` |
+| | **Split Horizontally** | `Ctrl + b` then `"` |
+| | **Close** current pane/window | Type `exit` |
+
+---
+
+### Reference for Docker setup
+Since you are using `docker-compose.server.yaml`, your workflow inside `tmux` should look like this:
+
+1.  **Enter Tmux:** `tmux new -s gpu_task`
+2.  [cite_start]**Start Docker:** `docker compose -f docker-compose.server.yaml run --rm gpu-runner python src/your_script.py` [cite: 1]
+3.  **Leave Safely:** `Ctrl + b` then `d`.
+4.  **Disconnect SSH.**
+5.  **Return later:** `tmux attach -t gpu_task`.
+
+[cite_start]**Note:** In your `Dockerfile`, you've set the user to `devuser` with UID `1000`, but your `docker-compose.server.yaml` overrides this by setting `user: "root"`[cite: 1, 2]. This means any files created by your script while running in `tmux` might be owned by **root** on your host machine.

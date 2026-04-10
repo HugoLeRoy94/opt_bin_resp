@@ -92,7 +92,7 @@ class ExperimentLoader(BaseIO):
         
         # The Auto-Discovery Magic
         if exact_run_folder is None:
-            search_pattern = os.path.join(base_path, f"{experiment_name}_*")
+            search_pattern = os.path.join(base_path, f"{experiment_name}*")
             matching_folders = sorted(glob.glob(search_pattern))
             
             if not matching_folders:

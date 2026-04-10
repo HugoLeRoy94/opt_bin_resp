@@ -8,7 +8,10 @@ def compute_discrete_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     Switches between exact enumeration for small state spaces and Monte Carlo
     estimation for large state spaces.
     """
-    B, R, K = soft_assign.shape
+    # B : batch size
+    # R : # of receptors 
+    # K : # of activity bins = 2
+    B, R, K = soft_assign.shape 
     
     # Dynamic switch based on computational complexity
     if K ** R <= 1024:
@@ -33,36 +36,37 @@ def compute_discrete_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         
     else:
         # ------------------------------------------------------
-        # METHOD B: Monte Carlo Estimation (For large arrays)
+        # METHOD B: Exact Pairwise Collision (Rényi Entropy H2)
         # ------------------------------------------------------
-        # 1. Sample 1 actual discrete array state per ligand in the batch
-        dist = torch.distributions.Categorical(probs=soft_assign)
-        sampled_states = dist.sample() # Shape: (B_a, R)
-        
-        # 2. Extract the log probabilities: P(A_r | ligand_i)
-        log_probs = torch.log(soft_assign + 1e-12) # Shape: (B_x, R, K)
-        
-        # 3. Fast Matrix Multiplication to compute log P(state_j | ligand_i)
-        S_one_hot = torch.nn.functional.one_hot(sampled_states, num_classes=K).float()
-        log_probs_flat = log_probs.view(B, -1)
-        S_one_hot_flat = S_one_hot.view(B, -1)
+        # Bypasses the O(K^R) wall entirely by calculating the probability 
+        # that two random ligands produce the EXACT same array state. 
+        # H_2 = -log2( P(A = B) ). This is highly correlated with Shannon entropy,
+        # fully differentiable, and scales linearly with R!
         
         # Subsample states to prevent OOM on massive batches
         M = min(B, 2048)
         if M < B:
             indices = torch.randperm(B, device=soft_assign.device)[:M]
-            S_one_hot_flat = S_one_hot_flat[indices]
+            S = soft_assign[indices]
+        else:
+            S = soft_assign
             
-        log_p_a_given_x = torch.matmul(log_probs_flat, S_one_hot_flat.T) # (B_x, M)
+        # Permute to (R, M, K) for batch matrix multiplication over Receptors
+        S_R = S.permute(1, 0, 2)
         
-        # 4. Average across the batch of ligands to get the true P(state_j)
-        p_a_given_x = torch.exp(log_p_a_given_x) # (B_x, B_a)
-        p_a = p_a_given_x.mean(dim=0) # (M,)
+        # Compute match probability for each receptor between all pairs of ligands
+        # (R, M, K) @ (R, K, M) -> (R, M, M)
+        match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
         
-        # 5. Monte Carlo average: Expected value of [-log_K P(state)]
-        p_a_safe = torch.clamp(p_a, min=1e-12)
-        log_2_p = torch.log2(p_a_safe)
-        joint_h = -log_2_p.mean()
+        # Product over all receptors -> overall state match probability (M, M)
+        joint_match_probs = torch.prod(match_probs, dim=0)
+        
+        # Expected collision probability over the batch
+        collision_prob = joint_match_probs.mean()
+        
+        # Rényi Entropy of order 2 (in bits)
+        collision_prob_safe = torch.clamp(collision_prob, min=1e-12)
+        joint_h = -torch.log2(collision_prob_safe)
 
     return joint_h
 

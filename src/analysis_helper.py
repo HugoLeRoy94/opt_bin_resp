@@ -365,7 +365,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         # Plot the exact family center (now a circle)
         ax.scatter(
             emb_families[f_idx, 0], emb_families[f_idx, 1], 
-            marker='o', s=100, color=c, edgecolor='black', linewidth=1.2,
+            marker='o', s=100//n_families, color=c, edgecolor='black', linewidth=1.2,
             zorder=4, label=f'Fam {f_idx}' if f_idx < 10 else ""
         )
         

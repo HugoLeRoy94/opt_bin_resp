@@ -20,7 +20,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${MY_GPU:-0}"]
               capabilities: [gpu]
     environment:
       - http_proxy=${http_proxy:-}

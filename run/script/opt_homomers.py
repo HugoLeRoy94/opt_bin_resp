@@ -1,11 +1,8 @@
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
 # add -d for silent running
 
-# To run on GPU 1
-#docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm -e NVIDIA_VISIBLE_DEVICES=1 gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
-
 # To run on GPU 2
-#docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm -e NVIDIA_VISIBLE_DEVICES=2 gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
+# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py 20
 
 import sys
 sys.path.append('/app')

@@ -7,7 +7,7 @@ services:
         http_proxy: ${http_proxy:-}
         https_proxy: ${https_proxy:-}
         no_proxy: ${no_proxy:-}
-    shm_size: '2gb' # use the host memory capacity
+    shm_size: '16gb' # use the host memory capacity
     volumes:
       - ./unit_test:/app/unit_test/:z
       - ./data:/app/data:z

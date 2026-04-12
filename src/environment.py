@@ -206,7 +206,7 @@ class LigandEnvironment(nn.Module):
         # ----------------------------------------------------------------------
         
         # 1. The Octopus Adapts (Learnable Unit Coordinates)
-        self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim))
+        self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim) * 1.0)
         
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -214,7 +214,10 @@ class LigandEnvironment(nn.Module):
         
         # 3. Unit-specific Base Energies (Maximum intrinsic affinity)
         global_avg_log_c = self.concentration_model.get_expected_log_c().mean().item()
-        self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
+        # Dynamically subtract the initial expected distance squared to prevent dead sensors in high dimensions
+        initial_dist_sq = torch.cdist(self.unit_latent.data, fixed_families).pow(2).mean().item()
+        self.base_energy_u = nn.Parameter(torch.ones(n_units) * (global_avg_log_c - initial_dist_sq))
+        #self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
 
     def _generate_family_centers(self, n_families: int, latent_dim: int) -> torch.Tensor:
         """

@@ -2,7 +2,7 @@
 # add -d for silent running
 
 # To run on GPU 2
-# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py 20
+# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
 
 import sys
 sys.path.append('/app')
@@ -26,16 +26,16 @@ from src import (generate_receptor_indices,
                 receptor_distances,
                 full_array_entropy,
                 mean_receptor_distance,
-                ConditionalEntropyFamily,
-                MutualInformationFamily,
-                ConditionalEntropyConcentration,
-                MutualInformationConcentration)
+                conditional_entropy_family,
+                mutual_information_family,
+                conditional_entropy_concentration,
+                mutual_information_concentration)
 from run import initialize,train,test
 from src.IO import ExperimentLogger
 
 
 latent_dim_list = [3, 7, 10]
-n_units_list = [1,2,3,5,7,8,10,12,15,20,30,50]
+n_units_list = [15]#[1,2,3,5,7,8,10,12,15,20,30,50]
 n_samples = 5 # Number of independent runs to estimate standard deviation
 
 N_train = 2**17
@@ -46,9 +46,9 @@ CONF = {
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
     "avg_family_distance": 1.0, # Target average distance between family centers
+    "shape_sigma": 0, # Will be set in the loop
         # concentration
     "init_means": [], # Will be set in the loop
-    "shape_sigma": 0, # Will be set in the loop
     # receptor 
     "k_sub": 5, # number of sub-units
     "temperature": 0.1, # temperature of the sigmoid that approximate a binary answer
@@ -104,19 +104,13 @@ if __name__ == "__main__":
                 logger = ExperimentLogger(base_path=base_dir, experiment_name=f"sample_{sample}")
                 logger.save_config(CONF)
 
-                # Initialize our new tracking classes
-                cond_h_fam = ConditionalEntropyFamily(env, rec, CONF["receptor_indices"], n_samples=2000)
-                mi_fam = MutualInformationFamily(env, rec, CONF["receptor_indices"], n_samples=2000)
-                cond_h_conc = ConditionalEntropyConcentration(env, rec, CONF["receptor_indices"], n_samples=2000)
-                mi_conc = MutualInformationConcentration(env, rec, CONF["receptor_indices"], n_samples=2000)
-
                 train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=[
                     full_array_entropy, 
                     mean_receptor_distance,
-                    cond_h_fam,
-                    mi_fam,
-                    cond_h_conc,
-                    mi_conc
+                    conditional_entropy_family,
+                    mutual_information_family,
+                    conditional_entropy_concentration,
+                    mutual_information_concentration
                 ])
 
                 # Save training statistics 

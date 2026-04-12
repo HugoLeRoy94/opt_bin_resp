@@ -17,10 +17,10 @@ from .analysis_helper import (plot_family_summary,
                                 total_correlation,
                                 receptor_distances,
                                 mean_receptor_distance,
-                                ConditionalEntropyFamily,
-                                MutualInformationFamily,
-                                ConditionalEntropyConcentration,
-                                MutualInformationConcentration)
+                                conditional_entropy_family,
+                                mutual_information_family,
+                                conditional_entropy_concentration,
+                                mutual_information_concentration)
 from .IO import ExperimentLoader,ExperimentLogger
 
 # Exposing these allows for clean imports like:
@@ -45,10 +45,10 @@ __all__ = [
     "total_correlation",
     "receptor_distances",
     "mean_receptor_distance",
-    "ConditionalEntropyFamily",
-    "MutualInformationFamily",
-    "ConditionalEntropyConcentration",
-    "MutualInformationConcentration",
+    "conditional_entropy_family",
+    "mutual_information_family",
+    "conditional_entropy_concentration",
+    "mutual_information_concentration",
     "ExperimentLogger",
     "ExperimentLoader",
     "evaluate_model"

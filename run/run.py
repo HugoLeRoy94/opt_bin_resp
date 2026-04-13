@@ -51,7 +51,7 @@ def initialize(CONF:dict,SymmetricEnv=False, prev_env=None)->tuple[LigandEnviron
 
     physics = BinaryReceptor(CONF["n_units"], CONF["k_sub"],temperature=CONF["temperature"]).to(device)
     
-    entropy_type = CONF.get('entropy_type', 'shannon')
+    entropy_type = CONF['entropy']
     if CONF["loss"] == "exact":
         loss_fn = DiscreteExactLoss(entropy_type=entropy_type).to(device)
     elif CONF["loss"] == "family":

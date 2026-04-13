@@ -7,7 +7,7 @@ import seaborn as sns
 import umap
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
-from objectives import DiscreteProxyLoss, compute_discrete_joint_entropy
+from objectives import DiscreteProxyLoss, compute_shannon_joint_entropy, compute_renyi_joint_entropy
 
 
 @torch.no_grad()
@@ -200,7 +200,8 @@ def evaluate_model(env,physics,receptor_indices,loss_fn,n_samples=2000):
     activity = physics(energies, concs, receptor_indices)
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    val = compute_discrete_joint_entropy(soft_assign)
+    entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
+    val = entropy_fn(soft_assign)
     return val.item() if isinstance(val, torch.Tensor) else val
 
 
@@ -443,7 +444,8 @@ def full_array_entropy(activity, loss_fn):
     act = activity.detach()
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(act)
-        joint_h = compute_discrete_joint_entropy(soft_assign)
+        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
+        joint_h = entropy_fn(soft_assign)
         return joint_h.item() if isinstance(joint_h, torch.Tensor) else joint_h
     elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
         joint_h = loss_fn.compute_knn_joint_entropy(act, k=5)
@@ -462,6 +464,7 @@ def conditional_entropy_family(activity, family_ids, loss_fn):
     """Computes H(A | F) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
+        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
     else:
         return 0.0
         
@@ -473,7 +476,7 @@ def conditional_entropy_family(activity, family_ids, loss_fn):
     for f_idx in unique_families:
         mask = (family_ids == f_idx)
         soft_assign_f = soft_assign[mask]
-        family_h = compute_discrete_joint_entropy(soft_assign_f)
+        family_h = entropy_fn(soft_assign_f)
         total_cond_h += family_h.item() if isinstance(family_h, torch.Tensor) else family_h
         
     return total_cond_h / len(unique_families)
@@ -483,7 +486,8 @@ def mutual_information_family(activity, family_ids, loss_fn):
     """Computes I(A ; F) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
-        h_a = compute_discrete_joint_entropy(soft_assign)
+        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
+        h_a = entropy_fn(soft_assign)
     else:
         return 0.0
         
@@ -496,6 +500,7 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
     """Computes H(A | C) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
+        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
     else:
         return 0.0
         
@@ -511,7 +516,7 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
         end_idx = start_idx + bin_size if b < n_c_bins - 1 else B
         
         soft_assign_c = sorted_assign[start_idx:end_idx]
-        bin_h = compute_discrete_joint_entropy(soft_assign_c)
+        bin_h = entropy_fn(soft_assign_c)
         total_cond_h += bin_h.item() if isinstance(bin_h, torch.Tensor) else bin_h
         
     return total_cond_h / n_c_bins
@@ -521,7 +526,8 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
     """Computes I(A ; C) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
-        h_a = compute_discrete_joint_entropy(soft_assign)
+        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
+        h_a = entropy_fn(soft_assign)
     else:
         return 0.0
         

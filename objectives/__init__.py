@@ -4,7 +4,8 @@ from .loss import (BaseInformationLoss,
                     ProxyInformationLoss,
                     ExactInformationLoss)
 
-from .bin_loss import (compute_discrete_joint_entropy,
+from .bin_loss import (compute_shannon_joint_entropy,
+                       compute_renyi_joint_entropy,
                         DiscreteProxyLoss,
                         DiscreteExactLoss)
 #from .tolerant_bin_loss import TolerantDiscreteProxyLoss
@@ -15,7 +16,8 @@ from .concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 __all__ = ["BaseInformationLoss",
             "ProxyInformationLoss",
             "ExactInformationLoss",
-            "compute_discrete_joint_entropy",
+            "compute_shannon_joint_entropy",
+            "compute_renyi_joint_entropy",
             "DiscreteProxyLoss",
             #"TolerantDiscreteProxyLoss",
             "DiscreteExactLoss",

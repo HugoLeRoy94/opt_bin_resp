@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .bin_loss import compute_discrete_joint_entropy
+from .bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy
 
 class MaximizeMutualInformationFamilyLoss(nn.Module):
     """
@@ -10,8 +10,9 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
     This is achieved by minimizing the loss:
     Loss = H(A | F) - H(A)
     """
-    def __init__(self):
+    def __init__(self, entropy_type: str = 'shannon'):
         super().__init__()
+        self.entropy_type = entropy_type
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
         # Binary system: [P(inactive), P(active)]
@@ -20,7 +21,15 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
     def forward(self, activity: torch.Tensor, family_ids: torch.Tensor):
         # 1. Compute H(A) on the current mixed training batch
         soft_assign = self.compute_soft_assignment(activity)
-        h_a = compute_discrete_joint_entropy(soft_assign)
+        
+        if self.entropy_type == 'shannon':
+            entropy_fn = compute_shannon_joint_entropy
+        elif self.entropy_type == 'renyi':
+            entropy_fn = compute_renyi_joint_entropy
+        else:
+            raise ValueError(f"Unknown entropy_type: {self.entropy_type}. Choose 'shannon' or 'renyi'.")
+            
+        h_a = entropy_fn(soft_assign)
         
         # 2. Compute H(A | F) by grouping the existing batch by family
         unique_families = torch.unique(family_ids)
@@ -29,7 +38,7 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
         for f_idx in unique_families:
             mask = (family_ids == f_idx)
             soft_assign_f = soft_assign[mask]
-            total_cond_h = total_cond_h + compute_discrete_joint_entropy(soft_assign_f)
+            total_cond_h = total_cond_h + entropy_fn(soft_assign_f)
             
         h_a_given_f = total_cond_h / len(unique_families)
         

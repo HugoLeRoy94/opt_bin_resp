@@ -2,75 +2,69 @@ import torch
 import torch.nn as nn
 import math
 
-def compute_discrete_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
+def compute_shannon_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     """
-    Computes the joint entropy of a discrete system from soft assignments.
-    Switches between exact enumeration for small state spaces and Monte Carlo
-    estimation for large state spaces.
+    Computes the Shannon joint entropy of a discrete system from soft assignments
+    using exact enumeration. Ideal for small state spaces.
     """
     # B : batch size
     # R : # of receptors 
     # K : # of activity bins = 2
     B, R, K = soft_assign.shape 
     
-    # Dynamic switch based on computational complexity
-    if K ** R <= 1024:
-        # ------------------------------------------------------
-        # METHOD A: Exact Enumeration (For small arrays)
-        # ------------------------------------------------------
-        # We iteratively build the exact (B, K^R) probability tensor
-        joint_p = soft_assign[:, 0, :] # Start with receptor 0: (B, K)
-        
-        for r in range(1, R):
-            # Multiply current combinations by the probabilities of the next receptor
-            # (B, K^{r}, 1) * (B, 1, K) -> flat to (B, K^{r+1})
-            joint_p = (joint_p.unsqueeze(-1) * soft_assign[:, r, :].unsqueeze(1)).view(B, -1)
-        
-        # Average across the batch to get the true probability of every possible state
-        p_a = joint_p.mean(dim=0) # Shape: (K^R,)
-        
-        # Use clamp to prevent log2(0) while maintaining stable gradients
-        p_a_safe = torch.clamp(p_a, min=1e-12)
-        log_2_p = torch.log2(p_a_safe)
-        joint_h = -torch.sum(p_a * log_2_p)
-        
+    # We iteratively build the exact (B, K^R) probability tensor
+    joint_p = soft_assign[:, 0, :] # Start with receptor 0: (B, K)
+    
+    for r in range(1, R):
+        # Multiply current combinations by the probabilities of the next receptor
+        # (B, K^{r}, 1) * (B, 1, K) -> flat to (B, K^{r+1})
+        joint_p = (joint_p.unsqueeze(-1) * soft_assign[:, r, :].unsqueeze(1)).view(B, -1)
+    
+    # Average across the batch to get the true probability of every possible state
+    p_a = joint_p.mean(dim=0) # Shape: (K^R,)
+    
+    # Use clamp to prevent log2(0) while maintaining stable gradients
+    p_a_safe = torch.clamp(p_a, min=1e-12)
+    log_2_p = torch.log2(p_a_safe)
+    joint_h = -torch.sum(p_a * log_2_p)
+    
+    return joint_h
+
+def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
+    """
+    Computes the Rényi joint entropy (H2) using exact pairwise collision.
+    Bypasses the O(K^R) wall entirely by calculating the probability 
+    that two random ligands produce the EXACT same array state. 
+    """
+    B, R, K = soft_assign.shape 
+    chunk_size = 2048
+    
+    if B <= chunk_size:
+        S_R = soft_assign.permute(1, 0, 2)
+        match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
+        collision_prob = torch.prod(match_probs, dim=0).mean()
     else:
-        # ------------------------------------------------------
-        # METHOD B: Exact Pairwise Collision (Rényi Entropy H2)
-        # ------------------------------------------------------
-        # Bypasses the O(K^R) wall entirely by calculating the probability 
-        # that two random ligands produce the EXACT same array state. 
-        # H_2 = -log2( P(A = B) ). This is highly correlated with Shannon entropy,
-        # fully differentiable, and scales linearly with R!
+        # Chunked evaluation: average the collision probability over multiple 
+        # independent sub-batches. This reduces estimator variance
+        # while keeping autograd memory usage strictly bounded.
+        max_chunks = 8 # Process up to 8 chunks (16,384 ligands) per step
+        n_chunks = min(B // chunk_size, max_chunks)
         
-        chunk_size = 2048
+        indices = torch.randperm(B, device=soft_assign.device)
+        total_collision_prob = 0.0
         
-        if B <= chunk_size:
-            S_R = soft_assign.permute(1, 0, 2)
+        for i in range(n_chunks):
+            chunk_idx = indices[i * chunk_size : (i + 1) * chunk_size]
+            S_R = soft_assign[chunk_idx].permute(1, 0, 2)
+            
             match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
-            collision_prob = torch.prod(match_probs, dim=0).mean()
-        else:
-            # Chunked evaluation: average the collision probability over multiple 
-            # independent sub-batches. This reduces estimator variance
-            # while keeping autograd memory usage strictly bounded.
-            max_chunks = 8 # Process up to 8 chunks (16,384 ligands) per step
-            n_chunks = min(B // chunk_size, max_chunks)
+            total_collision_prob = total_collision_prob + torch.prod(match_probs, dim=0).mean()
             
-            indices = torch.randperm(B, device=soft_assign.device)
-            total_collision_prob = 0.0
-            
-            for i in range(n_chunks):
-                chunk_idx = indices[i * chunk_size : (i + 1) * chunk_size]
-                S_R = soft_assign[chunk_idx].permute(1, 0, 2)
-                
-                match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
-                total_collision_prob = total_collision_prob + torch.prod(match_probs, dim=0).mean()
-                
-            collision_prob = total_collision_prob / n_chunks
-        
-        # Rényi Entropy of order 2 (in bits)
-        collision_prob_safe = torch.clamp(collision_prob, min=1e-12)
-        joint_h = -torch.log2(collision_prob_safe)
+        collision_prob = total_collision_prob / n_chunks
+    
+    # Rényi Entropy of order 2 (in bits)
+    collision_prob_safe = torch.clamp(collision_prob, min=1e-12)
+    joint_h = -torch.log2(collision_prob_safe)
 
     return joint_h
 
@@ -79,8 +73,9 @@ class DiscreteExactLoss(nn.Module):
     Maximizes the exact discrete binary joint entropy of the array.
     Ideal for systems where components must be correlated (like a thermometer code).
     """
-    def __init__(self):
+    def __init__(self, entropy_type: str = 'shannon'):
         super().__init__()
+        self.entropy_type = entropy_type
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
         # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
@@ -88,7 +83,12 @@ class DiscreteExactLoss(nn.Module):
 
     def forward(self, activity: torch.Tensor):
         soft_assign = self.compute_soft_assignment(activity)
-        joint_h = compute_discrete_joint_entropy(soft_assign)
+        if self.entropy_type == 'shannon':
+            joint_h = compute_shannon_joint_entropy(soft_assign)
+        elif self.entropy_type == 'renyi':
+            joint_h = compute_renyi_joint_entropy(soft_assign)
+        else:
+            raise ValueError(f"Unknown entropy_type: {self.entropy_type}. Choose 'shannon' or 'renyi'.")
         return -joint_h  # Maximize joint entropy
 
 class DiscreteProxyLoss(nn.Module):

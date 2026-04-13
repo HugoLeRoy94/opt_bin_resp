@@ -45,15 +45,15 @@ CONF = {
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance":10., # distance  between the family centers
-    "shape_sigma": 0, # Will be set in the loop
+    "average_family_distance" : 5.0,
+    "shape_sigma": 1.5, # Will be set in the loop
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
     "k_sub": 5, # number of sub-units
     "temperature": .01, # temperature of the sigmoid that approximate a binary answer
     "n_units" : 0, # number of genes
-    "receptor_indices" : torch.tensor([[i for _ in range(5)] for i in range(n_units)], dtype=torch.long), # actual receptors considered
+    "receptor_indices" : None, # actual receptors considered
     
     # training characteristics
     "batch_size": N_train,
@@ -82,10 +82,6 @@ if __name__ == "__main__":
             CONF["n_families"] = n_families
             CONF["latent_dim"] = latent_dim
             
-            # Keep shape_sigma constant to preserve intra-family chemical variance
-            CONF["shape_sigma"] = 1.5 
-            # Reduce distance to ensure families overlap and prevent "vacuums"
-            CONF["average_family_distance"] = 5.0
             
             CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
             

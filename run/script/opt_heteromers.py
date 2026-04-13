@@ -1,8 +1,8 @@
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_heteromers.py Nfamilies
 # add -d for silent running
 
 # To run on GPU 2
-# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_homomers.py Nfamilies
+# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/opt_heteromers.py Nfamilies
 
 import sys
 sys.path.append('/app')
@@ -49,8 +49,8 @@ CONF = {
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance":10., # distance  between the family centers
-    "shape_sigma": 0, # Will be set in the loop
+    "average_family_distance" : 5.0,
+    "shape_sigma": 1.5, # Will be set in the loop
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
@@ -85,11 +85,6 @@ if __name__ == "__main__":
             # Set default config for this trajectory
             CONF["n_families"] = n_families
             CONF["latent_dim"] = latent_dim
-            
-            # Keep shape_sigma constant to preserve intra-family chemical variance
-            CONF["shape_sigma"] = 1.5 
-            # Reduce distance to ensure families overlap and prevent "vacuums"
-            CONF["average_family_distance"] = 5.0
             
             CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
             

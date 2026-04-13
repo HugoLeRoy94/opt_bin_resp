@@ -31,38 +31,39 @@ from src import (generate_receptor_indices,
                 conditional_entropy_concentration,
                 mutual_information_concentration)
 from run import initialize,train,test
-from src.IO import ExperimentLogger
+from src.IO import ExperimentLogger, ExperimentLoader
 
 
 latent_dim_list = [3, 7, 10]
-n_units_list = [15]#[1,2,3,5,7,8,10,12,15,20,30,50]
+n_units_list = [1,2,3,5,7,8,10,12,15,20,30,50]
 n_samples = 5 # Number of independent runs to estimate standard deviation
 
-N_train = 2**17
+N_train = 2**11
 
 CONF = {
     # environment
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "avg_family_distance": 1.0, # Target average distance between family centers
+    "average_family_distance":10., # distance  between the family centers
     "shape_sigma": 0, # Will be set in the loop
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
     "k_sub": 5, # number of sub-units
-    "temperature": 0.1, # temperature of the sigmoid that approximate a binary answer
+    "temperature": .01, # temperature of the sigmoid that approximate a binary answer
     "n_units" : 0, # number of genes
-    "receptor_indices" : torch.tensor([[i for _ in range(5)] for i in range(0)], dtype=torch.long), # actual receptors considered
+    "receptor_indices" : torch.tensor([[i for _ in range(5)] for i in range(n_units)], dtype=torch.long), # actual receptors considered
     
     # training characteristics
     "batch_size": N_train,
-    "epochs": 5000,
+    "epochs": 500,
 
 
     "lr": 0.05, # learning rate
-    "exact_loss": True # type of loss
-    
+    "loss": "exact", # type of loss
+    'entropy':'renyi',
+    "use_scheduler":False,
 }
 
 if __name__ == "__main__":
@@ -74,31 +75,56 @@ if __name__ == "__main__":
     n_families = int(sys.argv[1])
 
     for latent_dim in latent_dim_list:
-        for n_units in n_units_list:
-            # Set up the parameter-specific base directory
-            base_dir = f"/app/data/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
-            os.makedirs(base_dir, exist_ok=True)
+        for sample in range(n_samples):
+            prev_env = None
+            
+            # Set default config for this trajectory
+            CONF["n_families"] = n_families
+            CONF["latent_dim"] = latent_dim
+            
+            # Keep shape_sigma constant to preserve intra-family chemical variance
+            CONF["shape_sigma"] = 1.5 
+            # Reduce distance to ensure families overlap and prevent "vacuums"
+            CONF["average_family_distance"] = 5.0
+            
+            CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
+            
+            for n_units in n_units_list:
+                # Set up the parameter-specific base directory
+                base_dir = f"/app/data/homomers/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
+                os.makedirs(base_dir, exist_ok=True)
 
-            for sample in range(n_samples):
                 # Check if this exact sample has already been computed
                 existing_dirs = [d for d in os.listdir(base_dir) if d.startswith(f"sample_{sample}")]
-                already_computed = any(os.path.exists(os.path.join(base_dir, d, "test_results.json")) for d in existing_dirs)
+                already_computed_dirs = [d for d in existing_dirs if os.path.exists(os.path.join(base_dir, d, "test_results.json"))]
                 
-                if already_computed:
+                if len(already_computed_dirs) > 0:
                     print(f"Skipping: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} (Already exists)")
+                    # Load the environment to pass it to the next n_units iteration
+                    exact_run_folder = os.path.join(base_dir, already_computed_dirs[0])
+                    try:
+                        device = "cuda" if torch.cuda.is_available() else "cpu"
+                        loader = ExperimentLoader(exact_run_folder=exact_run_folder)
+                        e, _, _, _, _, c = loader.load_objects(device=device)
+                        prev_env = e
+                        # Sync the running config to match the loaded environment's initialization
+                        if "init_means" in c:
+                            CONF["init_means"] = c["init_means"]
+                    except Exception as ex:
+                        print(f"Warning: Could not load previous environment from {exact_run_folder}: {ex}")
+                        prev_env = None
                     continue
                     
                 print(f"\n--- Training: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} ---")
                 
                 # Update CONF for current parameters
-                CONF["n_families"] = n_families
-                CONF["latent_dim"] = latent_dim
-                CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
-                CONF["shape_sigma"] = 1. / n_families
                 CONF["n_units"] = n_units
-                CONF["receptor_indices"] = torch.tensor([[i for _ in range(CONF['k_sub'])] for i in range(n_units)], dtype=torch.long)
+                # Generate heteromers matching the experimental exponential distribution
+                CONF["receptor_indices"] = generate_exp_distributed_receptors(N_receptors=n_units, n_units=n_units, k_sub=CONF['k_sub'])
 
-                env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)
+                env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False, prev_env=prev_env)
+                
+                prev_env = env
 
                 # ExperimentLogger creates a timestamped folder inside base_dir
                 logger = ExperimentLogger(base_path=base_dir, experiment_name=f"sample_{sample}")

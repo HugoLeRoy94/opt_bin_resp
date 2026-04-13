@@ -8,7 +8,9 @@ from .environment import (
     NormalConcentration
 )
 from .physics import BinaryReceptor,MWCReceptor,BaseReceptor
-from .geometry import (generate_receptor_indices,generate_cascading_receptors,generate_targeted_receptors)
+from .geometry import (generate_receptor_indices, generate_cascading_receptors,
+                       generate_targeted_receptors, generate_exp_distributed_receptors, 
+                       generate_bernoulli_receptors)
 from .analysis_helper import (plot_family_summary,
                                 plot_summary,evaluate_model,plot_latent_radar_chart,
                                 plot_latent_umap,
@@ -36,7 +38,9 @@ __all__ = [
     "NormalConcentration",
     "generate_receptor_indices",
     "generate_cascading_receptors",
-    "generate_targeted_receptors"
+    "generate_targeted_receptors",
+    "generate_exp_distributed_receptors",
+    "generate_bernoulli_receptors",
     "plot_family_summary",
     "plot_summary",
     "plot_latent_umap",

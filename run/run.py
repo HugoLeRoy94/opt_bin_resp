@@ -33,48 +33,43 @@ from objectives import (DiscreteProxyLoss,
 
 def initialize(CONF:dict,SymmetricEnv=False, prev_env=None)->tuple[LigandEnvironment,BaseReceptor,nn.Module,optim.Optimizer]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    conc_strategy = LogNormalConcentration(n_families=CONF['n_families'], 
-                                            init_mean=CONF['init_means'])
-                                            
 
-    env = LigandEnvironment(CONF['n_units'],
+    if prev_env is not None:
+        extra_units = max(0, CONF['n_units'] - prev_env.n_units)
+        env = prev_env.clone_with_extra_units(extra_units).to(device)
+    else:
+        conc_strategy = LogNormalConcentration(n_families=CONF['n_families'], 
+                                               init_mean=CONF['init_means'])
+        env_class = SymmetricLigandEnvironment if SymmetricEnv else LigandEnvironment
+        env = env_class(CONF['n_units'],
                         CONF['n_families'], 
                         conc_model=conc_strategy,
                         latent_dim=CONF['latent_dim'],
                         shape_sigma=CONF['shape_sigma'],
+                        distribution_type=CONF.get('distribution_type', 'gaussian'),
                         avg_family_distance=CONF["average_family_distance"]).to(device)
-                        
-    # Curriculum Learning: Inject the state of the previously optimized array
-    if prev_env is not None:
-        with torch.no_grad():
-            # Copy the parameters of the previously optimized units
-            n_prev = prev_env.n_units
-            n_new = CONF['n_units']
-            copy_len = min(n_prev, n_new)
-            
-            env.unit_latent.data[:copy_len] = prev_env.unit_latent.data[:copy_len].clone()
-            env.base_energy_u.data[:copy_len] = prev_env.base_energy_u.data[:copy_len].clone()
-            
-            # Crucial: Lock the environment (families) to be exactly the same as the previous run
-            if prev_env.n_families == CONF['n_families']:
-                env.family_latent.data = prev_env.family_latent.data.clone()
-                env.concentration_model.mu.data = prev_env.concentration_model.mu.data.clone()
-                env.concentration_model.log_sigma.data = prev_env.concentration_model.log_sigma.data.clone()
 
     physics = BinaryReceptor(CONF["n_units"], CONF["k_sub"],temperature=CONF["temperature"]).to(device)
     
+    entropy_type = CONF.get('entropy_type', 'shannon')
     if CONF["loss"] == "exact":
-        loss_fn = DiscreteExactLoss().to(device)
+        loss_fn = DiscreteExactLoss(entropy_type=entropy_type).to(device)
     elif CONF["loss"] == "family":
-        loss_fn = MaximizeMutualInformationFamilyLoss().to(device)
+        loss_fn = MaximizeMutualInformationFamilyLoss(entropy_type=entropy_type).to(device)
     elif CONF["loss"]=="conc":
-        loss_fn = MaximizeMutualInformationConcentrationLoss().to(device)
+        loss_fn = MaximizeMutualInformationConcentrationLoss(entropy_type=entropy_type).to(device)
     elif CONF["loss"] == "proxy":
         loss_fn = DiscreteProxyLoss(cov_weight = CONF["cov_weight"]).to(device)
         
+    # Dampen the learning rate if we are injecting a pre-trained environment
+    # Otherwise, the initial massive Adam momentum will destroy the fine-tuned receptors
+    lr = CONF["lr"]
+    if prev_env is not None:
+        lr = lr * 0.1
+        
     optimizer = optim.Adam(list(env.parameters()) + 
                             list(physics.parameters()),
-                            lr=CONF["lr"])
+                            lr=lr)
     
     return env,physics,loss_fn,optimizer
 
@@ -135,6 +130,10 @@ def train(CONF:dict,
             
         if epoch % (CONF['epochs']//100) == 0:
             with torch.no_grad():
+                # Temporarily set to cold temperature to evaluate TRUE entropy without soft noise
+                if hasattr(physics, 'temperature'):
+                    physics.temperature = end_temp
+
                 # 1. Generate a large evaluation batch (configurable to prevent OOM)
                 eval_batch = CONF.get('eval_batch_size', 2**12)
                 E_open_stats, concs_stats, family_ids_stats = env.sample_batch(batch_size=eval_batch)
@@ -165,6 +164,10 @@ def train(CONF:dict,
                         name = getattr(fn, '__name__', str(fn))
                         stat[name] = result
                 stat['lr'] = optimizer.param_groups[0]['lr']
+
+                # Restore training temperature so gradients remain smooth
+                if hasattr(physics, 'temperature'):
+                    physics.temperature = current_temp
                 
                 stats.append(stat)
     stats = {key:[stats[i][key] for i in range(stats.__len__())] for key in stats[0].keys()}

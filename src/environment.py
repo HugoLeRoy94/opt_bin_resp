@@ -1,5 +1,6 @@
 import math
 import torch
+import copy
 import torch.nn as nn
 import torch.distributions as dist
 from typing import Tuple
@@ -218,6 +219,32 @@ class LigandEnvironment(nn.Module):
         initial_dist_sq = torch.cdist(self.unit_latent.data, fixed_families).pow(2).mean().item()
         self.base_energy_u = nn.Parameter(torch.ones(n_units) * (global_avg_log_c - initial_dist_sq))
         #self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
+
+    def clone_with_extra_units(self, extra_units: int = 1):
+        """
+        Creates a copy of the environment with additional units.
+        The new units are initialized randomly as in the constructor, 
+        while the existing units retain their learned parameters.
+        """
+        new_conc_model = copy.deepcopy(self.concentration_model)
+        
+        # Use self.__class__ to automatically support subclasses like SymmetricLigandEnvironment
+        new_env = self.__class__(
+            n_units=self.n_units + extra_units,
+            n_families=self.n_families,
+            conc_model=new_conc_model,
+            latent_dim=self.latent_dim,
+            shape_sigma=self.shape_sigma,
+            distribution_type=self.distribution_type,
+            avg_family_distance=self.avg_family_distance
+        ).to(self.unit_latent.device)
+        
+        with torch.no_grad():
+            new_env.family_latent.copy_(self.family_latent)
+            new_env.unit_latent.data[:self.n_units] = self.unit_latent.data.clone()
+            new_env.base_energy_u.data[:self.n_units] = self.base_energy_u.data.clone()
+            
+        return new_env
 
     def _generate_family_centers(self, n_families: int, latent_dim: int) -> torch.Tensor:
         """

@@ -116,7 +116,8 @@ if __name__ == "__main__":
                 # Update CONF for current parameters
                 CONF["n_units"] = n_units
                 # Generate heteromers matching the experimental exponential distribution
-                CONF["receptor_indices"] = generate_exp_distributed_receptors(N_receptors=n_units, n_units=n_units, k_sub=CONF['k_sub'])
+                CONF["receptor_indices"] = torch.tensor([[i for _ in range(CONF['k_sub'])] for i in range(n_units)], dtype=torch.long)
+                #generate_exp_distributed_receptors(N_receptors=n_units, n_units=n_units, k_sub=CONF['k_sub'])
 
                 env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False, prev_env=prev_env)
                 

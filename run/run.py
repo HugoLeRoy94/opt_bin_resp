@@ -180,9 +180,39 @@ def test(CONF:dict,
     optimizer:optim.Optimizer,
     indices:torch.Tensor,
     N_samples:int,
-    epoch:int = 100)->list:        
-    ents = []
-    for _ in range(epoch):
-        val = evaluate_model(env=env,physics=physics,receptor_indices=indices,loss_fn=loss_fn,n_samples=N_samples)
-        ents.append(val)
-    return ents
+    epoch:int = 100,
+    measurement_fns:list=None)->dict:        
+    
+    if measurement_fns is None:
+        measurement_fns = [full_array_entropy]
+        
+    stats = []
+    with torch.no_grad():
+        for i in range(epoch):
+            E_open_stats, concs_stats, family_ids_stats = env.sample_batch(batch_size=N_samples)
+            activity_stats = physics(E_open_stats, concs_stats, indices)
+            
+            stat = {}
+            for fn in measurement_fns:
+                sig = inspect.signature(fn)
+                kwargs = {}
+                
+                if 'env' in sig.parameters: kwargs['env'] = env
+                if 'physics' in sig.parameters: kwargs['physics'] = physics
+                if 'receptor_indices' in sig.parameters: kwargs['receptor_indices'] = indices
+                if 'loss_fn' in sig.parameters: kwargs['loss_fn'] = loss_fn
+                if 'activity' in sig.parameters: kwargs['activity'] = activity_stats
+                if 'epoch' in sig.parameters: kwargs['epoch'] = i
+                if 'concs' in sig.parameters: kwargs['concs'] = concs_stats
+                if 'family_ids' in sig.parameters: kwargs['family_ids'] = family_ids_stats
+                
+                result = fn(**kwargs)
+                if isinstance(result, dict):
+                    stat.update(result)
+                else:
+                    name = getattr(fn, '__name__', str(fn))
+                    stat[name] = result
+            stats.append(stat)
+            
+    stats_dict = {key: [stats[i][key] for i in range(len(stats))] for key in stats[0].keys()} if stats else {}
+    return stats_dict

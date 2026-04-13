@@ -145,14 +145,16 @@ if __name__ == "__main__":
                     logger = ExperimentLogger(base_path=base_dir, experiment_name=f"sample_{sample}")
                     logger.save_config(CONF)
 
-                    train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=[
+                    measurement_fns = [
                         full_array_entropy, 
                         mean_receptor_distance,
                         conditional_entropy_family,
                         mutual_information_family,
                         conditional_entropy_concentration,
                         mutual_information_concentration
-                    ])
+                    ]
+
+                    train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=measurement_fns)
 
                     # Save training statistics 
                     epochs_run = len(next(iter(train_out.values())))
@@ -171,11 +173,12 @@ if __name__ == "__main__":
                     test_batch_size = 100_000
                     test_results = test(
                         CONF, env, rec, loss_fn, optimize, 
-                        CONF["receptor_indices"], N_samples=test_batch_size, epoch=test_epochs
+                        CONF["receptor_indices"], N_samples=test_batch_size, epoch=test_epochs,
+                        measurement_fns=measurement_fns
                     )
                     
                     # Save test results
                     test_out_path = os.path.join(logger.run_dir, "test_results.json")
                     with open(test_out_path, "w") as f:
-                        clean_results = [float(val) if isinstance(val, torch.Tensor) else val for val in test_results]
-                        json.dump({"test_entropies": clean_results}, f, indent=4)
+                        clean_results = {k: [float(val) if isinstance(val, torch.Tensor) else val for val in v] for k, v in test_results.items()}
+                        json.dump(clean_results, f, indent=4)

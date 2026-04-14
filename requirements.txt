@@ -7,3 +7,4 @@ jupyter
 ipykernel
 seaborn
 umap-learn
+tqdm

@@ -209,6 +209,10 @@ class LigandEnvironment(nn.Module):
         # 1. The Octopus Adapts (Learnable Unit Coordinates)
         self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim) * 1.0)
         
+        # NEW: Sensitivity weights for each dimension (allows anisotropic receptive fields)
+        # Initialize to 0.0, so softplus(0) ~ 0.69 gives a balanced starting weight
+        self.unit_sensitivity_raw = nn.Parameter(torch.zeros(n_units, latent_dim))
+        
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
         self.register_buffer('family_latent', fixed_families)
@@ -216,7 +220,10 @@ class LigandEnvironment(nn.Module):
         # 3. Unit-specific Base Energies (Maximum intrinsic affinity)
         global_avg_log_c = self.concentration_model.get_expected_log_c().mean().item()
         # Dynamically subtract the initial expected distance squared to prevent dead sensors in high dimensions
-        initial_dist_sq = torch.cdist(self.unit_latent.data, fixed_families).pow(2).mean().item()
+        with torch.no_grad():
+            weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
+            diff = self.unit_latent.unsqueeze(1) - fixed_families.unsqueeze(0)
+            initial_dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1).mean().item()
         self.base_energy_u = nn.Parameter(torch.ones(n_units) * (global_avg_log_c - initial_dist_sq))
         #self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
 
@@ -242,6 +249,7 @@ class LigandEnvironment(nn.Module):
         with torch.no_grad():
             new_env.family_latent.copy_(self.family_latent)
             new_env.unit_latent.data[:self.n_units] = self.unit_latent.data.clone()
+            new_env.unit_sensitivity_raw.data[:self.n_units] = self.unit_sensitivity_raw.data.clone()
             new_env.base_energy_u.data[:self.n_units] = self.base_energy_u.data.clone()
             
         return new_env
@@ -272,7 +280,9 @@ class LigandEnvironment(nn.Module):
         Returns the MEAN open-state energy for each unit against each family's exact center.
         Shape: (n_units, n_families)
         """
-        dist_sq = torch.cdist(self.unit_latent, self.family_latent, p=2.0) ** 2
+        weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
+        diff = self.unit_latent.unsqueeze(1) - self.family_latent.unsqueeze(0) # (U, F, D)
+        dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, F)
         
         mu_open = self.base_energy_u.unsqueeze(1) + dist_sq
         return mu_open
@@ -315,7 +325,9 @@ class LigandEnvironment(nn.Module):
             v_ligands = ligand_dist.rsample()
             
         # 4. Calculate Energies based on Distance
-        dist_sq = torch.cdist(v_ligands, self.unit_latent, p=2.0) ** 2 # Shape: (Batch, n_units)
+        weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
+        diff = v_ligands.unsqueeze(1) - self.unit_latent.unsqueeze(0) # (Batch, U, D)
+        dist_sq = (weights.unsqueeze(0) * (diff ** 2)).sum(dim=-1) # (Batch, U)
         
         E_open = self.base_energy_u + dist_sq
         

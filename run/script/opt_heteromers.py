@@ -112,7 +112,7 @@ if __name__ == "__main__":
                             break
                             
                         # Set up the parameter-specific base directory
-                        base_dir = f"/app/data/heteromers/families_{n_families}/dim_{latent_dim}/n_units_{n_units}/n_receptors_{n_receptors}"
+                        base_dir = f"/app/data/heteromers_weighted/families_{n_families}/dim_{latent_dim}/n_units_{n_units}/n_receptors_{n_receptors}"
                         os.makedirs(base_dir, exist_ok=True)
 
                         # Check if this exact sample has already been computed

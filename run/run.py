@@ -90,7 +90,7 @@ def train(CONF:dict,
 
     # Set up Temperature Annealing
     start_temp = 1.0
-    end_temp = CONF.get("temperature", 0.1)
+    end_temp = CONF["temperature"]
     print(end_temp)
 
     scheduler = None
@@ -102,7 +102,10 @@ def train(CONF:dict,
         optimizer.zero_grad()
         
         # Slower linear temperature decay allows receptors to traverse the high-dimensional void without freezing
-        current_temp = end_temp + (start_temp - end_temp) * (1.0 - (epoch / CONF['epochs']))
+        if end_temp < start_temp:
+            current_temp = end_temp + (start_temp - end_temp) * (1.0 - (epoch / CONF['epochs']))
+        else:
+            current_temp = end_temp
         if hasattr(physics, 'temperature'):
             physics.temperature = current_temp
 

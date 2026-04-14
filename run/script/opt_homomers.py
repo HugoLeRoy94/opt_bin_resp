@@ -47,8 +47,8 @@ CONF = {
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance" : 5.0,
-    "shape_sigma": 1.5, # Will be set in the loop
+    "average_family_distance" : 1.5, # Squeeze them tightly together
+    "shape_sigma": 2.0, # Make the clouds fatter so they overlap heavily
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
@@ -89,7 +89,8 @@ if __name__ == "__main__":
                 CONF["latent_dim"] = latent_dim
                 
                 
-                CONF["init_means"] = [np.random.randint(1, 8) for _ in range(n_families)]
+                # Align the concentration means so they exist in the same intensity range
+                CONF["init_means"] = [np.random.uniform(3.0, 5.0) for _ in range(n_families)]
                 
                 for n_units in n_units_list:
                     # Set up the parameter-specific base directory

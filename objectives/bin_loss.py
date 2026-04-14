@@ -42,39 +42,53 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     if B <= chunk_size:
         S_R = soft_assign.permute(1, 0, 2)
         # Compute all pairs, then multiply along the receptor dimension
-        match_probs = torch.prod(torch.bmm(S_R, S_R.permute(0, 2, 1)), dim=0) # (B, B)
+        match_prob_per_receptor = torch.bmm(S_R, S_R.permute(0, 2, 1)) # (R, B, B)
+        
+        # Switch to log-space to avoid numerical underflow from product over R
+        # This is the log-sum-exp trick for stable computation of log(mean(prod(P)))
+        # Add a tiny epsilon to prevent log(0)
+        log_match_prob_per_receptor = torch.log(match_prob_per_receptor + 1e-40)
+        log_match_probs = torch.sum(log_match_prob_per_receptor, dim=0) # (B, B)
+
         # Remove the diagonal (self-collisions) which artificially inflates the probability
         mask = ~torch.eye(B, dtype=torch.bool, device=soft_assign.device)
-        collision_prob = match_probs[mask].mean()
+        log_match_probs_flat = log_match_probs[mask]
+
+        # H2 = -log2(mean(exp(log_probs)))
+        #    = -[ log(mean(exp(log_probs))) / log(2) ]
+        #    = -[ (logsumexp(log_probs) - log(N)) / log(2) ]
+        num_pairs = log_match_probs_flat.numel()
+        log_mean_coll_prob_nats = torch.logsumexp(log_match_probs_flat, dim=0) - math.log(num_pairs)
+        joint_h = -log_mean_coll_prob_nats / math.log(2)
+
     else:
         # Chunked evaluation: average the collision probability over multiple 
         # independent sub-batches. This reduces estimator variance
         # while keeping autograd memory usage strictly bounded.
         max_chunks = 8 # Process up to 8 chunks (16,384 ligands) per step
         n_chunks = min(B // chunk_size, max_chunks)
-        
         indices = torch.randperm(B, device=soft_assign.device)
-        total_collision_prob = 0.0
-        
+
+        # Collect all cross-chunk log-probabilities to average them correctly at the end
+        all_log_match_probs = []
+
         # Calculate cross-chunk collisions (A vs B) to completely avoid self-collisions
-        comparisons = 0
         for i in range(n_chunks - 1):
             idx_A = indices[i * chunk_size : (i + 1) * chunk_size]
             idx_B = indices[(i + 1) * chunk_size : (i + 2) * chunk_size]
             
             S_A = soft_assign[idx_A].permute(1, 0, 2) # (R, chunk, K)
             S_B = soft_assign[idx_B].permute(1, 0, 2) # (R, chunk, K)
-            
-            # BMM yields (R, chunk, chunk), prod yields (chunk, chunk)
-            match_probs = torch.prod(torch.bmm(S_A, S_B.permute(0, 2, 1)), dim=0)
-            total_collision_prob = total_collision_prob + match_probs.mean()
-            comparisons += 1
-            
-        collision_prob = total_collision_prob / comparisons
-    
-    # Rényi Entropy of order 2 (in bits)
-    collision_prob_safe = torch.clamp(collision_prob, min=1e-12)
-    joint_h = -torch.log2(collision_prob_safe)
+
+            match_prob_per_receptor = torch.bmm(S_A, S_B.permute(0, 2, 1))
+            log_match_prob_per_receptor = torch.log(match_prob_per_receptor + 1e-40)
+            log_match_probs = torch.sum(log_match_prob_per_receptor, dim=0)
+            all_log_match_probs.append(log_match_probs)
+
+        full_log_match_probs = torch.cat([t.flatten() for t in all_log_match_probs])
+        num_pairs = full_log_match_probs.numel()
+        log_mean_coll_prob_nats = torch.logsumexp(full_log_match_probs, dim=0) - math.log(num_pairs)
+        joint_h = -log_mean_coll_prob_nats / math.log(2)
 
     return joint_h
 

@@ -10,7 +10,7 @@ class MaximizeMutualInformationConcentrationLoss(nn.Module):
     This is achieved by minimizing the loss:
     Loss = H(A | C) - H(A)
     """
-    def __init__(self, n_c_bins=10, entropy_type: str = 'shannon'):
+    def __init__(self, n_c_bins=10, entropy_type: str = 'renyi'):
         super().__init__()
         self.n_c_bins = n_c_bins
         self.entropy_type = entropy_type

@@ -10,7 +10,7 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
     This is achieved by minimizing the loss:
     Loss = H(A | F) - H(A)
     """
-    def __init__(self, entropy_type: str = 'shannon'):
+    def __init__(self, entropy_type: str = 'renyi'):
         super().__init__()
         self.entropy_type = entropy_type
 

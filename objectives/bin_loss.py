@@ -41,8 +41,11 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     
     if B <= chunk_size:
         S_R = soft_assign.permute(1, 0, 2)
-        match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
-        collision_prob = torch.prod(match_probs, dim=0).mean()
+        # Compute all pairs, then multiply along the receptor dimension
+        match_probs = torch.prod(torch.bmm(S_R, S_R.permute(0, 2, 1)), dim=0) # (B, B)
+        # Remove the diagonal (self-collisions) which artificially inflates the probability
+        mask = ~torch.eye(B, dtype=torch.bool, device=soft_assign.device)
+        collision_prob = match_probs[mask].mean()
     else:
         # Chunked evaluation: average the collision probability over multiple 
         # independent sub-batches. This reduces estimator variance
@@ -53,14 +56,21 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         indices = torch.randperm(B, device=soft_assign.device)
         total_collision_prob = 0.0
         
-        for i in range(n_chunks):
-            chunk_idx = indices[i * chunk_size : (i + 1) * chunk_size]
-            S_R = soft_assign[chunk_idx].permute(1, 0, 2)
+        # Calculate cross-chunk collisions (A vs B) to completely avoid self-collisions
+        comparisons = 0
+        for i in range(n_chunks - 1):
+            idx_A = indices[i * chunk_size : (i + 1) * chunk_size]
+            idx_B = indices[(i + 1) * chunk_size : (i + 2) * chunk_size]
             
-            match_probs = torch.bmm(S_R, S_R.permute(0, 2, 1))
-            total_collision_prob = total_collision_prob + torch.prod(match_probs, dim=0).mean()
+            S_A = soft_assign[idx_A].permute(1, 0, 2) # (R, chunk, K)
+            S_B = soft_assign[idx_B].permute(1, 0, 2) # (R, chunk, K)
             
-        collision_prob = total_collision_prob / n_chunks
+            # BMM yields (R, chunk, chunk), prod yields (chunk, chunk)
+            match_probs = torch.prod(torch.bmm(S_A, S_B.permute(0, 2, 1)), dim=0)
+            total_collision_prob = total_collision_prob + match_probs.mean()
+            comparisons += 1
+            
+        collision_prob = total_collision_prob / comparisons
     
     # Rényi Entropy of order 2 (in bits)
     collision_prob_safe = torch.clamp(collision_prob, min=1e-12)

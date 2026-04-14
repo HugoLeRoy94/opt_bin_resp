@@ -40,7 +40,7 @@ latent_dim_list = [3, 7, 10]
 n_units_list = [1,2,3,5,7,8,10,12,15,20,30,50]
 n_samples = 5 # Number of independent runs to estimate standard deviation
 
-N_train = 2**11
+N_train = 2**14
 
 CONF = {
     # environment

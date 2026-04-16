@@ -38,22 +38,22 @@ from src.IO import ExperimentLogger, ExperimentLoader
 
 latent_dim_list = [3, 7, 10,15,20]
 n_units_list = [1,2,3,5,7,8,10,12,15,20,30,50]
-n_samples = 5 # Number of independent runs to estimate standard deviation
+n_samples = 10 # Number of independent runs to estimate standard deviation
 
-N_train = 2**14
+N_train = 2**12
 
 CONF = {
     # environment
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance" : 2., # Squeeze them tightly together
+    "average_family_distance" : 5., # Squeeze them tightly together
     "shape_sigma": .1, # Make the clouds fatter so they overlap heavily
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
     "k_sub": 5, # number of sub-units
-    "temperature": 1., # temperature of the sigmoid that approximate a binary answer
+    "temperature": .1, # temperature of the sigmoid that approximate a binary answer
     "n_units" : 0, # number of genes
     "receptor_indices" : None, # actual receptors considered
     
@@ -141,7 +141,11 @@ if __name__ == "__main__":
                         conditional_entropy_family,
                         mutual_information_family,
                         conditional_entropy_concentration,
-                        mutual_information_concentration
+                        mutual_information_concentration,
+                        receptor_distances,
+                        rank_ordered_distances,
+                        mean_specialization_index,
+                        receptor_conditioned_entropy
                     ]
 
                     train_out = train(CONF, env, rec, loss_fn, optimize, measurement_fns=measurement_fns)

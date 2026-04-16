@@ -34,7 +34,10 @@ from src import (generate_receptor_indices,
                 conditional_entropy_family,
                 mutual_information_family,
                 conditional_entropy_concentration,
-                mutual_information_concentration)
+                mutual_information_concentration,
+                rank_ordered_distances,
+                mean_specialization_index,
+                receptor_conditioned_entropy)
 from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader
 

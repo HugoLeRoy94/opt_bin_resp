@@ -534,3 +534,95 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_c = conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=n_c_bins)
     return h_a_val - h_a_given_c
+
+@torch.no_grad()
+def rank_ordered_distances(env, receptor_indices):
+    """
+    Calculates the rank-ordered distance from each receptor to the family centers.
+    Returns a dictionary of the average distance to the 1st closest, 2nd closest, etc.
+    This bypasses the label-switching problem to measure spatial tuning.
+    """
+    # Calculate the centroid of each assembled receptor: (N_Receptors, latent_dim)
+    v_receptors = env.unit_latent[receptor_indices].mean(dim=1)
+    v_families = env.family_latent
+    
+    # Pairwise distances from every receptor to every family center
+    dists = torch.cdist(v_receptors, v_families, p=2.0) # (N_Receptors, n_families)
+    
+    # Sort distances for each receptor in ascending order
+    sorted_dists, _ = torch.sort(dists, dim=1) 
+    
+    # Average across all receptors
+    mean_sorted_dists = sorted_dists.mean(dim=0).cpu().numpy()
+    
+    result = {}
+    for i, dist in enumerate(mean_sorted_dists):
+        result[f"dist_rank_{i+1}"] = float(dist)
+        
+    return result
+
+@torch.no_grad()
+def mean_specialization_index(activity, family_ids):
+    """
+    Computes the signal-to-noise ratio of receptor activation.
+    S_r = (A_max - A_bg) / (A_max + A_bg)
+    A value of 1.0 means a perfect specialist, 0.0 means a perfect generalist.
+    """
+    B, R = activity.shape
+    unique_families = torch.unique(family_ids)
+    n_families = len(unique_families)
+    
+    if n_families <= 1:
+        return 0.0 # Cannot compute background with only 1 family
+        
+    avg_act = torch.zeros(n_families, R, device=activity.device)
+    
+    for i, f_idx in enumerate(unique_families):
+        mask = (family_ids == f_idx)
+        if mask.any():
+            avg_act[i] = activity[mask].mean(dim=0)
+            
+    A_max, _ = avg_act.max(dim=0) # (R,)
+    A_bg = (avg_act.sum(dim=0) - A_max) / (n_families - 1) # (R,)
+    
+    S_r = (A_max - A_bg) / (A_max + A_bg + 1e-12)
+    return float(S_r.mean().item())
+
+@torch.no_grad()
+def receptor_conditioned_entropy(activity, family_ids, threshold=0.5):
+    """
+    Computes the average entropy of the family distribution conditioned on a receptor firing:
+    H(F | a_r > threshold). 
+    A lower value indicates a more highly specialized receptor.
+    """
+    B, R = activity.shape
+    unique_families = torch.unique(family_ids)
+    
+    if len(unique_families) <= 1:
+        return 0.0
+        
+    total_entropy = 0.0
+    valid_receptors = 0
+    
+    for r in range(R):
+        active_mask = activity[:, r] > threshold
+        if not active_mask.any():
+            continue # Receptor never fired in this batch, skip
+            
+        active_families = family_ids[active_mask]
+        
+        # Compute family frequencies for when this receptor fires
+        family_counts = torch.bincount(active_families, minlength=torch.max(unique_families)+1)
+        family_counts = family_counts[unique_families] # Filter to only the existing families
+        
+        p_f = family_counts.float() / active_families.size(0)
+        p_f = p_f[p_f > 0] # Filter out zeros to avoid log2(0) NaN
+        
+        h_r = -torch.sum(p_f * torch.log2(p_f))
+        total_entropy += h_r.item()
+        valid_receptors += 1
+        
+    if valid_receptors == 0:
+        return 0.0
+        
+    return total_entropy / valid_receptors

@@ -22,7 +22,10 @@ from .analysis_helper import (plot_family_summary,
                                 conditional_entropy_family,
                                 mutual_information_family,
                                 conditional_entropy_concentration,
-                                mutual_information_concentration)
+                                mutual_information_concentration,
+                                rank_ordered_distances,
+                                mean_specialization_index,
+                                receptor_conditioned_entropy)
 from .IO import ExperimentLoader,ExperimentLogger
 
 # Exposing these allows for clean imports like:
@@ -31,8 +34,8 @@ __all__ = [
     "LigandEnvironment",
     "SymmetricLigandEnvironment",
     "BinaryReceptor",
-    "BaseReceptor"
-    "MWC·Receptor",
+    "BaseReceptor",
+    "MWCReceptor",
     "ConcentrationModel", 
     "LogNormalConcentration", 
     "NormalConcentration",
@@ -53,8 +56,11 @@ __all__ = [
     "mutual_information_family",
     "conditional_entropy_concentration",
     "mutual_information_concentration",
+    "rank_ordered_distances",
+    "mean_specialization_index",
+    "receptor_conditioned_entropy",
     "ExperimentLogger",
     "ExperimentLoader",
-    "evaluate_model"
+    "evaluate_model",
     "plot_latent_radar_chart"
 ]

@@ -39,7 +39,7 @@ from src import (generate_receptor_indices,
                 mean_specialization_index,
                 receptor_conditioned_entropy)
 from run import initialize,train,test
-from src.IO import ExperimentLogger, ExperimentLoader
+from src.IO import ExperimentLogger, ExperimentLoader,CustomJSONEncoder
 
 
 latent_dim_list = [3, 7, 10,15,20]
@@ -195,7 +195,7 @@ if __name__ == "__main__":
                         test_out_path = os.path.join(logger.run_dir, "test_results.json")
                         with open(test_out_path, "w") as f:
                             clean_results = {k: [float(val) if isinstance(val, torch.Tensor) else val for val in v] for k, v in test_results.items()}
-                            json.dump(clean_results, f, indent=4)
+                            json.dump(clean_results, f, indent=4,cls=CustomJSONEncoder)
                             
                         pbar.update(1)
 

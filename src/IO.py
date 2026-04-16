@@ -20,9 +20,10 @@ class CustomJSONEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         if isinstance(obj, (np.integer, np.floating)):
-            return obj.item()
+            return obj.item()        
+        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+            return 0.0 # Or 0.0, or "NaN"
         return super().default(obj)
-
 # ==========================================
 # 1. MOTHER CLASS (Path Management)
 # ==========================================

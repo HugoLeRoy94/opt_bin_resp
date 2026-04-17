@@ -38,9 +38,9 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader, CustomJSONEncoder
 
-
+base_dir = f"/app/data/homomers_evolution/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
 latent_dim_list = [3, 7, 10]
-n_units_list = [1,2,3,5,7,8,10,12,15,25]
+n_units_list = [10,20,30]
 n_samples = 5 # Number of independent runs to estimate standard deviation
 
 N_train = 2**12
@@ -62,7 +62,7 @@ CONF = {
     
     # training characteristics
     "batch_size": N_train,
-    "epochs": 500,
+    "epochs": 5000,
 
 
     "lr": 0.05, # learning rate
@@ -96,8 +96,7 @@ if __name__ == "__main__":
                 CONF["init_means"] = [np.random.uniform(3.0, 5.0) for _ in range(n_families)]
                 
                 for n_units in n_units_list:
-                    # Set up the parameter-specific base directory
-                    base_dir = f"/app/data/homomers/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
+                    # Set up the parameter-specific base directory                    
                     os.makedirs(base_dir, exist_ok=True)
 
                     tqdm.write(f"\n--- Training: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} ---")
@@ -108,7 +107,7 @@ if __name__ == "__main__":
                     CONF["receptor_indices"] = torch.tensor([[i for _ in range(CONF['k_sub'])] for i in range(n_units)], dtype=torch.long)
                     #generate_exp_distributed_receptors(N_receptors=n_units, n_units=n_units, k_sub=CONF['k_sub'])
 
-                    env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False, prev_env=prev_env)
+                    env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)#, prev_env=prev_env)
                     
                     prev_env = env
 

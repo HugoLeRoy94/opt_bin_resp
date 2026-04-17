@@ -127,10 +127,9 @@ class ExperimentLoader(BaseIO):
         """Returns a chronological list of all saved checkpoint dictionaries."""
         files = sorted([f for f in os.listdir(self.ckpt_dir) if f.endswith('.pt')])
         return [torch.load(os.path.join(self.ckpt_dir, f), map_location=map_location) for f in files]
-    
+        
     def load_objects(self, filename="best_model.pt", device='cpu'):
         """Reconstructs fully functional PyTorch objects from the saved files."""
-        # Note: You must import LigandEnvironment, Receptor, etc., in the script using this!
         
         # 1. Load the separated config and history
         c = self.load_config()
@@ -141,9 +140,19 @@ class ExperimentLoader(BaseIO):
         
         # 3. Rebuild empty objects based on config
         strat = LogNormalConcentration(n_families=c['n_families'], init_mean=5.0)
-        e = LigandEnvironment(c['n_units'], c['n_families'], latent_dim=c.get('latent_dim', 3), conc_model=strat)
+        
+        # FIX: Pass shape_sigma and avg_family_distance using c.get()
+        e = LigandEnvironment(
+            n_units=c['n_units'], 
+            n_families=c['n_families'], 
+            latent_dim=c['latent_dim'],
+            shape_sigma=c['shape_sigma'],
+            avg_family_distance=c['average_family_distance'],
+            conc_model=strat
+        )
+        
         p = BinaryReceptor(c['n_units'], c['k_sub'])
-        l = ExactInformationLoss(k_knn=c.get('k_knn', 5)) # Use .get() for safety
+        l = ExactInformationLoss(k_knn=c.get('k_knn', 5)) 
         
         # 4. Inject states
         e.load_state_dict(ckpt['env_state'])

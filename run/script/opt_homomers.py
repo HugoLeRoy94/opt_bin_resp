@@ -38,7 +38,7 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader, CustomJSONEncoder
 
-base_dir = f"/app/data/homomers_evolution/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
+base_folder = "/app/data/homomers_evolution"
 latent_dim_list = [3, 7, 10]
 n_units_list = [10,20,30]
 n_samples = 5 # Number of independent runs to estimate standard deviation
@@ -96,7 +96,8 @@ if __name__ == "__main__":
                 CONF["init_means"] = [np.random.uniform(3.0, 5.0) for _ in range(n_families)]
                 
                 for n_units in n_units_list:
-                    # Set up the parameter-specific base directory                    
+                    # Set up the parameter-specific base directory
+                    base_dir = base_folder+f"/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"                  
                     os.makedirs(base_dir, exist_ok=True)
 
                     tqdm.write(f"\n--- Training: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} ---")

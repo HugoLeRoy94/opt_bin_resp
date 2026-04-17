@@ -39,9 +39,9 @@ from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader, CustomJSONEncoder
 
 
-latent_dim_list = [3, 7, 10,15,20]
-n_units_list = [1,2,3,5,7,8,10,12,15,20,30,50]
-n_samples = 10 # Number of independent runs to estimate standard deviation
+latent_dim_list = [3, 7, 10]
+n_units_list = [1,2,3,5,7,8,10,12,15,25]
+n_samples = 5 # Number of independent runs to estimate standard deviation
 
 N_train = 2**12
 
@@ -50,7 +50,7 @@ CONF = {
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance" : 5., # Squeeze them tightly together
+    "average_family_distance" : 10., # Squeeze them tightly together
     "shape_sigma": .1, # Make the clouds fatter so they overlap heavily
         # concentration
     "init_means": [], # Will be set in the loop
@@ -100,28 +100,6 @@ if __name__ == "__main__":
                     base_dir = f"/app/data/homomers/families_{n_families}/dim_{latent_dim}/n_units_{n_units}"
                     os.makedirs(base_dir, exist_ok=True)
 
-                    # Check if this exact sample has already been computed
-                    existing_dirs = [d for d in os.listdir(base_dir) if d.startswith(f"sample_{sample}")]
-                    already_computed_dirs = [d for d in existing_dirs if os.path.exists(os.path.join(base_dir, d, "test_results.json"))]
-                    
-                    if len(already_computed_dirs) > 0:
-                        tqdm.write(f"Skipping: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} (Already exists)")
-                        # Load the environment to pass it to the next n_units iteration
-                        exact_run_folder = os.path.join(base_dir, already_computed_dirs[0])
-                        try:
-                            device = "cuda" if torch.cuda.is_available() else "cpu"
-                            loader = ExperimentLoader(exact_run_folder=exact_run_folder)
-                            e, _, _, _, _, c = loader.load_objects(device=device)
-                            prev_env = e
-                            # Sync the running config to match the loaded environment's initialization
-                            if "init_means" in c:
-                                CONF["init_means"] = c["init_means"]
-                        except Exception as ex:
-                            tqdm.write(f"Warning: Could not load previous environment from {exact_run_folder}: {ex}")
-                            prev_env = None
-                        pbar.update(1)
-                        continue
-                        
                     tqdm.write(f"\n--- Training: Families={n_families}, Dim={latent_dim}, Units={n_units}, Sample={sample+1}/{n_samples} ---")
                     
                     # Update CONF for current parameters

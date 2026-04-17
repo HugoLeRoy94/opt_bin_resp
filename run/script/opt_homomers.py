@@ -38,9 +38,9 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader, CustomJSONEncoder
 
-base_folder = "/app/data/homomers_evolution"
+base_folder = "/app/data/homomers"
 latent_dim_list = [3, 7, 10]
-n_units_list = [10,20,30]
+n_units_list = [1,2,3,5,7,8,10,12,15,20,30]
 n_samples = 5 # Number of independent runs to estimate standard deviation
 
 N_train = 2**12
@@ -50,7 +50,7 @@ CONF = {
         # energies
     "n_families": 0, # Will be set in the loop
     "latent_dim": 0, # Will be set in the loop
-    "average_family_distance" : 10., # Squeeze them tightly together
+    "average_family_distance" : 5., # Squeeze them tightly together
     "shape_sigma": .1, # Make the clouds fatter so they overlap heavily
         # concentration
     "init_means": [], # Will be set in the loop
@@ -62,7 +62,7 @@ CONF = {
     
     # training characteristics
     "batch_size": N_train,
-    "epochs": 5000,
+    "epochs": 500,
 
 
     "lr": 0.05, # learning rate
@@ -108,7 +108,7 @@ if __name__ == "__main__":
                     CONF["receptor_indices"] = torch.tensor([[i for _ in range(CONF['k_sub'])] for i in range(n_units)], dtype=torch.long)
                     #generate_exp_distributed_receptors(N_receptors=n_units, n_units=n_units, k_sub=CONF['k_sub'])
 
-                    env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False)#, prev_env=prev_env)
+                    env, rec, loss_fn, optimize = initialize(CONF, SymmetricEnv=False, prev_env=prev_env)
                     
                     prev_env = env
 

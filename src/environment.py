@@ -177,7 +177,7 @@ class NormalConcentration(ConcentrationModel):
 class LigandEnvironment(nn.Module):
     def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel, 
                  latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian',
-                 avg_family_distance: float = 5.0):
+                 avg_family_distance: float = 5.0, use_sensitivity: bool = True):
         """
         Args:
             n_units: Number of protein units
@@ -210,8 +210,13 @@ class LigandEnvironment(nn.Module):
         self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim) * 1.0)
         
         # NEW: Sensitivity weights for each dimension (allows anisotropic receptive fields)
-        # Initialize to 0.0, so softplus(0) ~ 0.69 gives a balanced starting weight
-        self.unit_sensitivity_raw = nn.Parameter(torch.zeros(n_units, latent_dim))
+        if self.use_sensitivity:
+            # Register a non-learnable buffer. We set it to ln(e - 1) ≈ 0.5413 so that
+            # torch.nn.functional.softplus(unit_sensitivity_raw) exactly equals 1.0 everywhere.
+            self.register_buffer('unit_sensitivity_raw', torch.full((n_units, latent_dim), math.log(math.e - 1)))
+        else:
+            # Initialize to 0.0, so softplus(0) ~ 0.69 gives a balanced starting weight
+            self.unit_sensitivity_raw = nn.Parameter(torch.zeros(n_units, latent_dim))
         
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -243,7 +248,8 @@ class LigandEnvironment(nn.Module):
             latent_dim=self.latent_dim,
             shape_sigma=self.shape_sigma,
             distribution_type=self.distribution_type,
-            avg_family_distance=self.avg_family_distance
+            avg_family_distance=self.avg_family_distance,
+            use_sensitivity=self.use_sensitivity
         ).to(self.unit_latent.device)
         
         with torch.no_grad():

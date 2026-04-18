@@ -47,7 +47,8 @@ def initialize(CONF:dict,SymmetricEnv=False, prev_env=None)->tuple[LigandEnviron
                         latent_dim=CONF['latent_dim'],
                         shape_sigma=CONF['shape_sigma'],
                         distribution_type=CONF.get('distribution_type', 'gaussian'),
-                        avg_family_distance=CONF["average_family_distance"]).to(device)
+                        avg_family_distance=CONF["average_family_distance"],
+                        use_sensitivity=CONF["use_sensitivity"]).to(device)
 
     physics = BinaryReceptor(CONF["n_units"], CONF["k_sub"],temperature=CONF["temperature"]).to(device)
     

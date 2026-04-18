@@ -52,6 +52,7 @@ CONF = {
     "latent_dim": 0, # Will be set in the loop
     "average_family_distance" : 5., # Squeeze them tightly together
     "shape_sigma": .1, # Make the clouds fatter so they overlap heavily
+    "use_sensitivity": False, # Set to False to remove sensitivity scaling (equates to 1 everywhere)
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 

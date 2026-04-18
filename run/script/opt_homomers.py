@@ -38,7 +38,7 @@ from src import (generate_receptor_indices,
 from run import initialize,train,test
 from src.IO import ExperimentLogger, ExperimentLoader, CustomJSONEncoder
 
-base_folder = "/app/data/homomers"
+base_folder = "/app/data/homomers_w"
 latent_dim_list = [3, 7, 10]
 n_units_list = [1,2,3,5,7,8,10,12,15,20,30]
 n_samples = 5 # Number of independent runs to estimate standard deviation

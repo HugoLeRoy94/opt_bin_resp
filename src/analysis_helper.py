@@ -228,8 +228,14 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     selected_energies = receptor_energies[receptors_to_plot]
     
     # 3. Convert Energy to Affinity Score
+    #max_energy = np.max(receptor_energies)
+    #affinity_scores = max_energy - selected_energies 
+    # Normalize to [0, 1] so radar charts are comparable across different runs/epochs
     max_energy = np.max(receptor_energies)
-    affinity_scores = max_energy - selected_energies 
+    min_energy = np.min(receptor_energies)
+    
+    # Add a tiny epsilon to the denominator to prevent division by zero
+    affinity_scores = (max_energy - selected_energies) / (max_energy - min_energy + 1e-8)
 
     # 4. Setup Radar Chart Angles
     if family_names is None:
@@ -248,8 +254,13 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(family_names, fontsize=10)
-    ax.set_yticks([]) 
+    #ax.set_yticks([]) 
     
+    # Optional: explicitly set the radial bounds to [0, 1] for the normalized scores
+    ax.set_ylim(0, 1.05)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels([]) # Keep it clean by hiding the numeric labels
+
     colors = plt.cm.tab10.colors 
     
     # Plot each Receptor's polygon

@@ -56,6 +56,7 @@ CONF = {
     "latent_dim": 0, # Will be set in the loop
     "average_family_distance" : 5.0,
     "shape_sigma": .1, # Will be set in the loop
+    "use_sensitivity": False, # Set to False to remove sensitivity scaling (equates to 1 everywhere)
         # concentration
     "init_means": [], # Will be set in the loop
     # receptor 
@@ -166,7 +167,8 @@ if __name__ == "__main__":
                         
                         # Run test measurements for std deviation estimation
                         test_epochs = 10
-                        test_batch_size = 100_000
+                        # Dynamically scale to ensure at least 2000 samples per family
+                        test_batch_size = max(100_000, CONF["n_families"] * 2000)
                         test_results = test(
                             CONF, env, rec, loss_fn, optimize, 
                             CONF["receptor_indices"], N_samples=test_batch_size, epoch=test_epochs,

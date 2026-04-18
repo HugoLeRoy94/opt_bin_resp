@@ -146,7 +146,8 @@ if __name__ == "__main__":
                     
                     # Run test measurements for std deviation estimation
                     test_epochs = 10
-                    test_batch_size = 100_000
+                    # Dynamically scale to ensure at least 2000 samples per family
+                    test_batch_size = max(100_000, CONF["n_families"] * 2000)
                     test_results = test(
                         CONF, env, rec, loss_fn, optimize, 
                         CONF["receptor_indices"], N_samples=test_batch_size, epoch=test_epochs,

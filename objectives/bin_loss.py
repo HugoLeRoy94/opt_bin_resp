@@ -66,7 +66,7 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         # independent sub-batches. This reduces estimator variance
         # while keeping autograd memory usage strictly bounded.
         max_chunks = 8 # Process up to 8 chunks (16,384 ligands) per step
-        n_chunks = min(B // chunk_size, max_chunks)
+        n_chunks = min(math.ceil(B / chunk_size), max_chunks)
         indices = torch.randperm(B, device=soft_assign.device)
 
         # Collect all cross-chunk log-probabilities to average them correctly at the end

@@ -212,7 +212,7 @@ class LigandEnvironment(nn.Module):
         self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim) * 1.0)
         
         # NEW: Sensitivity weights for each dimension (allows anisotropic receptive fields)
-        if self.use_sensitivity:
+        if not self.use_sensitivity:
             # Register a non-learnable buffer. We set it to ln(e - 1) ≈ 0.5413 so that
             # torch.nn.functional.softplus(unit_sensitivity_raw) exactly equals 1.0 everywhere.
             self.register_buffer('unit_sensitivity_raw', torch.full((n_units, latent_dim), math.log(math.e - 1)))

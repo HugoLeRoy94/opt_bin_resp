@@ -177,7 +177,7 @@ class NormalConcentration(ConcentrationModel):
 class LigandEnvironment(nn.Module):
     def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel, 
                  latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian',
-                 avg_family_distance: float = 5.0, use_sensitivity: bool = True):
+                 avg_family_distance: float = 5.0, use_sensitivity: bool = False):
         """
         Args:
             n_units: Number of protein units
@@ -189,11 +189,13 @@ class LigandEnvironment(nn.Module):
             avg_family_distance: Target average Euclidean distance between ligand families.
         """
         super().__init__()
+        self.use_unit_sensitivity = use_unit_sensitivity
         self.n_units = n_units
         self.n_families = n_families
         self.latent_dim = latent_dim
         self.shape_sigma = shape_sigma
         self.avg_family_distance = avg_family_distance
+
         
         if distribution_type not in ['gaussian', 'uniform']:
             raise ValueError("distribution_type must be 'gaussian' or 'uniform'")

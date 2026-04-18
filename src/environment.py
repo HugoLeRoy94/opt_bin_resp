@@ -189,7 +189,7 @@ class LigandEnvironment(nn.Module):
             avg_family_distance: Target average Euclidean distance between ligand families.
         """
         super().__init__()
-        self.use_unit_sensitivity = use_unit_sensitivity
+        self.use_sensitivity = use_unit_sensitivity
         self.n_units = n_units
         self.n_families = n_families
         self.latent_dim = latent_dim

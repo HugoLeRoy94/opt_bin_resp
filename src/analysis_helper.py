@@ -213,13 +213,14 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     """
     n_families = env.n_families
     
-    # 1. Fetch exact Unit Energies: (n_units, n_families)
-    unit_energies = env.interaction_mu.cpu()
+    # 1. Fetch exact Unit-Family Interaction Energies: (n_units, n_families)
+    # This matrix contains the interaction energy of each unit against the average (center) of each family.
+    unit_family_energies = env.interaction_mu.cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)
     # Mean across k_sub yields (N_Receptors, n_families)
-    receptor_energies = unit_energies[receptor_indices].mean(dim=1).numpy()
+    receptor_energies = unit_family_energies[receptor_indices].mean(dim=1).numpy()
     
     # Select which specific receptors to plot (default to first 5 if not specified to avoid clutter)
     if receptors_to_plot is None:
@@ -235,7 +236,7 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     min_energy = np.min(receptor_energies)
     
     # Add a tiny epsilon to the denominator to prevent division by zero
-    affinity_scores = (max_energy - selected_energies) / (max_energy - min_energy + 1e-8)
+    affinity_scores = 1 - (max_energy - selected_energies) / (max_energy - min_energy + 1e-8)
 
     # 4. Setup Radar Chart Angles
     if family_names is None:
@@ -549,26 +550,33 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
 @torch.no_grad()
 def rank_ordered_distances(env, receptor_indices):
     """
-    Calculates the rank-ordered distance from each receptor to the family centers.
-    Returns a dictionary of the average distance to the 1st closest, 2nd closest, etc.
-    This bypasses the label-switching problem to measure spatial tuning.
+    Calculates the rank-ordered energy gap from each assembled receptor to the families.
+    Returns a dictionary of the average energy penalty relative to the preferred family
+    (0.0 = preferred family, higher values = weaker affinity / stronger rejection).
+    This bypasses the label-switching problem to measure functional tuning.
+    (Note: the dictionary keys are kept as 'dist_rank_i' for backward compatibility with plotting scripts)
     """
-    # Calculate the centroid of each assembled receptor: (N_Receptors, latent_dim)
-    v_receptors = env.unit_latent[receptor_indices].mean(dim=1)
-    v_families = env.family_latent
+    # 1. Fetch exact Unit-Family Interaction Energies (includes base energy and sensitivity weights)
+    # Shape: (n_units, n_families)
+    unit_energies = env.interaction_mu
     
-    # Pairwise distances from every receptor to every family center
-    dists = torch.cdist(v_receptors, v_families, p=2.0) # (N_Receptors, n_families)
+    # 2. Calculate the assembled receptor energies (mean of subunits)
+    # Shape: (N_Receptors, n_families)
+    receptor_energies = unit_energies[receptor_indices].mean(dim=1)
     
-    # Sort distances for each receptor in ascending order
-    sorted_dists, _ = torch.sort(dists, dim=1) 
+    # 3. Normalize energies per receptor: compute the energy gap relative to the preferred family
+    min_energies = receptor_energies.min(dim=1, keepdim=True)[0]
+    normalized_energies = receptor_energies - min_energies
     
-    # Average across all receptors
-    mean_sorted_dists = sorted_dists.mean(dim=0).cpu().numpy()
+    # 4. Sort normalized energies for each receptor in ascending order (0.0 = strongest affinity)
+    sorted_energies, _ = torch.sort(normalized_energies, dim=1) 
+    
+    # 5. Average across all receptors
+    mean_sorted_energies = sorted_energies.mean(dim=0).cpu().numpy()
     
     result = {}
-    for i, dist in enumerate(mean_sorted_dists):
-        result[f"dist_rank_{i+1}"] = float(dist)
+    for i, energy in enumerate(mean_sorted_energies):
+        result[f"dist_rank_{i+1}"] = float(energy)
         
     return result
 

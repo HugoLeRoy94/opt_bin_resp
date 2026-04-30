@@ -436,6 +436,8 @@ def mean_receptor_distance(env, receptor_indices):
     dist_matrix = receptor_distances(env, receptor_indices)
     # Extract the upper triangle, excluding the diagonal (k=1)
     upper_triangle = dist_matrix[np.triu_indices_from(dist_matrix, k=1)]
+    if len(upper_triangle) == 0:
+        return 0.0
     return float(upper_triangle.mean())
 
 @torch.no_grad()

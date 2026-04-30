@@ -7,6 +7,9 @@
 
 import argparse
 import time
+import sys
+
+sys.path.append('/app')
 
 # --- Local Imports ---
 from src.config import SweepConfig
@@ -14,7 +17,7 @@ from src.run import SweepRunner
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Optimize Homomer Receptors via Parameter Sweep")
-    parser.add_argument("n_families", type=int, help="Number of ligand families to simulate")
+    parser.add_argument("--n_families", type=int, help="Number of ligand families to simulate")
     parser.add_argument("--samples", type=int, default=5, help="Number of independent runs per configuration")
     parser.add_argument("--base_folder", type=str, default="/app/data/homomers_w", help="Output directory root")
     parser.add_argument("--env_type", type=str, choices=["asymmetric", "symmetric"], default="asymmetric", help="Type of environment geometry")
@@ -26,11 +29,11 @@ def main():
     start_time = time.time()
 
     # 1. Define the limits of your grid
-    latent_dim_list = [3, 7, 10]
+    latent_dim_list = [3]#[3, 7, 10]
     
     # NOTE: n_units_list must be sorted ascending so the SweepRunner can 
     # properly pass the 'prev_env' state forward through the trajectory.
-    n_units_list = [1, 2, 3, 5, 7, 8, 10, 12, 15, 20, 30] 
+    n_units_list = [1, 2, 3, 5]#, 7, 8, 10, 12, 15, 20, 30] 
 
     # 2. Package everything into the SweepConfig
     sweep_config = SweepConfig(

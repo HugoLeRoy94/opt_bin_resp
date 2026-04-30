@@ -26,7 +26,7 @@ from .analysis_helper import (plot_family_summary,
                                 rank_ordered_distances,
                                 mean_specialization_index,
                                 receptor_conditioned_entropy)
-from .IO import ExperimentLoader,ExperimentLogger
+from .IO import SingleRunLoader, SweepLoader, ExperimentLogger
 
 from .bin_loss import DiscreteExactLoss, DiscreteProxyLoss
 from .run import SimulationRunner, SweepRunner
@@ -63,7 +63,8 @@ __all__ = [
     "mean_specialization_index",
     "receptor_conditioned_entropy",
     "ExperimentLogger",
-    "ExperimentLoader",
+    "SingleRunLoader",
+    "SweepLoader",
     "evaluate_model",
     "plot_latent_radar_chart",
     "DiscreteExactLoss",

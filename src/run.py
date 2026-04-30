@@ -156,7 +156,7 @@ class SimulationRunner:
                     
         return {key: [s[key] for s in stats] for key in stats[0].keys()} if stats else {}
 
-    def _test(self, env, physics, indices, N_samples: int, test_epochs: int = 10):
+    def _test(self, env, physics, loss_fn, indices, N_samples: int, test_epochs: int = 10):
         stats = []
         with torch.no_grad():
             for i in range(test_epochs):
@@ -170,6 +170,7 @@ class SimulationRunner:
                     if 'env' in sig.parameters: kwargs['env'] = env
                     if 'physics' in sig.parameters: kwargs['physics'] = physics
                     if 'receptor_indices' in sig.parameters: kwargs['receptor_indices'] = indices
+                    if 'loss_fn' in sig.parameters: kwargs['loss_fn'] = loss_fn
                     if 'activity' in sig.parameters: kwargs['activity'] = activity_stats
                     if 'epoch' in sig.parameters: kwargs['epoch'] = i
                     if 'concs' in sig.parameters: kwargs['concs'] = concs_stats
@@ -200,7 +201,7 @@ class SimulationRunner:
 
         # 4. Test
         test_batch_size = max(100_000, self.config.n_families * 2000)
-        test_results = self._test(env, physics, receptor_indices, N_samples=test_batch_size)
+        test_results = self._test(env, physics, loss_fn, receptor_indices, N_samples=test_batch_size)
 
         # We can dump the test results JSON using the logger's path 
         import json

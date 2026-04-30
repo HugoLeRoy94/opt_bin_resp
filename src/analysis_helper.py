@@ -7,7 +7,7 @@ import seaborn as sns
 import umap
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
-from objectives import DiscreteProxyLoss, compute_shannon_joint_entropy, compute_renyi_joint_entropy
+from src.bin_loss import DiscreteProxyLoss, compute_shannon_joint_entropy, compute_renyi_joint_entropy
 
 
 @torch.no_grad()

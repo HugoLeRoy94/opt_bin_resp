@@ -28,6 +28,9 @@ from .analysis_helper import (plot_family_summary,
                                 receptor_conditioned_entropy)
 from .IO import ExperimentLoader,ExperimentLogger
 
+from .bin_loss import DiscreteExactLoss, DiscreteProxyLoss
+from .run import SimulationRunner, SweepRunner
+
 # Exposing these allows for clean imports like:
 # from core import MWCReceptorLayer, NormalConcentration
 __all__ = [
@@ -62,5 +65,9 @@ __all__ = [
     "ExperimentLogger",
     "ExperimentLoader",
     "evaluate_model",
-    "plot_latent_radar_chart"
+    "plot_latent_radar_chart",
+    "DiscreteExactLoss",
+    "DiscreteProxyLoss",
+    "SimulationRunner",
+    "SweepRunner"
 ]

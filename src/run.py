@@ -250,6 +250,9 @@ class SweepRunner:
                         device="cuda" if torch.cuda.is_available() else "cpu"
                     )
                     
+                    # Inject standard indices into the config so they appear in config.json
+                    run_cfg.receptor_indices = indices.tolist()
+                    
                     # 2. Get a dedicated logger for this exact node in the grid
                     node_logger = self.master_logger.get_run_logger(meta, run_cfg)
                     

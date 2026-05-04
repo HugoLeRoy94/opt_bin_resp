@@ -1,24 +1,28 @@
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Generator, Tuple
+from typing import List, Dict, Any, Generator, Tuple, Optional
 import itertools
 import numpy as np
 
 @dataclass
 class SingleRunConfig:
     """The absolute fingerprint of a single simulation run."""
-    # Base
-    n_families: int
-    latent_dim: int
-    n_units: int
-    init_means: List[float]
     
     # Physics
+    n_units: int # number of genes
     k_sub: int = 5
     temperature: float = 0.1
+    use_sensitivity: bool = False
+
+    # environment
+    #  Energy
+    n_families: int
+    latent_dim: int
     shape_sigma: float = 0.1
     average_family_distance: float = 5.0
-    use_sensitivity: bool = False
     env_type: str = "asymmetric"
+    #  Concentration
+    init_means: List[float]
+    init_std: None # not implemented yet
     
     # Training
     batch_size: int = 4096
@@ -27,6 +31,9 @@ class SingleRunConfig:
     loss_type: str = "exact"
     entropy: str = "renyi"
     cov_weight: float = 1.0
+    
+    # Array Architecture
+    receptor_indices: Optional[List[List[int]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

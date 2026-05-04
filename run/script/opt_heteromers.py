@@ -71,7 +71,8 @@ if __name__ == "__main__":
                             epochs=500,
                             lr=0.05,
                             loss_type="exact",
-                            entropy="renyi"
+                            entropy="renyi",
+                            receptor_indices=receptor_indices.tolist()
                         )
                         
                         logger = ExperimentLogger(os.path.join(base_dir, f"sample_{sample}"))

@@ -35,6 +35,20 @@ class SingleRunConfig:
     
     # Array Architecture
     receptor_indices: Optional[List[List[int]]] = None
+    
+    # Measurement functions to compute during training/evaluation
+    measurement_fns: List[str] = field(default_factory=lambda: [
+        "full_array_entropy",
+        "mean_receptor_distance",
+        "conditional_entropy_family",
+        "mutual_information_family",
+        "conditional_entropy_concentration",
+        "mutual_information_concentration",
+        "receptor_distances",
+        "rank_ordered_distances",
+        "mean_specialization_index",
+        "receptor_conditioned_entropy"
+    ])
 
     def __post_init__(self):
         """Initialize conc_mean and conc_std with random values per family if not provided."""

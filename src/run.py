@@ -11,17 +11,21 @@ from src import (LigandEnvironment,
                  SymmetricLigandEnvironment, 
                  BinaryReceptor, 
                  LogNormalConcentration, 
-                 NormalConcentration,
-                 full_array_entropy, 
-                 mean_receptor_distance,
-                 conditional_entropy_family, 
-                 mutual_information_family,
-                 conditional_entropy_concentration, 
-                 mutual_information_concentration,
-                 receptor_distances, 
-                 rank_ordered_distances,
-                 mean_specialization_index, 
-                 receptor_conditioned_entropy)
+                 NormalConcentration)
+
+# Import all measurement functions
+from src.analysis_helper import (
+    full_array_entropy,
+    mean_receptor_distance,
+    conditional_entropy_family,
+    mutual_information_family,
+    conditional_entropy_concentration,
+    mutual_information_concentration,
+    receptor_distances,
+    rank_ordered_distances,
+    mean_specialization_index,
+    receptor_conditioned_entropy
+)
 
 from src.bin_loss import DiscreteProxyLoss, DiscreteExactLoss
 from src.family_mi_loss import MaximizeMutualInformationFamilyLoss
@@ -31,13 +35,19 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 # 1. GLOBALS & REGISTRIES
 # ==========================================
 
-MEASUREMENT_FNS = [
-    full_array_entropy, mean_receptor_distance,
-    conditional_entropy_family, mutual_information_family,
-    conditional_entropy_concentration, mutual_information_concentration,
-    receptor_distances, rank_ordered_distances,
-    mean_specialization_index, receptor_conditioned_entropy
-]
+# Measurement function registry - maps names to functions
+MEASUREMENT_REGISTRY = {
+    "full_array_entropy": full_array_entropy,
+    "mean_receptor_distance": mean_receptor_distance,
+    "conditional_entropy_family": conditional_entropy_family,
+    "mutual_information_family": mutual_information_family,
+    "conditional_entropy_concentration": conditional_entropy_concentration,
+    "mutual_information_concentration": mutual_information_concentration,
+    "receptor_distances": receptor_distances,
+    "rank_ordered_distances": rank_ordered_distances,
+    "mean_specialization_index": mean_specialization_index,
+    "receptor_conditioned_entropy": receptor_conditioned_entropy
+}
 
 # The Factory Pattern: Kills the if/else logic
 ENV_REGISTRY = {
@@ -148,7 +158,8 @@ class SimulationRunner:
                     activity_stats = physics(E_open_stats, concs_stats, receptor_indices)
                     
                     stat = {}
-                    for fn in MEASUREMENT_FNS:
+                    for fn_name in self.config.measurement_fns:
+                        fn = MEASUREMENT_REGISTRY[fn_name]
                         sig = inspect.signature(fn)
                         kwargs = {}
                         if 'env' in sig.parameters: kwargs['env'] = env
@@ -162,7 +173,7 @@ class SimulationRunner:
                         
                         result = fn(**kwargs)
                         if isinstance(result, dict): stat.update(result)
-                        else: stat[getattr(fn, '__name__', str(fn))] = result
+                        else: stat[fn_name] = result
                                 
                     stat['lr'] = optimizer.param_groups[0]['lr']
                     if hasattr(physics, 'temperature'): physics.temperature = current_temp
@@ -178,7 +189,8 @@ class SimulationRunner:
                 activity_stats = physics(E_open_stats, concs_stats, indices)
                 
                 stat = {}
-                for fn in MEASUREMENT_FNS:
+                for fn_name in self.config.measurement_fns:
+                    fn = MEASUREMENT_REGISTRY[fn_name]
                     sig = inspect.signature(fn)
                     kwargs = {}
                     if 'env' in sig.parameters: kwargs['env'] = env
@@ -192,7 +204,7 @@ class SimulationRunner:
                     
                     result = fn(**kwargs)
                     if isinstance(result, dict): stat.update(result)
-                    else: stat[getattr(fn, '__name__', str(fn))] = result
+                    else: stat[fn_name] = result
                 stats.append(stat)
                 
         return {key: [s[key] for s in stats] for key in stats[0].keys()} if stats else {}

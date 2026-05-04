@@ -11,6 +11,7 @@ from src import (LigandEnvironment,
                  SymmetricLigandEnvironment, 
                  BinaryReceptor, 
                  LogNormalConcentration, 
+                 NormalConcentration,
                  full_array_entropy, 
                  mean_receptor_distance,
                  conditional_entropy_family, 
@@ -51,6 +52,20 @@ LOSS_REGISTRY = {
     "conc": lambda cfg: MaximizeMutualInformationConcentrationLoss(entropy_type=cfg.entropy)
 }
 
+# Concentration Model Registry
+CONC_REGISTRY = {
+    "lognormal": lambda cfg: LogNormalConcentration(
+        n_families=cfg.n_families,
+        init_mean=cfg.conc_mean,
+        init_scale=cfg.conc_std
+    ),
+    "normal": lambda cfg: NormalConcentration(
+        n_families=cfg.n_families,
+        init_mean=cfg.conc_mean,
+        init_scale=cfg.conc_std
+    )
+}
+
 # ==========================================
 # 2. SINGLE RUN MANAGER
 # ==========================================
@@ -68,10 +83,9 @@ class SimulationRunner:
             extra_units = max(0, self.config.n_units - prev_env.n_units)
             env = prev_env.clone_with_extra_units(extra_units).to(self.device)
         else:
-            conc_strategy = LogNormalConcentration(
-                n_families=self.config.n_families, 
-                init_mean=self.config.init_means
-            )
+            # Use concentration model registry
+            conc_model_type = getattr(self.config, 'conc_model_type', 'lognormal')
+            conc_strategy = CONC_REGISTRY[conc_model_type](self.config)
             
             env_class = ENV_REGISTRY[self.config.env_type]
             env = env_class(

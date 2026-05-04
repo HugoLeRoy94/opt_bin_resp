@@ -8,21 +8,22 @@ class SingleRunConfig:
     """The absolute fingerprint of a single simulation run."""
     
     # Physics
-    n_units: int # number of genes
+    n_units: int = 1
     k_sub: int = 5
     temperature: float = 0.1
     use_sensitivity: bool = False
 
     # environment
     #  Energy
-    n_families: int
-    latent_dim: int
+    n_families: int = 1
+    latent_dim: int = 3
     shape_sigma: float = 0.1
     average_family_distance: float = 5.0
     env_type: str = "asymmetric"
     #  Concentration
-    init_means: List[float]
-    init_std: None # not implemented yet
+    conc_model_type: str = "lognormal"
+    conc_mean: Optional[List[float]] = None
+    conc_std: Optional[List[float]] = None
     
     # Training
     batch_size: int = 4096
@@ -34,6 +35,13 @@ class SingleRunConfig:
     
     # Array Architecture
     receptor_indices: Optional[List[List[int]]] = None
+
+    def __post_init__(self):
+        """Initialize conc_mean and conc_std with random values per family if not provided."""
+        if self.conc_mean is None:
+            self.conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_families)]
+        if self.conc_std is None:
+            self.conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_families)]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -60,8 +68,11 @@ class SweepConfig:
         sorted_units = sorted(self.n_units_list)
         
         for latent_dim, sample_id in independent_runs:
-            # Generate shared means for this specific trajectory to maintain environment consistency
-            trajectory_means = [float(np.random.uniform(3.0, 5.0)) for _ in range(self.n_families)]
+            # Generate concentration mean and std for this specific trajectory
+            # Each family gets a different random value
+            # The values are in log10 space for lognormal, or linear space for normal
+            trajectory_conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_families)]
+            trajectory_conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_families)]
             
             trajectory_configs = []
             for n_units in sorted_units:
@@ -69,9 +80,13 @@ class SweepConfig:
                     "n_families": self.n_families,
                     "latent_dim": latent_dim,
                     "n_units": n_units,
-                    "init_means": trajectory_means,
+                    "conc_mean": trajectory_conc_mean,
+                    "conc_std": trajectory_conc_std,
                     **self.base_run_params
                 }
+                # Only include conc_model_type if it's in base_run_params, otherwise use default
+                if "conc_model_type" not in self.base_run_params:
+                    params["conc_model_type"] = "lognormal"
                 trajectory_configs.append(SingleRunConfig(**params))
                 
             meta = {"latent_dim": latent_dim, "sample_id": sample_id}

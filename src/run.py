@@ -17,8 +17,8 @@ from src import (LigandEnvironment,
 from src.analysis_helper import (
     full_array_entropy,
     mean_receptor_distance,
-    conditional_entropy_family,
-    mutual_information_family,
+    conditional_entropy_ligand,
+    mutual_information_ligand,
     conditional_entropy_concentration,
     mutual_information_concentration,
     receptor_distances,
@@ -28,7 +28,7 @@ from src.analysis_helper import (
 )
 
 from src.bin_loss import DiscreteProxyLoss, DiscreteExactLoss
-from src.family_mi_loss import MaximizeMutualInformationFamilyLoss
+from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
 # ==========================================
@@ -39,8 +39,8 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 MEASUREMENT_REGISTRY = {
     "full_array_entropy": full_array_entropy,
     "mean_receptor_distance": mean_receptor_distance,
-    "conditional_entropy_family": conditional_entropy_family,
-    "mutual_information_family": mutual_information_family,
+    "conditional_entropy_ligand": conditional_entropy_ligand,
+    "mutual_information_ligand": mutual_information_ligand,
     "conditional_entropy_concentration": conditional_entropy_concentration,
     "mutual_information_concentration": mutual_information_concentration,
     "receptor_distances": receptor_distances,
@@ -58,19 +58,19 @@ ENV_REGISTRY = {
 LOSS_REGISTRY = {
     "exact": lambda cfg: DiscreteExactLoss(entropy_type=cfg.entropy),
     "proxy": lambda cfg: DiscreteProxyLoss(cov_weight=cfg.cov_weight),
-    "family": lambda cfg: MaximizeMutualInformationFamilyLoss(entropy_type=cfg.entropy),
+    "ligand": lambda cfg: MaximizeMutualInformationLigandLoss(entropy_type=cfg.entropy),
     "conc": lambda cfg: MaximizeMutualInformationConcentrationLoss(entropy_type=cfg.entropy)
 }
 
 # Concentration Model Registry
 CONC_REGISTRY = {
     "lognormal": lambda cfg: LogNormalConcentration(
-        n_families=cfg.n_families,
+        n_ligands=cfg.n_ligands,
         init_mean=cfg.conc_mean,
         init_scale=cfg.conc_std
     ),
     "normal": lambda cfg: NormalConcentration(
-        n_families=cfg.n_families,
+        n_ligands=cfg.n_ligands,
         init_mean=cfg.conc_mean,
         init_scale=cfg.conc_std
     )
@@ -102,6 +102,9 @@ class SimulationRunner:
                 self.config.n_units, 
                 self.config.n_families, 
                 conc_model=conc_strategy,
+                n_ligands=self.config.n_ligands,
+                p_presence=self.config.p_presence,
+                noise_sigma=self.config.noise_sigma,
                 latent_dim=self.config.latent_dim, 
                 shape_sigma=self.config.shape_sigma,
                 avg_family_distance=self.config.average_family_distance,
@@ -133,12 +136,12 @@ class SimulationRunner:
             current_temp = end_temp + (start_temp - end_temp) * (1.0 - (epoch / self.config.epochs)) if end_temp < start_temp else end_temp
             if hasattr(physics, 'temperature'): physics.temperature = current_temp
 
-            energies, concs, family_ids = env.sample_batch(self.config.batch_size)
+            energies, concs, mixture_masks = env.sample_batch(self.config.batch_size)
             activity = physics(energies, concs, receptor_indices)
             
             # Handle specialized loss requirements
-            if isinstance(loss_fn, MaximizeMutualInformationFamilyLoss): 
-                loss = loss_fn(activity, family_ids=family_ids)
+            if isinstance(loss_fn, MaximizeMutualInformationLigandLoss): 
+                loss = loss_fn(activity, mixture_masks=mixture_masks)
             elif isinstance(loss_fn, MaximizeMutualInformationConcentrationLoss): 
                 loss = loss_fn(activity, concs=concs)
             else: 
@@ -154,7 +157,7 @@ class SimulationRunner:
                     if hasattr(physics, 'temperature'): physics.temperature = end_temp
                     
                     eval_batch = getattr(self.config, 'eval_batch_size', 2**12)
-                    E_open_stats, concs_stats, family_ids_stats = env.sample_batch(batch_size=eval_batch)
+                    E_open_stats, concs_stats, mixture_masks_stats = env.sample_batch(batch_size=eval_batch)
                     activity_stats = physics(E_open_stats, concs_stats, receptor_indices)
                     
                     stat = {}
@@ -169,7 +172,7 @@ class SimulationRunner:
                         if 'activity' in sig.parameters: kwargs['activity'] = activity_stats
                         if 'epoch' in sig.parameters: kwargs['epoch'] = epoch
                         if 'concs' in sig.parameters: kwargs['concs'] = concs_stats
-                        if 'family_ids' in sig.parameters: kwargs['family_ids'] = family_ids_stats
+                        if 'mixture_masks' in sig.parameters: kwargs['mixture_masks'] = mixture_masks_stats
                         
                         result = fn(**kwargs)
                         if isinstance(result, dict): stat.update(result)
@@ -185,7 +188,7 @@ class SimulationRunner:
         stats = []
         with torch.no_grad():
             for i in range(test_epochs):
-                E_open_stats, concs_stats, family_ids_stats = env.sample_batch(batch_size=N_samples)
+                E_open_stats, concs_stats, mixture_masks_stats = env.sample_batch(batch_size=N_samples)
                 activity_stats = physics(E_open_stats, concs_stats, indices)
                 
                 stat = {}
@@ -200,7 +203,7 @@ class SimulationRunner:
                     if 'activity' in sig.parameters: kwargs['activity'] = activity_stats
                     if 'epoch' in sig.parameters: kwargs['epoch'] = i
                     if 'concs' in sig.parameters: kwargs['concs'] = concs_stats
-                    if 'family_ids' in sig.parameters: kwargs['family_ids'] = family_ids_stats
+                    if 'mixture_masks' in sig.parameters: kwargs['mixture_masks'] = mixture_masks_stats
                     
                     result = fn(**kwargs)
                     if isinstance(result, dict): stat.update(result)
@@ -267,7 +270,8 @@ class SweepRunner:
                 # Iterate sequentially through the trajectory (ascending n_units)
                 for run_cfg in trajectory:
                     
-                    tqdm.write(f"--- F: {run_cfg.n_families} | D: {run_cfg.latent_dim} | U: {run_cfg.n_units} | Sample: {meta['sample_id']} ---")
+                    avg_p = sum(run_cfg.p_presence) / len(run_cfg.p_presence) if run_cfg.p_presence else 0.0
+                    tqdm.write(f"--- F: {run_cfg.n_families} | L: {run_cfg.n_ligands} | p_pres(avg): {avg_p:.2f} | D: {run_cfg.latent_dim} | U: {run_cfg.n_units} | Sample: {meta['sample_id']} ---")
                     
                     # 1. Generate standard explicit receptor indices
                     indices = torch.tensor(

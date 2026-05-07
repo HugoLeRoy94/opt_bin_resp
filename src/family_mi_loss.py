@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 from .bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy
 
-class MaximizeMutualInformationFamilyLoss(nn.Module):
+class MaximizeMutualInformationLigandLoss(nn.Module):
     """
-    Maximizes the mutual information between the array activity and the ligand family identity:
-    I(A ; F) = H(A) - H(A | F)
+    Maximizes the mutual information between the array activity and the ligand mixture identity:
+    I(A ; M) = H(A) - H(A | M)
     
     This is achieved by minimizing the loss:
-    Loss = H(A | F) - H(A)
+    Loss = H(A | M) - H(A)
     """
     def __init__(self, entropy_type: str = 'renyi'):
         super().__init__()
@@ -18,7 +18,7 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
         # Binary system: [P(inactive), P(active)]
         return torch.stack([1.0 - activity, activity], dim=-1)
 
-    def forward(self, activity: torch.Tensor, family_ids: torch.Tensor):
+    def forward(self, activity: torch.Tensor, mixture_masks: torch.Tensor):
         # 1. Compute H(A) on the current mixed training batch
         soft_assign = self.compute_soft_assignment(activity)
         
@@ -31,16 +31,19 @@ class MaximizeMutualInformationFamilyLoss(nn.Module):
             
         h_a = entropy_fn(soft_assign)
         
-        # 2. Compute H(A | F) by grouping the existing batch by family
-        unique_families = torch.unique(family_ids)
+        # 2. Compute H(A | M) by grouping the existing batch by exact mixture identity
+        powers = 2 ** torch.arange(mixture_masks.shape[1], device=mixture_masks.device, dtype=mixture_masks.dtype)
+        mixture_ids = (mixture_masks * powers).sum(dim=-1).long()
+        
+        unique_mixtures = torch.unique(mixture_ids)
         total_cond_h = 0.0
         
-        for f_idx in unique_families:
-            mask = (family_ids == f_idx)
-            soft_assign_f = soft_assign[mask]
-            total_cond_h = total_cond_h + entropy_fn(soft_assign_f)
+        for m_idx in unique_mixtures:
+            mask = (mixture_ids == m_idx)
+            soft_assign_m = soft_assign[mask]
+            total_cond_h = total_cond_h + entropy_fn(soft_assign_m)
             
-        h_a_given_f = total_cond_h / len(unique_families)
+        h_a_given_m = total_cond_h / len(unique_mixtures)
         
-        # Maximize I(A; F) -> Minimize H(A|F) - H(A)
-        return h_a_given_f - h_a
+        # Maximize I(A; M) -> Minimize H(A|M) - H(A)
+        return h_a_given_m - h_a

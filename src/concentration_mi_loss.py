@@ -32,8 +32,9 @@ class MaximizeMutualInformationConcentrationLoss(nn.Module):
             
         h_a = entropy_fn(soft_assign)
         
-        # 2. Compute H(A | C) by sorting and binning the existing batch's concentrations
-        sorted_concs, indices = torch.sort(concs)
+        # 2. Compute H(A | C) by sorting and binning the existing batch's total concentrations
+        total_concs = concs.sum(dim=-1)
+        sorted_concs, indices = torch.sort(total_concs)
         sorted_assign = soft_assign[indices]
         
         B = activity.shape[0]

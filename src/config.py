@@ -16,6 +16,9 @@ class SingleRunConfig:
     # environment
     #  Energy
     n_families: int = 1
+    n_ligands: int = 10
+    p_presence: Optional[List[float]] = None
+    noise_sigma: float = 0.01
     latent_dim: int = 3
     shape_sigma: float = 0.1
     average_family_distance: float = 5.0
@@ -40,8 +43,8 @@ class SingleRunConfig:
     measurement_fns: List[str] = field(default_factory=lambda: [
         "full_array_entropy",
         "mean_receptor_distance",
-        "conditional_entropy_family",
-        "mutual_information_family",
+        "conditional_entropy_ligand",
+        "mutual_information_ligand",
         "conditional_entropy_concentration",
         "mutual_information_concentration",
         "receptor_distances",
@@ -51,11 +54,13 @@ class SingleRunConfig:
     ])
 
     def __post_init__(self):
-        """Initialize conc_mean and conc_std with random values per family if not provided."""
+        """Initialize conc_mean and conc_std with random values per ligand if not provided."""
         if self.conc_mean is None:
-            self.conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_families)]
+            self.conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_ligands)]
         if self.conc_std is None:
-            self.conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_families)]
+            self.conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_ligands)]
+        if self.p_presence is None:
+            self.p_presence = [float(np.random.uniform(0.05, 0.5)) for _ in range(self.n_ligands)]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -64,10 +69,12 @@ class SingleRunConfig:
 class SweepConfig:
     """Wraps lists of parameters to sweep over, handling the nested grid logic."""
     n_families: int
+    n_ligands: int
     latent_dim_list: List[int]
     n_units_list: List[int] # Will be sorted ascending internally for prev_env logic
     n_samples: int
     base_folder: str
+    noise_sigma: float = 0.01
     sweep_name: str = "homomer_sweep"
     base_run_params: Dict[str, Any] = field(default_factory=dict)
 
@@ -83,19 +90,23 @@ class SweepConfig:
         
         for latent_dim, sample_id in independent_runs:
             # Generate concentration mean and std for this specific trajectory
-            # Each family gets a different random value
+            # Each ligand gets a different random value
             # The values are in log10 space for lognormal, or linear space for normal
-            trajectory_conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_families)]
-            trajectory_conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_families)]
+            trajectory_conc_mean = [float(np.random.uniform(-7.0, -5.0)) for _ in range(self.n_ligands)]
+            trajectory_conc_std = [float(np.random.uniform(0.5, 1.5)) for _ in range(self.n_ligands)]
+            trajectory_p_presence = [float(np.random.uniform(0.05, 0.5)) for _ in range(self.n_ligands)]
             
             trajectory_configs = []
             for n_units in sorted_units:
                 params = {
                     "n_families": self.n_families,
+                    "n_ligands": self.n_ligands,
                     "latent_dim": latent_dim,
                     "n_units": n_units,
                     "conc_mean": trajectory_conc_mean,
                     "conc_std": trajectory_conc_std,
+                    "p_presence": trajectory_p_presence,
+                    "noise_sigma": self.noise_sigma,
                     **self.base_run_params
                 }
                 # Only include conc_model_type if it's in base_run_params, otherwise use default

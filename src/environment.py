@@ -34,25 +34,25 @@ class ConcentrationModel(nn.Module, ABC):
     Subclass this to create LogNormal, Normal, Bimodal, etc.
     """
     @abstractmethod
-    def sample(self, batch_size: int, family_ids: torch.Tensor) -> torch.Tensor:
+    def sample(self, batch_size: int) -> torch.Tensor:
         """
-        Returns concentrations for the given family_ids.
-        Shape: (batch_size,)
+        Returns concentrations for the ligand pool.
+        Shape: (batch_size, n_ligands)
         """
         pass        
     @abstractmethod
     def get_expected_log_c(self) -> torch.Tensor:
         """
-        Returns the expected natural logarithm of the concentration for each family.
-        Shape: (n_families,)
+        Returns the expected natural logarithm of the concentration for each ligand.
+        Shape: (n_ligands,)
         """
         pass
     @abstractmethod
-    def get_distribution(self, family_id: int) -> dist.Distribution:
-        """Returns the torch distribution object for a specific family."""
+    def get_distribution(self, ligand_id: int) -> dist.Distribution:
+        """Returns the torch distribution object for a specific ligand."""
         pass
     @abstractmethod
-    def get_sweep_and_pdf(self, family_id: int, n_points: int = 200) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_sweep_and_pdf(self, ligand_id: int, n_points: int = 200) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns the physical concentration sweep and its PDF."""
         pass
 
@@ -61,27 +61,25 @@ class LogNormalConcentration(ConcentrationModel):
     Classic Biophysics assumption: c spans orders of magnitude.
     log10(c) ~ Normal(mu, sigma)
     """
-    def __init__(self, n_families: int, init_mean=-6.0, init_scale=1.0):
+    def __init__(self, n_ligands: int, init_mean=-6.0, init_scale=1.0):
         super().__init__()
-        # Initialize around 10^-6 M (1 microM)
-        #self.mu = nn.Parameter(torch.ones(n_families) * init_mean)
-        #self.log_sigma = nn.Parameter(torch.ones(n_families) * math.log(init_scale))
         
         mu_tensor = torch.tensor(init_mean, dtype=torch.float32)
         if mu_tensor.ndim == 0:
-            mu_tensor = torch.ones(n_families) * mu_tensor
+            mu_tensor = torch.ones(n_ligands) * mu_tensor
             
         sigma_tensor = torch.tensor(init_scale, dtype=torch.float32)
+        if sigma_tensor.ndim == 0:
+            sigma_tensor = torch.ones(n_ligands) * sigma_tensor
         
         self.register_buffer('mu', mu_tensor)
-        self.register_buffer('log_sigma', torch.ones(n_families) * torch.log(sigma_tensor))
+        self.register_buffer('log_sigma', torch.log(sigma_tensor))
 
-    def sample(self, batch_size, family_ids):
-        # Gather params for this batch
-        batch_mu = self.mu[family_ids]
-        batch_sigma = torch.exp(self.log_sigma[family_ids])
+    def sample(self, batch_size):
+        # Sample Log-Space for the whole batch and all ligands
+        batch_mu = self.mu.unsqueeze(0).expand(batch_size, -1)
+        batch_sigma = torch.exp(self.log_sigma).unsqueeze(0).expand(batch_size, -1)
         
-        # Sample Log-Space
         dist_log = dist.Normal(batch_mu, batch_sigma)
         log_c = dist_log.rsample()
         
@@ -115,14 +113,14 @@ class LogNormalConcentration(ConcentrationModel):
         return torch.log2(sigma * math.sqrt(2 * math.pi * math.e))
 
     @torch.no_grad()
-    def get_distribution(self, family_id: int):
-        mu = self.mu[family_id]
-        sigma = torch.exp(self.log_sigma[family_id])
+    def get_distribution(self, ligand_id: int):
+        mu = self.mu[ligand_id]
+        sigma = torch.exp(self.log_sigma[ligand_id])
         return dist.Normal(mu, sigma) # Distribution of log10(c)
         
     @torch.no_grad()
-    def get_sweep_and_pdf(self, family_id: int, n_points: int = 200):
-        d = self.get_distribution(family_id)
+    def get_sweep_and_pdf(self, ligand_id: int, n_points: int = 200):
+        d = self.get_distribution(ligand_id)
         # Sweep in log10 space
         x_log10 = torch.linspace(d.mean - 3*d.stddev, d.mean + 3*d.stddev, n_points, device=self.mu.device)
         pdf = torch.exp(d.log_prob(x_log10))
@@ -135,16 +133,22 @@ class NormalConcentration(ConcentrationModel):
     Simple Gaussian assumption.
     c ~ Normal(mu, sigma) clamped at 0.
     """
-    def __init__(self, n_families: int, init_mean=10**-6, init_scale=10**-7):
+    def __init__(self, n_ligands: int, init_mean=10**-6, init_scale=10**-7):
         super().__init__()
-        #self.mu = nn.Parameter(torch.ones(n_families) * init_mean)
-        #self.log_sigma = nn.Parameter(torch.ones(n_families) * math.log(init_scale))
-        self.register_buffer('mu', torch.ones(n_families) * init_mean)
-        self.register_buffer('log_sigma', torch.ones(n_families) * math.log(init_scale))
+        mu_tensor = torch.tensor(init_mean, dtype=torch.float32)
+        if mu_tensor.ndim == 0:
+            mu_tensor = torch.ones(n_ligands) * mu_tensor
+            
+        sigma_tensor = torch.tensor(init_scale, dtype=torch.float32)
+        if sigma_tensor.ndim == 0:
+            sigma_tensor = torch.ones(n_ligands) * sigma_tensor
+            
+        self.register_buffer('mu', mu_tensor)
+        self.register_buffer('log_sigma', torch.log(sigma_tensor))
 
-    def sample(self, batch_size, family_ids):
-        batch_mu = self.mu[family_ids]
-        batch_sigma = torch.exp(self.log_sigma[family_ids])
+    def sample(self, batch_size):
+        batch_mu = self.mu.unsqueeze(0).expand(batch_size, -1)
+        batch_sigma = torch.exp(self.log_sigma).unsqueeze(0).expand(batch_size, -1)
         
         c = dist.Normal(batch_mu, batch_sigma).rsample()
         return torch.clamp(c, min=1e-12) # Physics constraint (clamp > 0 for safe log)
@@ -161,21 +165,22 @@ class NormalConcentration(ConcentrationModel):
         return torch.log2(sigma * math.sqrt(2 * math.pi * math.e))
 
     @torch.no_grad()
-    def get_distribution(self, family_id: int):
-        mu = self.mu[family_id]
-        sigma = torch.exp(self.log_sigma[family_id])
+    def get_distribution(self, ligand_id: int):
+        mu = self.mu[ligand_id]
+        sigma = torch.exp(self.log_sigma[ligand_id])
         return dist.Normal(mu, sigma) # Distribution of c
     
     @torch.no_grad()
-    def get_sweep_and_pdf(self, family_id: int, n_points: int = 200):
-        d = self.get_distribution(family_id)
+    def get_sweep_and_pdf(self, ligand_id: int, n_points: int = 200):
+        d = self.get_distribution(ligand_id)
         # Sweep already in linear physical space
         c_sweep = torch.linspace(d.mean - 3*d.stddev, d.mean + 3*d.stddev, n_points, device=self.mu.device)
         pdf = torch.exp(d.log_prob(c_sweep))
         return c_sweep, pdf
 
 class LigandEnvironment(nn.Module):
-    def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel, 
+    def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel,
+                 n_ligands: int = 10, p_presence: list = None, noise_sigma: float = 0.01,
                  latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian',
                  avg_family_distance: float = 5.0, use_sensitivity: bool = False):
         """
@@ -183,6 +188,9 @@ class LigandEnvironment(nn.Module):
             n_units: Number of protein units
             n_families: Number of ligand families
             conc_model: An INSTANCE of a ConcentrationModel subclass
+            n_ligands: Size of the fixed ligand pool
+            p_presence: Probability of a ligand appearing in a mixture
+            noise_sigma: Additive orientation noise during sampling
             latent_dim: Dimensionality of the chemical latent space (trade-off space)
             shape_sigma: The fixed spatial spread (fuzziness) of the ligand families
             distribution_type: 'gaussian' or 'uniform'
@@ -192,9 +200,19 @@ class LigandEnvironment(nn.Module):
         self.use_sensitivity = use_sensitivity
         self.n_units = n_units
         self.n_families = n_families
+        self.n_ligands = n_ligands
         self.latent_dim = latent_dim
         self.shape_sigma = shape_sigma
         self.avg_family_distance = avg_family_distance
+        self.p_presence = p_presence
+        self.noise_sigma = noise_sigma
+        
+        if p_presence is None:
+            p_tensor = torch.full((n_ligands,), 0.1, dtype=torch.float32)
+        else:
+            p_tensor = torch.tensor(p_presence, dtype=torch.float32)
+            
+        self.register_buffer('p_presence_tensor', p_tensor)
 
         
         if distribution_type not in ['gaussian', 'uniform']:
@@ -224,12 +242,34 @@ class LigandEnvironment(nn.Module):
         fixed_families = self._generate_family_centers(n_families, latent_dim)
         self.register_buffer('family_latent', fixed_families)
         
+        # 2.5 Ligand Pool Initialization
+        with torch.no_grad():
+            # Assign each ligand to a family randomly
+            ligand_family_assignments = torch.randint(0, n_families, (n_ligands,))
+            self.register_buffer('ligand_family_assignments', ligand_family_assignments)
+            
+            # Draw permanent base coordinates for the ligands
+            base_centers = fixed_families[ligand_family_assignments]
+            if self.distribution_type == 'gaussian':
+                ligand_dist = dist.Normal(loc=base_centers, scale=self.shape_sigma)
+                fixed_ligands = ligand_dist.rsample()
+            elif self.distribution_type == 'uniform_cube':
+                low = base_centers - self.shape_sigma
+                high = base_centers + self.shape_sigma
+                ligand_dist = dist.Uniform(low=low, high=high)
+                fixed_ligands = ligand_dist.rsample()
+            elif self.distribution_type == 'uniform':
+                ligand_dist = UniformNBall(loc=base_centers, radius=self.shape_sigma, dim=self.latent_dim)
+                fixed_ligands = ligand_dist.rsample()
+            
+            self.register_buffer('ligand_latent', fixed_ligands)
+        
         # 3. Unit-specific Base Energies (Maximum intrinsic affinity)
         global_avg_log_c = self.concentration_model.get_expected_log_c().mean().item()
         # Dynamically subtract the initial expected distance squared to prevent dead sensors in high dimensions
         with torch.no_grad():
             weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-            diff = self.unit_latent.unsqueeze(1) - fixed_families.unsqueeze(0)
+            diff = self.unit_latent.unsqueeze(1) - fixed_ligands.unsqueeze(0)
             initial_dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1).mean().item()
         self.base_energy_u = nn.Parameter(torch.ones(n_units) * (global_avg_log_c - initial_dist_sq))
         #self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
@@ -247,6 +287,9 @@ class LigandEnvironment(nn.Module):
             n_units=self.n_units + extra_units,
             n_families=self.n_families,
             conc_model=new_conc_model,
+            n_ligands=self.n_ligands,
+            p_presence=self.p_presence,
+            noise_sigma=self.noise_sigma,
             latent_dim=self.latent_dim,
             shape_sigma=self.shape_sigma,
             distribution_type=self.distribution_type,
@@ -256,6 +299,8 @@ class LigandEnvironment(nn.Module):
         
         with torch.no_grad():
             new_env.family_latent.copy_(self.family_latent)
+            new_env.ligand_family_assignments.copy_(self.ligand_family_assignments)
+            new_env.ligand_latent.copy_(self.ligand_latent)
             new_env.unit_latent.data[:self.n_units] = self.unit_latent.data.clone()
             new_env.unit_sensitivity_raw.data[:self.n_units] = self.unit_sensitivity_raw.data.clone()
             new_env.base_energy_u.data[:self.n_units] = self.base_energy_u.data.clone()
@@ -285,65 +330,43 @@ class LigandEnvironment(nn.Module):
     def interaction_mu(self) -> torch.Tensor:
         """
         Compatibility property for plotting dose-response curves.
-        Returns the MEAN open-state energy for each unit against each family's exact center.
-        Shape: (n_units, n_families)
+        Returns the MEAN open-state energy for each unit against each ligand's exact center.
+        Shape: (n_units, n_ligands)
         """
         weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-        diff = self.unit_latent.unsqueeze(1) - self.family_latent.unsqueeze(0) # (U, F, D)
-        dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, F)
+        diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0) # (U, L, D)
+        dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, L)
         
         mu_open = self.base_energy_u.unsqueeze(1) + dist_sq
         return mu_open
 
     def sample_batch(self, batch_size: int):
         device = self.unit_latent.device
-        family_ids = torch.randint(0, self.n_families, (batch_size,), device=device)
-        return self._sample_from_ids(batch_size, family_ids)
-
-    def sample_specific_family(self, batch_size: int, family_id: int):
-        device = self.unit_latent.device
-        f_ids = torch.full((batch_size,), family_id, dtype=torch.long, device=device)
-        return self._sample_from_ids(batch_size, f_ids)
-
-    def _sample_from_ids(self, batch_size: int, family_ids: torch.Tensor):
-        """
-        Sample ligands from a specific family. By drawing a position in the chemical space and a base energy
-        """
-        # 1. Sample physical concentrations
-        concs = self.concentration_model.sample(batch_size, family_ids)
         
-        # 2. Get the prototype centers for this batch: (Batch, latent_dim)
-        batch_centers = self.family_latent[family_ids] 
+        # 1. Sample mixture masks: 1 if ligand is present, 0 if absent
+        mixture_masks = torch.bernoulli(self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1))
         
-        # 3. Draw Ligand Coordinates directly from a PyTorch Distribution
-        if self.distribution_type == 'gaussian':
-            # Isotropic Gaussian: variance is shape_sigma^2 in all directions
-            ligand_dist = dist.Normal(loc=batch_centers, scale=self.shape_sigma)
-            v_ligands = ligand_dist.rsample()
-            
-        elif self.distribution_type == 'uniform_cube':
-            # Uniform hypercube centered at batch_centers with side length 2 * shape_sigma
-            low = batch_centers - self.shape_sigma
-            high = batch_centers + self.shape_sigma
-            ligand_dist = dist.Uniform(low=low, high=high)
-            v_ligands = ligand_dist.rsample()
-        elif self.distribution_type == 'uniform':
-            # Use our custom uniform N-ball sampler!
-            ligand_dist = UniformNBall(loc=batch_centers, radius=self.shape_sigma, dim=self.latent_dim)
-            v_ligands = ligand_dist.rsample()
+        # 2. Sample physical concentrations and mask out absent ligands
+        concs = self.concentration_model.sample(batch_size) * mixture_masks
+        
+        # 3. Add orientation/observation noise to the ligand latent coordinates
+        noise = torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device) * self.noise_sigma
+        v_ligands = self.ligand_latent.unsqueeze(0) + noise
             
         # 4. Calculate Energies based on Distance
         weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-        diff = v_ligands.unsqueeze(1) - self.unit_latent.unsqueeze(0) # (Batch, U, D)
-        dist_sq = (weights.unsqueeze(0) * (diff ** 2)).sum(dim=-1) # (Batch, U)
+        # v_ligands shape: (Batch, L, D) -> (Batch, L, 1, D)
+        # unit_latent shape: (U, D) -> (1, 1, U, D)
+        diff = v_ligands.unsqueeze(2) - self.unit_latent.unsqueeze(0).unsqueeze(0)
+        dist_sq = (weights.unsqueeze(0).unsqueeze(0) * (diff ** 2)).sum(dim=-1) # Shape: (Batch, L, U)
         
-        E_open = self.base_energy_u + dist_sq
+        E_open = self.base_energy_u.unsqueeze(0).unsqueeze(0) + dist_sq # Shape: (Batch, L, U)
         
-        return E_open, concs, family_ids
+        return E_open, concs, mixture_masks
 
     @torch.no_grad()
-    def get_concentration_sweep(self, family_id: int, n_points: int = 200):
-        return self.concentration_model.get_sweep_and_pdf(family_id, n_points)
+    def get_concentration_sweep(self, ligand_id: int, n_points: int = 200):
+        return self.concentration_model.get_sweep_and_pdf(ligand_id, n_points)
 
 class SymmetricLigandEnvironment(LigandEnvironment):
     """

@@ -15,6 +15,7 @@ from src.IO import ExperimentLogger
 # %% Configuration
 # Adjust your run parameters here
 n_families = 5
+n_ligands = 10
 latent_dim = 3
 n_units = 5
 run_dir = "/app/data/single_run"
@@ -23,10 +24,12 @@ loss_type = "exact"
 epochs = 500
 batch_size = 2**12
 k_sub = 5
+noise_sigma = 0.
 
 # Package parameters into the SingleRunConfig
 config = SingleRunConfig(
     n_families=n_families,
+    n_ligands=n_ligands,
     latent_dim=latent_dim,
     n_units=n_units,
     epochs=epochs,
@@ -35,6 +38,7 @@ config = SingleRunConfig(
     temperature=0.1,
     lr=0.05,
     shape_sigma=0.1,
+    noise_sigma=noise_sigma,
     average_family_distance=5.0,
     use_sensitivity=False,
     loss_type=loss_type,

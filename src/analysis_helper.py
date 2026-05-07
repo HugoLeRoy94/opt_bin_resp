@@ -11,16 +11,16 @@ from src.bin_loss import DiscreteProxyLoss, compute_shannon_joint_entropy, compu
 
 
 @torch.no_grad()
-def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None):
+def plot_ligand_summary(env, physics, receptor_indices, n_points=200, axes=None):
     """
-    Creates a comprehensive summary plot for each ligand family adapted to the discrete model:
+    Creates a comprehensive summary plot for each ligand adapted to the discrete model:
     1. Dose-response curves as step functions (Main Frame)
     2. Concentration Distribution (Bottom Frame)
     3. Discrete Binary Assignment / Marginal Probabilities (Right Frame)
     """
     device = env.unit_latent.device
     N_Receptors = receptor_indices.shape[0]
-    n_families = env.n_families
+    n_ligands = env.n_ligands
     
     # Generate a color palette for the receptors
     colors = plt.cm.viridis(np.linspace(0, 0.9, N_Receptors))
@@ -35,14 +35,14 @@ def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None)
         ax_main, ax_bottom, ax_right = axes
         fig = ax_main.figure
 
-    for f_idx in range(n_families):
+    for l_idx in range(n_ligands):
         
         # =====================================================================
         # 1. DATA PREPARATION
         # =====================================================================
         
         # A. Bottom Frame: Exact Concentration PDF
-        c_sweep_tensor, c_pdf_tensor = env.get_concentration_sweep(f_idx, n_points=n_points)
+        c_sweep_tensor, c_pdf_tensor = env.get_concentration_sweep(l_idx, n_points=n_points)
         c_sweep_np = c_sweep_tensor.cpu().numpy()
         c_pdf_np = c_pdf_tensor.cpu().numpy()
         
@@ -51,7 +51,7 @@ def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None)
         
         # B. Main Frame: Dose Response (Sharp Sigmoid / Steps)
         # We don't need method='self_normalized' anymore because it's a true probability [0, 1]
-        _, p_o_np = physics.get_dose_response(env, receptor_indices, f_idx, n_points=n_points, method='absolute')
+        _, p_o_np = physics.get_dose_response(env, receptor_indices, l_idx, n_points=n_points, method='absolute')
         
         # =====================================================================
         # 2. PLOTTING
@@ -64,7 +64,7 @@ def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None)
             
         ax_main.set_ylabel("Activity Probability $p(a=1)$", fontsize=9)
         ax_main.tick_params(labelbottom=False, direction='in') 
-        ax_main.set_title(f"Receptor Array Binary Response: Ligand Family {f_idx}", fontsize=10, fontweight='bold')
+        ax_main.set_title(f"Receptor Array Binary Response: Ligand {l_idx}", fontsize=10, fontweight='bold')
         ax_main.set_ylim(-0.05, 1.05)
         # If your concentration spans orders of magnitude, uncomment the next line!
         ax_main.set_xscale('log')
@@ -109,11 +109,11 @@ def plot_family_summary(env, physics, receptor_indices, n_points=200, axes=None)
 @torch.no_grad()
 def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axes=None):
     """
-    Creates a SINGLE comprehensive summary plot for all ligand families.
+    Creates a SINGLE comprehensive summary plot for all ligands.
     """
     device = env.unit_latent.device
     N_Receptors = receptor_indices.shape[0]
-    n_families = env.n_families
+    n_ligands = env.n_ligands
     
     colors = plt.cm.viridis(np.linspace(0, 0.9, N_Receptors))
     
@@ -143,13 +143,13 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
     
     global_p_active = np.zeros(N_Receptors)
 
-    for f_idx in range(n_families):
-        c_sweep_tensor, c_pdf_tensor = env.get_concentration_sweep(f_idx, n_points=n_points)
+    for l_idx in range(n_ligands):
+        c_sweep_tensor, c_pdf_tensor = env.get_concentration_sweep(l_idx, n_points=n_points)
         c_sweep_np = c_sweep_tensor.cpu().numpy()
         c_pdf_np = c_pdf_tensor.cpu().numpy()
         c_weights = c_pdf_np / (np.sum(c_pdf_np) + 1e-12)
         
-        _, p_o_np = physics.get_dose_response(env, receptor_indices, f_idx, n_points=n_points, method='absolute')
+        _, p_o_np = physics.get_dose_response(env, receptor_indices, l_idx, n_points=n_points, method='absolute')
 
         p_plot_active = p_o_np
         
@@ -159,8 +159,8 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
         ax_bottom.fill_between(c_sweep_np, c_pdf_np, color='gray', alpha=0.15)
         ax_bottom.plot(c_sweep_np, c_pdf_np, color='black', lw=1., alpha=1.)
         
-        family_p_active = np.sum(p_plot_active * c_weights[:, None], axis=0)
-        global_p_active += (family_p_active / n_families)
+        ligand_p_active = np.sum(p_plot_active * c_weights[:, None], axis=0)
+        global_p_active += (ligand_p_active / n_ligands)
         
     global_p_inactive = 1.0 - global_p_active
 
@@ -195,7 +195,7 @@ def evaluate_model(env,physics,receptor_indices,loss_fn,n_samples=2000):
     device = env.interaction_mu.device
     N_Receptors = receptor_indices.shape[0]
     # draw random ligands
-    energies,concs,families = env.sample_batch(batch_size = n_samples)
+    energies,concs,mixture_masks = env.sample_batch(batch_size = n_samples)
     # compute the activity array
     activity = physics(energies, concs, receptor_indices)
 
@@ -209,13 +209,17 @@ def evaluate_model(env,physics,receptor_indices,loss_fn,n_samples=2000):
 def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, family_names=None, ax=None):
     """
     Creates a radar chart showing the relative binding strength of 
-    fully assembled receptors (heteromers) across all ligand families.
+    fully assembled receptors (heteromers) across all families.
     """
     n_families = env.n_families
     
-    # 1. Fetch exact Unit-Family Interaction Energies: (n_units, n_families)
-    # This matrix contains the interaction energy of each unit against the average (center) of each family.
-    unit_family_energies = env.interaction_mu.cpu()
+    # 1. Compute exact Unit-Family Interaction Energies: (n_units, n_families)
+    # This matrix contains the interaction energy of each unit against the exact center of each family.
+    weights = torch.nn.functional.softplus(env.unit_sensitivity_raw)
+    diff = env.unit_latent.unsqueeze(1) - env.family_latent.unsqueeze(0) # (U, F, D)
+    dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, F)
+    
+    unit_family_energies = (env.base_energy_u.unsqueeze(1) + dist_sq).cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)
@@ -288,6 +292,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     """
     Projects the N-dimensional chemical latent space into 2D using UMAP.
     Visualizes the families as density gradients (regions), the family centers as circles,
+    the ligands as small dots,
     and the assembled receptors as numeric indices.
     
     Args:
@@ -297,12 +302,15 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     """
     device = env.unit_latent.device
     n_families = env.n_families
+    n_ligands = env.n_ligands
     n_receptors = receptor_indices.shape[0]
     
     # =====================================================================
     # 1. EXTRACT CENTERS AND ASSEMBLED RECEPTORS
     # =====================================================================
     v_families = env.family_latent.detach().cpu().numpy()
+    v_ligands = env.ligand_latent.detach().cpu().numpy()
+    ligand_assignments = env.ligand_family_assignments.detach().cpu().numpy()
     
     # Fetch all raw unit vectors: (n_units, latent_dim)
     v_units_tensor = env.unit_latent.detach().cpu()
@@ -318,16 +326,20 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     sampled_labels = []
     
     for f_idx in range(n_families):
-        # Create a batch of exact identical centers
         center = env.family_latent[f_idx:f_idx+1].expand(n_samples_per_family, -1)
         
         # Draw from the exact distribution defined in the environment
         if env.distribution_type == 'gaussian':
             dist = torch.distributions.Normal(loc=center, scale=env.shape_sigma)
             pts = dist.rsample()
+        elif env.distribution_type == 'uniform_cube':
+            low = center - env.shape_sigma
+            high = center + env.shape_sigma
+            dist = torch.distributions.Uniform(low=low, high=high)
+            pts = dist.rsample()
         elif env.distribution_type == 'uniform':
             # Assuming UniformNBall is available in your scope
-            from core.environment import UniformNBall
+            from src.environment import UniformNBall
             dist = UniformNBall(loc=center, radius=env.shape_sigma, dim=env.latent_dim)
             pts = dist.rsample()
             
@@ -340,8 +352,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     # =====================================================================
     # 3. FIT UMAP PROJECTION
     # =====================================================================
-    # We fit UMAP on ALL data simultaneously so the topology is consistent
-    all_data = np.vstack([v_families, v_receptors, sampled_points])
+    all_data = np.vstack([v_families, v_ligands, v_receptors, sampled_points])
     
     print("Fitting UMAP... (This may take a few seconds)")
     reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, metric='euclidean')#, random_state=random_state)
@@ -349,8 +360,9 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     
     # Unpack the embeddings
     emb_families = embedding[:n_families]
-    emb_receptors = embedding[n_families : n_families + n_receptors]
-    emb_samples = embedding[n_families + n_receptors :]
+    emb_ligands = embedding[n_families : n_families + n_ligands]
+    emb_receptors = embedding[n_families + n_ligands : n_families + n_ligands + n_receptors]
+    emb_samples = embedding[n_families + n_ligands + n_receptors :]
     
     # =====================================================================
     # 4. PLOTTING
@@ -375,11 +387,19 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
             levels=5, thresh=0.05
         )
         
-        # Plot the exact family center (now a circle)
+        # Plot the exact family center
         ax.scatter(
             emb_families[f_idx, 0], emb_families[f_idx, 1], 
             marker='o', s=100//n_families, color=c, edgecolor='black', linewidth=1.2,
             zorder=4, label=f'Fam {f_idx}' if f_idx < 10 else ""
+        )
+        
+        # Plot ligands assigned to this family
+        ligand_pts = emb_ligands[ligand_assignments == f_idx]
+        ax.scatter(
+            ligand_pts[:, 0], ligand_pts[:, 1],
+            marker='.', s=20, color=c, edgecolor='black', linewidth=0.5,
+            zorder=3
         )
         
     # Plot the Assembled Receptors as numbered labels
@@ -474,30 +494,33 @@ def total_correlation(activity, loss_fn):
     return h_marginals - h_joint
 
 @torch.no_grad()
-def conditional_entropy_family(activity, family_ids, loss_fn):
-    """Computes H(A | F) on the existing evaluation batch."""
+def conditional_entropy_ligand(activity, mixture_masks, loss_fn):
+    """Computes H(A | M) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
         entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
     else:
         return 0.0
         
-    unique_families = torch.unique(family_ids)
-    if len(unique_families) == 0:
+    powers = 2 ** torch.arange(mixture_masks.shape[1], device=mixture_masks.device, dtype=mixture_masks.dtype)
+    mixture_ids = (mixture_masks * powers).sum(dim=-1).long()
+        
+    unique_mixtures = torch.unique(mixture_ids)
+    if len(unique_mixtures) == 0:
         return 0.0
         
     total_cond_h = 0.0
-    for f_idx in unique_families:
-        mask = (family_ids == f_idx)
-        soft_assign_f = soft_assign[mask]
-        family_h = entropy_fn(soft_assign_f)
-        total_cond_h += family_h.item() if isinstance(family_h, torch.Tensor) else family_h
+    for m_idx in unique_mixtures:
+        mask = (mixture_ids == m_idx)
+        soft_assign_m = soft_assign[mask]
+        mixture_h = entropy_fn(soft_assign_m)
+        total_cond_h += mixture_h.item() if isinstance(mixture_h, torch.Tensor) else mixture_h
         
-    return total_cond_h / len(unique_families)
+    return total_cond_h / len(unique_mixtures)
 
 @torch.no_grad()
-def mutual_information_family(activity, family_ids, loss_fn):
-    """Computes I(A ; F) on the existing evaluation batch."""
+def mutual_information_ligand(activity, mixture_masks, loss_fn):
+    """Computes I(A ; M) on the existing evaluation batch."""
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(activity)
         entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
@@ -506,8 +529,8 @@ def mutual_information_family(activity, family_ids, loss_fn):
         return 0.0
         
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
-    h_a_given_f = conditional_entropy_family(activity, family_ids, loss_fn)
-    return h_a_val - h_a_given_f
+    h_a_given_m = conditional_entropy_ligand(activity, mixture_masks, loss_fn)
+    return h_a_val - h_a_given_m
 
 @torch.no_grad()
 def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
@@ -518,7 +541,8 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
     else:
         return 0.0
         
-    sorted_concs, indices = torch.sort(concs)
+    total_concs = concs.sum(dim=-1)
+    sorted_concs, indices = torch.sort(total_concs)
     sorted_assign = soft_assign[indices]
     
     B = activity.shape[0]
@@ -552,21 +576,21 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
 @torch.no_grad()
 def rank_ordered_distances(env, receptor_indices):
     """
-    Calculates the rank-ordered energy gap from each assembled receptor to the families.
-    Returns a dictionary of the average energy penalty relative to the preferred family
-    (0.0 = preferred family, higher values = weaker affinity / stronger rejection).
+    Calculates the rank-ordered energy gap from each assembled receptor to the ligands.
+    Returns a dictionary of the average energy penalty relative to the preferred ligand
+    (0.0 = preferred ligand, higher values = weaker affinity / stronger rejection).
     This bypasses the label-switching problem to measure functional tuning.
     (Note: the dictionary keys are kept as 'dist_rank_i' for backward compatibility with plotting scripts)
     """
-    # 1. Fetch exact Unit-Family Interaction Energies (includes base energy and sensitivity weights)
-    # Shape: (n_units, n_families)
+    # 1. Fetch exact Unit-Ligand Interaction Energies (includes base energy and sensitivity weights)
+    # Shape: (n_units, n_ligands)
     unit_energies = env.interaction_mu
     
     # 2. Calculate the assembled receptor energies (mean of subunits)
-    # Shape: (N_Receptors, n_families)
+    # Shape: (N_Receptors, n_ligands)
     receptor_energies = unit_energies[receptor_indices].mean(dim=1)
     
-    # 3. Normalize energies per receptor: compute the energy gap relative to the preferred family
+    # 3. Normalize energies per receptor: compute the energy gap relative to the preferred ligand
     min_energies = receptor_energies.min(dim=1, keepdim=True)[0]
     normalized_energies = receptor_energies - min_energies
     
@@ -583,43 +607,48 @@ def rank_ordered_distances(env, receptor_indices):
     return result
 
 @torch.no_grad()
-def mean_specialization_index(activity, family_ids):
+def mean_specialization_index(activity, mixture_masks):
     """
     Computes the signal-to-noise ratio of receptor activation.
     S_r = (A_max - A_bg) / (A_max + A_bg)
     A value of 1.0 means a perfect specialist, 0.0 means a perfect generalist.
     """
     B, R = activity.shape
-    unique_families = torch.unique(family_ids)
-    n_families = len(unique_families)
     
-    if n_families <= 1:
-        return 0.0 # Cannot compute background with only 1 family
+    powers = 2 ** torch.arange(mixture_masks.shape[1], device=mixture_masks.device, dtype=mixture_masks.dtype)
+    mixture_ids = (mixture_masks * powers).sum(dim=-1).long()
+    unique_mixtures = torch.unique(mixture_ids)
+    n_mixtures = len(unique_mixtures)
+    
+    if n_mixtures <= 1:
+        return 0.0 
         
-    avg_act = torch.zeros(n_families, R, device=activity.device)
+    avg_act = torch.zeros(n_mixtures, R, device=activity.device)
     
-    for i, f_idx in enumerate(unique_families):
-        mask = (family_ids == f_idx)
+    for i, m_idx in enumerate(unique_mixtures):
+        mask = (mixture_ids == m_idx)
         if mask.any():
             avg_act[i] = activity[mask].mean(dim=0)
             
     A_max, _ = avg_act.max(dim=0) # (R,)
-    A_bg = (avg_act.sum(dim=0) - A_max) / (n_families - 1) # (R,)
+    A_bg = (avg_act.sum(dim=0) - A_max) / (n_mixtures - 1) # (R,)
     
     S_r = (A_max - A_bg) / (A_max + A_bg + 1e-12)
     return float(S_r.mean().item())
 
 @torch.no_grad()
-def receptor_conditioned_entropy(activity, family_ids, threshold=0.5):
+def receptor_conditioned_entropy(activity, mixture_masks, threshold=0.5):
     """
-    Computes the average entropy of the family distribution conditioned on a receptor firing:
-    H(F | a_r > threshold). 
+    Computes the average entropy of the mixture distribution conditioned on a receptor firing:
+    H(M | a_r > threshold). 
     A lower value indicates a more highly specialized receptor.
     """
     B, R = activity.shape
-    unique_families = torch.unique(family_ids)
+    powers = 2 ** torch.arange(mixture_masks.shape[1], device=mixture_masks.device, dtype=mixture_masks.dtype)
+    mixture_ids = (mixture_masks * powers).sum(dim=-1).long()
+    unique_mixtures = torch.unique(mixture_ids)
     
-    if len(unique_families) <= 1:
+    if len(unique_mixtures) <= 1:
         return 0.0
         
     total_entropy = 0.0
@@ -630,13 +659,13 @@ def receptor_conditioned_entropy(activity, family_ids, threshold=0.5):
         if not active_mask.any():
             continue # Receptor never fired in this batch, skip
             
-        active_families = family_ids[active_mask]
+        active_mixtures = mixture_ids[active_mask]
         
-        # Compute family frequencies for when this receptor fires
-        family_counts = torch.bincount(active_families, minlength=torch.max(unique_families)+1)
-        family_counts = family_counts[unique_families] # Filter to only the existing families
+        # Compute mixture frequencies for when this receptor fires
+        mixture_counts = torch.bincount(active_mixtures, minlength=torch.max(unique_mixtures)+1)
+        mixture_counts = mixture_counts[unique_mixtures] 
         
-        p_f = family_counts.float() / active_families.size(0)
+        p_f = mixture_counts.float() / active_mixtures.size(0)
         p_f = p_f[p_f > 0] # Filter out zeros to avoid log2(0) NaN
         
         h_r = -torch.sum(p_f * torch.log2(p_f))

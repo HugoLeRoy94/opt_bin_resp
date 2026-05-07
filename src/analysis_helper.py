@@ -513,7 +513,10 @@ def conditional_entropy_ligand(activity, mixture_masks, loss_fn):
     for m_idx in unique_mixtures:
         mask = (mixture_ids == m_idx)
         soft_assign_m = soft_assign[mask]
-        mixture_h = entropy_fn(soft_assign_m)
+        if soft_assign_m.shape[0] <= 1:
+            mixture_h = 0.0
+        else:
+            mixture_h = entropy_fn(soft_assign_m)
         total_cond_h += mixture_h.item() if isinstance(mixture_h, torch.Tensor) else mixture_h
         
     return total_cond_h / len(unique_mixtures)
@@ -554,7 +557,10 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
         end_idx = start_idx + bin_size if b < n_c_bins - 1 else B
         
         soft_assign_c = sorted_assign[start_idx:end_idx]
-        bin_h = entropy_fn(soft_assign_c)
+        if soft_assign_c.shape[0] <= 1:
+            bin_h = 0.0
+        else:
+            bin_h = entropy_fn(soft_assign_c)
         total_cond_h += bin_h.item() if isinstance(bin_h, torch.Tensor) else bin_h
         
     return total_cond_h / n_c_bins

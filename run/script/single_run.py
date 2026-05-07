@@ -1,9 +1,12 @@
-#!/usr/bin/env python3
+#!/home/hugo/.conda/envs/work/bin/python3
+
+#docker compose -f docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/single_run.py
 
 # %% Setup and Imports
 import time
 import sys
 import os
+import torch
 
 sys.path.append('/app')
 
@@ -15,16 +18,19 @@ from src.IO import ExperimentLogger
 # %% Configuration
 # Adjust your run parameters here
 n_families = 5
-n_ligands = 10
+n_ligands = 100
 latent_dim = 3
 n_units = 5
 run_dir = "/app/data/single_run"
 env_type = "asymmetric"
 loss_type = "exact"
-epochs = 500
+epochs = 5000
 batch_size = 2**12
 k_sub = 5
 noise_sigma = 0.
+
+# Generate receptor indices for homomers (each receptor is made of k_sub identical units)
+receptor_indices = torch.arange(n_units).unsqueeze(1).repeat(1, k_sub)
 
 # Package parameters into the SingleRunConfig
 config = SingleRunConfig(
@@ -43,8 +49,11 @@ config = SingleRunConfig(
     use_sensitivity=False,
     loss_type=loss_type,
     env_type=env_type,
-    entropy="renyi"
+    entropy="renyi",
+    receptor_indices=receptor_indices.tolist()
 )
+
+print(config)
 
 # %% Execution
 logger = ExperimentLogger(run_dir=run_dir)
@@ -52,7 +61,7 @@ logger.save_config(config)
 
 start_time = time.time()
 runner = SimulationRunner(config, logger)
-runner.run()
+runner.run(receptor_indices=receptor_indices)
 
 # Wrap up
 total_time = time.time() - start_time

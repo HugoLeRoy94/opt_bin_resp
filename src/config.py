@@ -42,15 +42,15 @@ class SingleRunConfig:
     # Measurement functions to compute during training/evaluation
     measurement_fns: List[str] = field(default_factory=lambda: [
         "full_array_entropy",
-        "mean_receptor_distance",
-        "conditional_entropy_ligand",
-        "mutual_information_ligand",
-        "conditional_entropy_concentration",
-        "mutual_information_concentration",
-        "receptor_distances",
-        "rank_ordered_distances",
-        "mean_specialization_index",
-        "receptor_conditioned_entropy"
+        #"mean_receptor_distance",
+        #"conditional_entropy_ligand",
+        #"mutual_information_ligand",
+        #"conditional_entropy_concentration",
+        #"mutual_information_concentration",
+        #"receptor_distances",
+        #"rank_ordered_distances",
+        #"mean_specialization_index",
+        #"receptor_conditioned_entropy"
     ])
 
     def __post_init__(self):
@@ -65,6 +65,17 @@ class SingleRunConfig:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    def __str__(self) -> str:
+        """Returns a well-arranged string representation of the configuration."""
+        lines = ["\n=== SingleRunConfig ==="]
+        for key, value in asdict(self).items():
+            if isinstance(value, list) and len(value) > 15:
+                lines.append(f"{key:<25}: <list of {len(value)} items>")
+            else:
+                lines.append(f"{key:<25}: {value}")
+        lines.append("=======================\n")
+        return "\n".join(lines)
+
 @dataclass
 class SweepConfig:
     """Wraps lists of parameters to sweep over, handling the nested grid logic."""
@@ -77,6 +88,21 @@ class SweepConfig:
     noise_sigma: float = 0.01
     sweep_name: str = "homomer_sweep"
     base_run_params: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        """Returns a well-arranged string representation of the sweep configuration."""
+        lines = ["\n=== SweepConfig ==="]
+        for key, value in asdict(self).items():
+            if isinstance(value, list) and len(value) > 15:
+                lines.append(f"{key:<25}: <list of {len(value)} items>")
+            elif isinstance(value, dict) and value:
+                lines.append(f"{key:<25}:")
+                for k, v in value.items():
+                    lines.append(f"  - {k:<21}: {v}")
+            else:
+                lines.append(f"{key:<25}: {value}")
+        lines.append("===================\n")
+        return "\n".join(lines)
 
     def generate_trajectories(self) -> Generator[Tuple[Dict[str, int], List[SingleRunConfig]], None, None]:
         """

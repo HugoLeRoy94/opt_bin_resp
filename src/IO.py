@@ -5,30 +5,63 @@ import pandas as pd
 import torch
 import numpy as np
 from datetime import datetime
-from src.config import SingleRunConfig, SweepConfig
+from src.config import SingleRunConfig, RunConfig
 
-# --- Custom Encoder ---
-class CustomJSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder to seamlessly handle PyTorch tensors and NumPy types."""
-    def default(self, obj):
-        if isinstance(obj, torch.Tensor): return obj.cpu().tolist()
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        if isinstance(obj, (np.integer, np.floating)): return obj.item()        
-        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)): return 0.0 
-        return super().default(obj)
 
 # ==========================================
-# LOGGERS (Writing Data)
+# SERIALISATION HELPERS
+# ==========================================
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Handles PyTorch tensors and NumPy types transparently."""
+    def default(self, obj):
+        if isinstance(obj, torch.Tensor):            return obj.cpu().tolist()
+        if isinstance(obj, np.ndarray):              return obj.tolist()
+        if isinstance(obj, (np.integer, np.floating)): return obj.item()
+        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)): return 0.0
+        return super().default(obj)
+
+
+# ==========================================
+# PATH HELPERS
+# ==========================================
+
+def _run_rel_path(run_config: RunConfig, meta: dict, single_cfg: SingleRunConfig) -> str:
+    """
+    Builds the relative path for one run within a sweep.
+
+    Structure:
+        {ind_axis_1}_{val}/ ... {ind_axis_N}_{val}/   (sorted, only if swept)
+        sample_{id}/
+        {warm_axis}_{val}/                             (only if warm axis is swept)
+
+    Only axes that actually vary appear in the path, keeping single-value
+    sweeps from creating redundant nesting.
+    """
+    parts = []
+    for k in sorted(k for k in meta if k != "sample_id"):
+        parts.append(f"{k}_{meta[k]}")
+    parts.append(f"sample_{meta['sample_id']}")
+
+    warm_axis = run_config.warm_start_axis
+    if warm_axis and isinstance(getattr(run_config, warm_axis, None), list):
+        parts.append(f"{warm_axis}_{getattr(single_cfg, warm_axis)}")
+
+    return os.path.join(*parts)
+
+
+# ==========================================
+# LOGGERS  (Writing Data)
 # ==========================================
 
 class ExperimentLogger:
-    """Core logger for saving configs, stats, and checkpoints to a specific directory."""
+    """Core logger: saves configs, training stats, and checkpoints to a directory."""
+
     def __init__(self, run_dir: str):
-        self.run_dir = run_dir
-        self.ckpt_dir = os.path.join(self.run_dir, "checkpoints")
-        self.stats_path = os.path.join(self.run_dir, "stats.csv")
-        self.config_path = os.path.join(self.run_dir, "config.json")
-        
+        self.run_dir  = run_dir
+        self.ckpt_dir = os.path.join(run_dir, "checkpoints")
+        self.stats_path  = os.path.join(run_dir, "stats.csv")
+        self.config_path = os.path.join(run_dir, "config.json")
         os.makedirs(self.ckpt_dir, exist_ok=True)
 
     def save_config(self, config: SingleRunConfig):
@@ -36,9 +69,9 @@ class ExperimentLogger:
             json.dump(config.to_dict(), f, indent=4, cls=CustomJSONEncoder)
 
     def save_stats(self, epoch: int, stats: dict):
-        stats['epoch'] = epoch
+        stats["epoch"] = epoch
         file_exists = os.path.isfile(self.stats_path)
-        with open(self.stats_path, 'a', newline='') as f:
+        with open(self.stats_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=stats.keys())
             if not file_exists:
                 writer.writeheader()
@@ -47,108 +80,126 @@ class ExperimentLogger:
     def save_checkpoint(self, epoch: int, env, physics, receptor_indices, is_best: bool = False):
         checkpoint = {
             "epoch": epoch,
-            "env_state": env.state_dict(),
+            "env_state":    env.state_dict(),
             "physics_state": physics.state_dict(),
-            "receptor_indices": receptor_indices.cpu() if isinstance(receptor_indices, torch.Tensor) else receptor_indices,
+            "receptor_indices": (
+                receptor_indices.cpu()
+                if isinstance(receptor_indices, torch.Tensor)
+                else receptor_indices
+            ),
         }
-        torch.save(checkpoint, os.path.join(self.ckpt_dir, f"checkpoint_epoch_{epoch:04d}.pt"))
+        path = os.path.join(self.ckpt_dir, f"checkpoint_epoch_{epoch:04d}.pt")
+        torch.save(checkpoint, path)
         if is_best:
             torch.save(checkpoint, os.path.join(self.run_dir, "best_model.pt"))
 
-class SingleRunLogger(ExperimentLogger):
-    """A specialized logger for a node within a Sweep grid."""
-    def __init__(self, sweep_root: str, meta: dict, config: SingleRunConfig):
-        self.config = config
-        
-        # Enforce strict hierarchy: root / dim_X / sample_Y / units_Z
-        rel_path = f"dim_{config.latent_dim}/sample_{meta['sample_id']}/units_{config.n_units}"
-        run_dir = os.path.join(sweep_root, rel_path)
-        super().__init__(run_dir)
-        self.save_config(config)
 
 class SweepLogger:
-    """Initializes the master sweep folder and generates SingleRunLoggers."""
-    def __init__(self, config: SweepConfig):
+    """Initialises the master sweep directory and vends per-run loggers."""
+
+    def __init__(self, config: RunConfig):
         self.config = config
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.sweep_root = os.path.join(config.base_folder, f"{config.sweep_name}_{timestamp}")
-        
+        self.sweep_root = os.path.join(
+            config.base_folder, f"{config.sweep_name}_{timestamp}"
+        )
         os.makedirs(self.sweep_root, exist_ok=True)
         self._save_sweep_config()
 
     def _save_sweep_config(self):
         path = os.path.join(self.sweep_root, "sweep_config.json")
         with open(path, "w") as f:
-            # Save the raw dictionary of the dataclass
-            json.dump(self.config.__dict__, f, indent=4, cls=CustomJSONEncoder)
+            json.dump(self.config.to_dict(), f, indent=4, cls=CustomJSONEncoder)
 
-    def get_run_logger(self, meta: dict, run_config: SingleRunConfig) -> SingleRunLogger:
-        return SingleRunLogger(self.sweep_root, meta, run_config)
+    def get_run_logger(self, meta: dict, single_cfg: SingleRunConfig) -> ExperimentLogger:
+        rel_path = _run_rel_path(self.config, meta, single_cfg)
+        run_dir  = os.path.join(self.sweep_root, rel_path)
+        logger   = ExperimentLogger(run_dir)
+        logger.save_config(single_cfg)
+        return logger
 
 
 # ==========================================
-# LOADERS (Reading Data)
+# LOADERS  (Reading Data)
 # ==========================================
 
 class SingleRunLoader:
-    """Loads data from a targeted single run directory."""
+    """Loads data from a single-run directory."""
+
     def __init__(self, run_dir: str):
-        self.run_dir = run_dir
-        self.ckpt_dir = os.path.join(run_dir, "checkpoints")
-        self.stats_path = os.path.join(run_dir, "stats.csv")
+        self.run_dir     = run_dir
+        self.ckpt_dir    = os.path.join(run_dir, "checkpoints")
+        self.stats_path  = os.path.join(run_dir, "stats.csv")
         self.config_path = os.path.join(run_dir, "config.json")
-        
-        if not os.path.exists(self.run_dir):
-            raise FileNotFoundError(f"Directory {self.run_dir} does not exist.")
+        if not os.path.exists(run_dir):
+            raise FileNotFoundError(f"Directory {run_dir} does not exist.")
 
     def load_config(self) -> SingleRunConfig:
-        with open(self.config_path, "r") as f:
+        with open(self.config_path) as f:
             data = json.load(f)
-            # Filter keys safely
-            valid_keys = {k for k in SingleRunConfig.__dataclass_fields__.keys()}
-            filtered = {k: v for k, v in data.items() if k in valid_keys}
-            return SingleRunConfig(**filtered)
+        valid_keys = set(SingleRunConfig.__dataclass_fields__)
+        return SingleRunConfig(**{k: v for k, v in data.items() if k in valid_keys})
 
     def load_history(self) -> pd.DataFrame:
         return pd.read_csv(self.stats_path)
 
-    def load_checkpoint(self, filename="best_model.pt", map_location="cpu"):
+    def load_checkpoint(self, filename: str = "best_model.pt", map_location: str = "cpu"):
         return torch.load(os.path.join(self.run_dir, filename), map_location=map_location)
 
 
 class SweepLoader:
-    """Aggregates an entire Sweep directory into analysis-ready data structures."""
+    """Aggregates a full sweep directory into analysis-ready data structures."""
+
     def __init__(self, sweep_root: str):
-        self.sweep_root = sweep_root
-        self.config_path = os.path.join(sweep_root, "sweep_config.json")
-        
-        if not os.path.exists(self.config_path):
-            raise FileNotFoundError(f"Sweep config missing at {self.config_path}")
-            
-        with open(self.config_path, "r") as f:
-            data = json.load(f)
-            self.config = SweepConfig(**data)
+        self.sweep_root  = sweep_root
+        config_path = os.path.join(sweep_root, "sweep_config.json")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Sweep config missing at {config_path}")
+        with open(config_path) as f:
+            self.config = RunConfig.from_dict(json.load(f))
+
+    def iter_run_dirs(self):
+        """Yields (meta, single_cfg, run_dir) for every run in the sweep."""
+        for meta, trajectory in self.config.generate_trajectories():
+            for single_cfg in trajectory:
+                rel = _run_rel_path(self.config, meta, single_cfg)
+                yield meta, single_cfg, os.path.join(self.sweep_root, rel)
 
     def load_all_histories(self) -> pd.DataFrame:
         """
-        Crawls the sweep grid, loads all stats.csv files, and injects metadata 
-        (latent_dim, sample_id, n_units) to return one massive DataFrame.
+        Crawls the sweep grid, loads all stats.csv files, and injects metadata
+        columns (independent axes + sample_id + warm axis) for downstream analysis.
         """
         all_dfs = []
-        
-        # Traverse the expected grid generated by the config
-        for meta, trajectories in self.config.generate_trajectories():
-            for run_config in trajectories:
-                rel_path = f"dim_{run_config.latent_dim}/sample_{meta['sample_id']}/units_{run_config.n_units}"
-                run_dir = os.path.join(self.sweep_root, rel_path)
-                stats_file = os.path.join(run_dir, "stats.csv")
-                
-                if os.path.exists(stats_file):
-                    df = pd.read_csv(stats_file)
-                    # Inject identifying metadata for downstream analysis (e.g. Seaborn plotting)
-                    df['latent_dim'] = run_config.latent_dim
-                    df['sample_id'] = meta['sample_id']
-                    df['n_units'] = run_config.n_units
-                    all_dfs.append(df)
-                    
+        for meta, single_cfg, run_dir in self.iter_run_dirs():
+            stats_file = os.path.join(run_dir, "stats.csv")
+            if not os.path.exists(stats_file):
+                continue
+            df = pd.read_csv(stats_file)
+            for k, v in meta.items():
+                df[k] = v
+            warm_axis = self.config.warm_start_axis
+            if warm_axis and isinstance(getattr(self.config, warm_axis, None), list):
+                df[warm_axis] = getattr(single_cfg, warm_axis)
+            all_dfs.append(df)
         return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+
+# ==========================================
+# MODULE-LEVEL UTILITIES
+# ==========================================
+
+def find_latest_sweep(base_dir: str, prefix: str = "") -> str:
+    """
+    Returns the path of the most recently modified sweep directory under base_dir.
+    Optionally filters by a name prefix (e.g. "latent_dim_sweep").
+    Raises FileNotFoundError if nothing matches.
+    """
+    from pathlib import Path
+    dirs = [d for d in Path(base_dir).iterdir()
+            if d.is_dir() and d.name.startswith(prefix)]
+    if not dirs:
+        raise FileNotFoundError(
+            f"No directories matching '{prefix}*' found in {base_dir}"
+        )
+    return str(max(dirs, key=lambda d: d.stat().st_mtime))

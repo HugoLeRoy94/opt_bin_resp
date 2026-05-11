@@ -24,9 +24,9 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment: single family at the origin, same as cover_bound_sharpness ---
     n_families=1,
-    n_ligands=100,
+    n_ligands=500,
     latent_dim=20,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
-    family_spread=0.1,
+    family_spread=1.,
     average_family_distance=0.0,              # family centre fixed at origin
     environment_geometry="asymmetric",
     distribution_type="gaussian",
@@ -37,7 +37,7 @@ config = RunConfig(
     conc_model_type="lognormal",
     conc_mean_range=(-6.0, -6.0),
     conc_std_range=(1.0, 1.0),
-    p_presence_range=(0.2, 0.2),
+    p_presence_range=(0.05, 0.05),
 
     # --- Physics: N=10 receptors (2^10=1024 achievable codes) ---
     n_genes=10,
@@ -62,7 +62,7 @@ config = RunConfig(
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---
-    n_samples=5,
+    n_samples=1,
     sweep_name="batch_size_sweep",
     base_folder="/app/data/batch_size_sweep",
     warm_start_axis=None,                     # no warm-starting; n_genes is fixed

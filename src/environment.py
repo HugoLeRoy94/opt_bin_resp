@@ -61,7 +61,7 @@ class LogNormalConcentration(ConcentrationModel):
     Classic Biophysics assumption: c spans orders of magnitude.
     log10(c) ~ Normal(mu, sigma)
     """
-    def __init__(self, n_ligands: int, init_mean=-6.0, init_scale=1.0):
+    def __init__(self, n_ligands: int, init_mean: float, init_scale: float):
         super().__init__()
         
         mu_tensor = torch.tensor(init_mean, dtype=torch.float32)
@@ -133,7 +133,7 @@ class NormalConcentration(ConcentrationModel):
     Simple Gaussian assumption.
     c ~ Normal(mu, sigma) clamped at 0.
     """
-    def __init__(self, n_ligands: int, init_mean=10**-6, init_scale=10**-7):
+    def __init__(self, n_ligands: int, init_mean: float, init_scale: float):
         super().__init__()
         mu_tensor = torch.tensor(init_mean, dtype=torch.float32)
         if mu_tensor.ndim == 0:
@@ -179,100 +179,87 @@ class NormalConcentration(ConcentrationModel):
         return c_sweep, pdf
 
 class LigandEnvironment(nn.Module):
-    def __init__(self, n_units: int, n_families: int, conc_model: ConcentrationModel,
-                 n_ligands: int = 10, p_presence: list = None, noise_sigma: float = 0.01,
-                 latent_dim: int = 3, shape_sigma: float = 0.5, distribution_type: str = 'gaussian',
-                 avg_family_distance: float = 5.0, use_sensitivity: bool = False):
+    def __init__(self, n_genes: int, n_families: int, conc_model: ConcentrationModel,
+                 n_ligands: int, p_presence: list, observation_noise_sigma: float,
+                 latent_dim: int, family_spread: float, distribution_type: str,
+                 avg_family_distance: float, affinity_length_scale: float = 1.0):
         """
         Args:
-            n_units: Number of protein units
+            n_genes: Number of gene units
             n_families: Number of ligand families
             conc_model: An INSTANCE of a ConcentrationModel subclass
             n_ligands: Size of the fixed ligand pool
             p_presence: Probability of a ligand appearing in a mixture
-            noise_sigma: Additive orientation noise during sampling
-            latent_dim: Dimensionality of the chemical latent space (trade-off space)
-            shape_sigma: The fixed spatial spread (fuzziness) of the ligand families
+            observation_noise_sigma: Observation noise magnitude
+            latent_dim: Dimensionality of the chemical latent space
+            family_spread: Fixed spatial spread (fuzziness) of the ligand families
             distribution_type: 'gaussian' or 'uniform'
-            avg_family_distance: Target average Euclidean distance between ligand families.
+            avg_family_distance: Target average Euclidean distance between ligand families
+            affinity_length_scale: Global λ — controls Gaussian breadth of affinity kernel
         """
         super().__init__()
-        self.use_sensitivity = use_sensitivity
-        self.n_units = n_units
+        self.n_genes = n_genes
         self.n_families = n_families
         self.n_ligands = n_ligands
         self.latent_dim = latent_dim
-        self.shape_sigma = shape_sigma
+        self.family_spread = family_spread
         self.avg_family_distance = avg_family_distance
         self.p_presence = p_presence
-        self.noise_sigma = noise_sigma
-        
-        if p_presence is None:
-            p_tensor = torch.full((n_ligands,), 0.1, dtype=torch.float32)
-        else:
-            p_tensor = torch.tensor(p_presence, dtype=torch.float32)
-            
+        self.observation_noise_sigma = observation_noise_sigma
+        self.affinity_length_scale = affinity_length_scale
+
+        p_tensor = torch.tensor(p_presence, dtype=torch.float32)
         self.register_buffer('p_presence_tensor', p_tensor)
 
-        
         if distribution_type not in ['gaussian', 'uniform']:
             raise ValueError("distribution_type must be 'gaussian' or 'uniform'")
         self.distribution_type = distribution_type
-        
+
         # 1. Inject the Concentration Strategy
         self.concentration_model = conc_model
-        
+
         # ----------------------------------------------------------------------
         # MECHANISTIC LATENT SPACE INITIALIZATION
         # ----------------------------------------------------------------------
-        
-        # 1. The Octopus Adapts (Learnable Unit Coordinates)
-        self.unit_latent = nn.Parameter(torch.randn(n_units, latent_dim) * 1.0)
-        
-        # NEW: Sensitivity weights for each dimension (allows anisotropic receptive fields)
-        if not self.use_sensitivity:
-            # Register a non-learnable buffer. We set it to ln(e - 1) ≈ 0.5413 so that
-            # torch.nn.functional.softplus(unit_sensitivity_raw) exactly equals 1.0 everywhere.
-            self.register_buffer('unit_sensitivity_raw', torch.full((n_units, latent_dim), math.log(math.e - 1)))
-        else:
-            # Initialize to 0.0, so softplus(0) ~ 0.69 gives a balanced starting weight
-            self.unit_sensitivity_raw = nn.Parameter(torch.zeros(n_units, latent_dim))
-        
+
+        # Learnable Unit Coordinates
+        self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
+
+        # Per-unit saturation ceiling: E_o(u, ℓ_far) - E_o(u, ℓ_opt) = softplus(max_energy_u_raw)
+        # Initialized so softplus(x) ≈ 10.0 (ln(e^10 - 1) ≈ 10)
+        self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), math.log(math.e ** 10.0 - 1.0)))
+
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
         self.register_buffer('family_latent', fixed_families)
-        
+
         # 2.5 Ligand Pool Initialization
         with torch.no_grad():
             # Assign each ligand to a family randomly
             ligand_family_assignments = torch.randint(0, n_families, (n_ligands,))
             self.register_buffer('ligand_family_assignments', ligand_family_assignments)
-            
+
             # Draw permanent base coordinates for the ligands
             base_centers = fixed_families[ligand_family_assignments]
             if self.distribution_type == 'gaussian':
-                ligand_dist = dist.Normal(loc=base_centers, scale=self.shape_sigma)
+                ligand_dist = dist.Normal(loc=base_centers, scale=self.family_spread)
                 fixed_ligands = ligand_dist.rsample()
             elif self.distribution_type == 'uniform_cube':
-                low = base_centers - self.shape_sigma
-                high = base_centers + self.shape_sigma
+                low = base_centers - self.family_spread
+                high = base_centers + self.family_spread
                 ligand_dist = dist.Uniform(low=low, high=high)
                 fixed_ligands = ligand_dist.rsample()
             elif self.distribution_type == 'uniform':
-                ligand_dist = UniformNBall(loc=base_centers, radius=self.shape_sigma, dim=self.latent_dim)
+                ligand_dist = UniformNBall(loc=base_centers, radius=self.family_spread, dim=self.latent_dim)
                 fixed_ligands = ligand_dist.rsample()
-            
+
             self.register_buffer('ligand_latent', fixed_ligands)
-        
-        # 3. Unit-specific Base Energies (Maximum intrinsic affinity)
+
+        # 3. Unit-specific Base Energies
+        # E_base(u) = E_o(u, ℓ_opt): open-state energy at the optimal (zero-distance) ligand.
+        # Initialised to E[ln c] so EC50 matches the expected concentration at the start.
         global_avg_log_c = self.concentration_model.get_expected_log_c().mean().item()
-        # Dynamically subtract the initial expected distance squared to prevent dead sensors in high dimensions
-        with torch.no_grad():
-            weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-            diff = self.unit_latent.unsqueeze(1) - fixed_ligands.unsqueeze(0)
-            initial_dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1).mean().item()
-        self.base_energy_u = nn.Parameter(torch.ones(n_units) * (global_avg_log_c - initial_dist_sq))
-        #self.base_energy_u = nn.Parameter(torch.ones(n_units) * global_avg_log_c)
+        self.base_energy_u = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
 
     def clone_with_extra_units(self, extra_units: int = 1):
         """
@@ -284,26 +271,26 @@ class LigandEnvironment(nn.Module):
         
         # Use self.__class__ to automatically support subclasses like SymmetricLigandEnvironment
         new_env = self.__class__(
-            n_units=self.n_units + extra_units,
+            n_genes=self.n_genes + extra_units,
             n_families=self.n_families,
             conc_model=new_conc_model,
             n_ligands=self.n_ligands,
             p_presence=self.p_presence,
-            noise_sigma=self.noise_sigma,
+            observation_noise_sigma=self.observation_noise_sigma,
             latent_dim=self.latent_dim,
-            shape_sigma=self.shape_sigma,
+            family_spread=self.family_spread,
             distribution_type=self.distribution_type,
             avg_family_distance=self.avg_family_distance,
-            use_sensitivity=self.use_sensitivity
+            affinity_length_scale=self.affinity_length_scale,
         ).to(self.unit_latent.device)
-        
+
         with torch.no_grad():
             new_env.family_latent.copy_(self.family_latent)
             new_env.ligand_family_assignments.copy_(self.ligand_family_assignments)
             new_env.ligand_latent.copy_(self.ligand_latent)
-            new_env.unit_latent.data[:self.n_units] = self.unit_latent.data.clone()
-            new_env.unit_sensitivity_raw.data[:self.n_units] = self.unit_sensitivity_raw.data.clone()
-            new_env.base_energy_u.data[:self.n_units] = self.base_energy_u.data.clone()
+            new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
+            new_env.max_energy_u_raw.data[:self.n_genes] = self.max_energy_u_raw.data.clone()
+            new_env.base_energy_u.data[:self.n_genes] = self.base_energy_u.data.clone()
             
         return new_env
 
@@ -329,15 +316,14 @@ class LigandEnvironment(nn.Module):
     @property
     def interaction_mu(self) -> torch.Tensor:
         """
-        Compatibility property for plotting dose-response curves.
-        Returns the MEAN open-state energy for each unit against each ligand's exact center.
-        Shape: (n_units, n_ligands)
+        Open-state energy for each unit against each ligand's exact center.
+        Shape: (n_genes, n_ligands)
         """
-        weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-        diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0) # (U, L, D)
-        dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, L)
-        
-        mu_open = self.base_energy_u.unsqueeze(1) + dist_sq
+        diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0)  # (U, L, D)
+        dist_sq = (diff ** 2).sum(dim=-1)  # (U, L)
+        max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
+        lambda_sq = self.affinity_length_scale ** 2
+        mu_open = self.base_energy_u.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
         return mu_open
 
     def sample_batch(self, batch_size: int):
@@ -350,17 +336,17 @@ class LigandEnvironment(nn.Module):
         concs = self.concentration_model.sample(batch_size) * mixture_masks
         
         # 3. Add orientation/observation noise to the ligand latent coordinates
-        noise = torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device) * self.noise_sigma
+        noise = torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device) * self.observation_noise_sigma
         v_ligands = self.ligand_latent.unsqueeze(0) + noise
-            
-        # 4. Calculate Energies based on Distance
-        weights = torch.nn.functional.softplus(self.unit_sensitivity_raw)
-        # v_ligands shape: (Batch, L, D) -> (Batch, L, 1, D)
-        # unit_latent shape: (U, D) -> (1, 1, U, D)
+
+        # 4. Calculate Energies using saturating affinity kernel
+        # v_ligands: (Batch, L, D) -> (Batch, L, 1, D); unit_latent: (U, D) -> (1, 1, U, D)
         diff = v_ligands.unsqueeze(2) - self.unit_latent.unsqueeze(0).unsqueeze(0)
-        dist_sq = (weights.unsqueeze(0).unsqueeze(0) * (diff ** 2)).sum(dim=-1) # Shape: (Batch, L, U)
-        
-        E_open = self.base_energy_u.unsqueeze(0).unsqueeze(0) + dist_sq # Shape: (Batch, L, U)
+        dist_sq = (diff ** 2).sum(dim=-1)  # (Batch, L, U)
+        max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
+        lambda_sq = self.affinity_length_scale ** 2
+        E_open = (self.base_energy_u.unsqueeze(0).unsqueeze(0)
+                  + max_e.unsqueeze(0).unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))  # (Batch, L, U)
         
         return E_open, concs, mixture_masks
 

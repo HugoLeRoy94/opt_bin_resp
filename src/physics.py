@@ -8,9 +8,9 @@ class BaseReceptor(nn.Module, ABC):
     Abstract Base Class for Receptor Physics.
     Handles the common boilerplate of gathering units and computing dose-responses.
     """
-    def __init__(self, n_units: int, k_sub: int = 5):
+    def __init__(self, n_genes: int, k_sub: int):
         super().__init__()
-        self.n_units = n_units
+        self.n_genes = n_genes
         self.k_sub = k_sub
 
     @abstractmethod
@@ -35,7 +35,7 @@ class BaseReceptor(nn.Module, ABC):
         """
         Args:
             energies: Sampled interaction energies. 
-                      Can be (Batch, L, n_units, 2) for MWC or (Batch, L, n_units) for Threshold.
+                      Can be (Batch, L, n_genes, 2) for MWC or (Batch, L, n_genes) for Threshold.
             concentrations: (Batch, L) - Sampled concentrations for the mixture
             receptor_indices: (N_Receptors, k_sub) - Stoichiometry definitions
         """
@@ -101,17 +101,20 @@ class BaseReceptor(nn.Module, ABC):
         n_quad = nodes_grid.shape[0]
 
         # 2. Get unit and ligand info
-        unit_latents = env.unit_latent[receptor_indices] 
-        ligand_latent = env.ligand_latent[ligand_id] 
+        unit_latents = env.unit_latent[receptor_indices]
+        ligand_latent = env.ligand_latent[ligand_id]
         base_energies = env.base_energy_u[receptor_indices]
+        max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]
 
-        # 3. Transform nodes to sample from ligand observation noise v ~ N(ligand_latent, env.noise_sigma)
-        v_samples = ligand_latent.unsqueeze(0) + nodes_grid * env.noise_sigma 
+        # 3. Transform nodes to sample from ligand observation noise v ~ N(ligand_latent, env.observation_noise_sigma)
+        v_samples = ligand_latent.unsqueeze(0) + nodes_grid * env.observation_noise_sigma
 
-        # 4. Calculate energies for each quadrature sample point
+        # 4. Calculate energies using saturating affinity kernel
         diff = v_samples.view(n_quad, 1, 1, env.latent_dim) - unit_latents.view(1, *unit_latents.shape)
         dist_sq = (diff ** 2).sum(dim=-1)
-        E_open_samples = base_energies.unsqueeze(0) + dist_sq
+        lambda_sq = env.affinity_length_scale ** 2
+        E_open_samples = (base_energies.unsqueeze(0)
+                          + max_energies.unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
 
         # 5. Compute p_open for each sample and concentration, then average
         log_ec50 = E_open_samples.mean(dim=-1) # (n_quad, N_r)
@@ -133,7 +136,7 @@ class BaseReceptor(nn.Module, ABC):
 class MWCReceptor(BaseReceptor):
     """
     The classic MWC Model.
-    Expects energies of shape (Batch, L, n_units, 2) where index 0 is open, 1 is closed.
+    Expects energies of shape (Batch, L, n_genes, 2) where index 0 is open, 1 is closed.
     """
     def p_open(self, c_reshaped: torch.Tensor, energies_k: torch.Tensor):
         E_open = energies_k[..., 0]
@@ -167,10 +170,10 @@ class MWCReceptor(BaseReceptor):
 class BinaryReceptor(BaseReceptor):
     """
     Simplified Threshold (Binary) Model.
-    Expects energies of shape (Batch, n_units) representing the open-state affinity.
+    Expects energies of shape (Batch, n_genes) representing the open-state affinity.
     """
-    def __init__(self, n_units: int, k_sub: int = 5, temperature: float = 0.1):
-        super().__init__(n_units, k_sub)
+    def __init__(self, n_genes: int, k_sub: int, temperature: float):
+        super().__init__(n_genes, k_sub)
         self.temperature = temperature
 
     def p_open(self, c_reshaped: torch.Tensor, energies_k: torch.Tensor):

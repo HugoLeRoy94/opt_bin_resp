@@ -97,7 +97,7 @@ class DiscreteExactLoss(nn.Module):
     Maximizes the exact discrete binary joint entropy of the array.
     Ideal for systems where components must be correlated (like a thermometer code).
     """
-    def __init__(self, entropy_type: str = 'shannon'):
+    def __init__(self, entropy_type: str):
         super().__init__()
         self.entropy_type = entropy_type
 
@@ -120,13 +120,13 @@ class DiscreteProxyLoss(nn.Module):
     Maximizes the discrete binary Shannon entropy of the marginals,
     while minimizing a penalty term to encourage receptor independence or diversity.
     """
-    def __init__(self, cov_weight: float = 1.0, penalty_type: str = 'repulsion'):
+    def __init__(self, cov_weight: float, penalty_type: str):
         """
         Args:
             cov_weight: Weight for the penalty term.
             penalty_type: The type of penalty to apply. Can be 'repulsion' (penalizes
                           similar activation profiles) or 'covariance' (penalizes linear
-                          correlation). Defaults to 'repulsion'.
+                          correlation).
         """
         super().__init__()
         self.cov_weight = cov_weight

@@ -10,7 +10,7 @@ class MaximizeMutualInformationLigandLoss(nn.Module):
     This is achieved by minimizing the loss:
     Loss = H(A | M) - H(A)
     """
-    def __init__(self, entropy_type: str = 'renyi'):
+    def __init__(self, entropy_type: str):
         super().__init__()
         self.entropy_type = entropy_type
 

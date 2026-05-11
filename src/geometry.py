@@ -6,7 +6,7 @@ import numpy as np
 def exp_distrib(l,beta=0.371177):
     return beta*np.exp(-beta * l )
 
-def generate_receptor_indices(n_units, k_sub, n_sensors):
+def generate_receptor_indices(n_genes, k_sub, n_sensors):
     """
     Generates the identity of the receptors in our array.
     Since 26^5 is huge, we randomly sample 'n_sensors' unique combinations 
@@ -14,7 +14,7 @@ def generate_receptor_indices(n_units, k_sub, n_sensors):
     """
     # 1. Generate all possible combinations (approx 142k for 26 choose 5)
     # combinations_with_replacement handles stoichiometry (AAAAA, AAAAB, etc.)
-    all_combos = list(itertools.combinations_with_replacement(range(n_units), k_sub))
+    all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
     
     # 2. Select a subset to simulate the "Octopus Nose"
     if n_sensors > len(all_combos):
@@ -24,18 +24,18 @@ def generate_receptor_indices(n_units, k_sub, n_sensors):
         
     return torch.tensor(selected, dtype=torch.long)
 
-def generate_targeted_receptors(n_units, k_sub, composition_targets):
+def generate_targeted_receptors(n_genes, k_sub, composition_targets):
     """
     Generates combinations prioritized by their complexity (number of unique subunits).
     
     Args:
-        n_units (int): Total number of available sub-units.
+        n_genes (int): Total number of available sub-units.
         k_sub (int): Number of sub-units in a receptor (e.g., 5).
         composition_targets (dict): Defines how many to draw per complexity level.
                                     Format: {num_unique_units: count}
                                     Example: {1: 'all', 2: 10, 3: 5}
     """
-    all_combos = list(itertools.combinations_with_replacement(range(n_units), k_sub))
+    all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
     
     # 1. Bucket the combinations by the number of unique subunits
     buckets = {}
@@ -66,12 +66,12 @@ def generate_targeted_receptors(n_units, k_sub, composition_targets):
     return torch.tensor(selected_combos, dtype=torch.long)
 
 
-def generate_cascading_receptors(n_units, k_sub, n_sensors):
+def generate_cascading_receptors(n_genes, k_sub, n_sensors):
     """
     Automatically prioritizes simpler combinations (homomers > 2-mixes > 3-mixes)
     until the 'n_sensors' quota is reached.
     """
-    all_combos = list(itertools.combinations_with_replacement(range(n_units), k_sub))
+    all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
     
     buckets = {}
     for combo in all_combos:
@@ -97,7 +97,7 @@ def generate_cascading_receptors(n_units, k_sub, n_sensors):
         
     return torch.tensor(selected_combos, dtype=torch.long)
 
-def generate_exp_distributed_receptors(N_receptors, n_units, k_sub):
+def generate_exp_distributed_receptors(N_receptors, n_genes, k_sub):
     """
     Generates a list of receptor combinations where the number of unique genes
     (subunits) in each combination follows the exponential distribution.
@@ -113,9 +113,9 @@ def generate_exp_distributed_receptors(N_receptors, n_units, k_sub):
     composition_targets = {int(k): int(v) for k, v in zip(unique, counts)}
     
     # 3. Use the existing targeted generator to fetch the combinations
-    return generate_targeted_receptors(n_units, k_sub, composition_targets)
+    return generate_targeted_receptors(n_genes, k_sub, composition_targets)
 
-def generate_bernoulli_receptors(N_receptors, n_units, k_sub, gene_probs):
+def generate_bernoulli_receptors(N_receptors, n_genes, k_sub, gene_probs):
     """
     Generates combinations (cells) where each gene's presence is determined by an 
     independent Bernoulli trial using `gene_probs`. 
@@ -129,7 +129,7 @@ def generate_bernoulli_receptors(N_receptors, n_units, k_sub, gene_probs):
     
     while len(combos_list) < N_receptors:
         # 1. Determine which genes are expressed in this cell via Bernoulli trials
-        expressed_mask = np.random.rand(n_units) < gene_probs
+        expressed_mask = np.random.rand(n_genes) < gene_probs
         expressed_genes = np.where(expressed_mask)[0]
         n_expressed = len(expressed_genes)
         

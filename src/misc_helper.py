@@ -6,7 +6,7 @@ def estimate_memory_usage(CONF: dict) -> float:
     bytes_per_float = 4
     B_train = CONF.get('batch_size', 2000)
     B_eval = CONF.get('eval_batch_size', 100_000)
-    U = CONF.get('n_units', 26)
+    U = CONF.get('n_genes', 26)
     D = CONF.get('latent_dim', 3)
     F = CONF.get('n_families', 10)
     receptor_indices = CONF.get('receptor_indices', torch.zeros((1, 5)))

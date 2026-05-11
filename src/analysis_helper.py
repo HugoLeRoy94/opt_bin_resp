@@ -213,13 +213,13 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     """
     n_families = env.n_families
     
-    # 1. Compute exact Unit-Family Interaction Energies: (n_units, n_families)
-    # This matrix contains the interaction energy of each unit against the exact center of each family.
-    weights = torch.nn.functional.softplus(env.unit_sensitivity_raw)
-    diff = env.unit_latent.unsqueeze(1) - env.family_latent.unsqueeze(0) # (U, F, D)
-    dist_sq = (weights.unsqueeze(1) * (diff ** 2)).sum(dim=-1) # (U, F)
-    
-    unit_family_energies = (env.base_energy_u.unsqueeze(1) + dist_sq).cpu()
+    # 1. Compute exact Unit-Family Interaction Energies: (n_genes, n_families)
+    diff = env.unit_latent.unsqueeze(1) - env.family_latent.unsqueeze(0)  # (U, F, D)
+    dist_sq = (diff ** 2).sum(dim=-1)  # (U, F)
+    max_e = torch.nn.functional.softplus(env.max_energy_u_raw)  # (U,)
+    lambda_sq = env.affinity_length_scale ** 2
+    unit_family_energies = (env.base_energy_u.unsqueeze(1)
+                            + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))).cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)
@@ -312,7 +312,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     v_ligands = env.ligand_latent.detach().cpu().numpy()
     ligand_assignments = env.ligand_family_assignments.detach().cpu().numpy()
     
-    # Fetch all raw unit vectors: (n_units, latent_dim)
+    # Fetch all raw unit vectors: (n_genes, latent_dim)
     v_units_tensor = env.unit_latent.detach().cpu()
     
     # Calculate the centroid of each assembled receptor 
@@ -330,17 +330,17 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         
         # Draw from the exact distribution defined in the environment
         if env.distribution_type == 'gaussian':
-            dist = torch.distributions.Normal(loc=center, scale=env.shape_sigma)
+            dist = torch.distributions.Normal(loc=center, scale=env.family_spread)
             pts = dist.rsample()
         elif env.distribution_type == 'uniform_cube':
-            low = center - env.shape_sigma
-            high = center + env.shape_sigma
+            low = center - env.family_spread
+            high = center + env.family_spread
             dist = torch.distributions.Uniform(low=low, high=high)
             pts = dist.rsample()
         elif env.distribution_type == 'uniform':
             # Assuming UniformNBall is available in your scope
             from src.environment import UniformNBall
-            dist = UniformNBall(loc=center, radius=env.shape_sigma, dim=env.latent_dim)
+            dist = UniformNBall(loc=center, radius=env.family_spread, dim=env.latent_dim)
             pts = dist.rsample()
             
         sampled_points.append(pts.cpu().numpy())
@@ -589,7 +589,7 @@ def rank_ordered_distances(env, receptor_indices):
     (Note: the dictionary keys are kept as 'dist_rank_i' for backward compatibility with plotting scripts)
     """
     # 1. Fetch exact Unit-Ligand Interaction Energies (includes base energy and sensitivity weights)
-    # Shape: (n_units, n_ligands)
+    # Shape: (n_genes, n_ligands)
     unit_energies = env.interaction_mu
     
     # 2. Calculate the assembled receptor energies (mean of subunits)

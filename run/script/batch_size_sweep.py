@@ -1,108 +1,67 @@
 #!/usr/bin/env python3
 
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/batch_size_sweep.py
-# add -d for silent running
-# To run on GPU 2
-# MY_GPU=2 docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/batch_size_sweep.py
 
-import argparse
 import time
 import sys
-
 sys.path.append('/app')
 
-# --- Local Imports ---
-from src.config import SweepConfig
+from src.config import RunConfig
 from src.run import SweepRunner
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Investigate batch size influence on optimization")
-    parser.add_argument("--samples", type=int, default=5, help="Number of independent runs per configuration")
-    parser.add_argument("--base_folder", type=str, default="/app/data/batch_size_sweep", help="Output directory root")
-    parser.add_argument("--env_type", type=str, choices=["asymmetric", "symmetric"], default="asymmetric", help="Type of environment geometry")
-    parser.add_argument("--loss_type", type=str, choices=["exact", "proxy", "family", "conc"], default="exact", help="Information loss objective")
-    return parser.parse_args()
+config = RunConfig(
+    # --- Environment ---
+    n_families=5,
+    n_ligands=100,
+    latent_dim=3,
+    family_spread=0.1,
+    average_family_distance=5.0,
+    environment_geometry="asymmetric",
+    distribution_type="gaussian",
+    observation_noise_sigma=0.,
+    affinity_length_scale=1.0,
 
-def main():
-    args = parse_args()
-    start_time = time.time()
+    # --- Concentration ---
+    conc_model_type="lognormal",
+    conc_mean_range=(-7.0, -5.0),
+    conc_std_range=(0.5, 1.5),
+    p_presence_range=(0.05, 0.5),
 
-    # === Sweep Parameters ===
-    # Average complexity configuration
-    n_families = 5
-    n_units = 10
-    latent_dim = 3
-    
-    # Batch sizes to sweep: 2^5 to 2^15
-    batch_size_list = [2**i for i in range(5, 16)]  # [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    
-    # Fixed parameters
-    fixed_params = {
-        "epochs": 500,
-        "k_sub": 5,
-        "temperature": 0.1,
-        "lr": 0.05,
-        "use_sensitivity": False,
-        "loss_type": args.loss_type,
-        "env_type": args.env_type,
-        "entropy": "renyi",
-        "shape_sigma": 0.1,
-        "average_family_distance": 5.0,
-        "measurement_fns": ["full_array_entropy"]
-    }
+    # --- Physics ---
+    n_genes=10,
+    k_sub=5,
+    temperature=0.1,
 
-    total_configs = len(batch_size_list) * args.samples
-    print(f"\n🔬 Starting batch size investigation")
-    print(f"   Configurations to test: {total_configs}")
-    print(f"   n_families: {n_families}")
-    print(f"   n_units: {n_units}")
-    print(f"   latent_dim: {latent_dim}")
-    print(f"   batch_size: {batch_size_list}")
-    print()
+    # --- Mixture ---
+    batch_size=[2**i for i in range(5, 16)],  # independent sweep axis
 
-    # === Sweep over batch sizes ===
-    for batch_size in batch_size_list:
-        # Create sweep-specific name
-        sweep_name = f"batch_size_{batch_size}"
-        
-        # Build base_run_params with current batch size
-        base_run_params = {
-            **fixed_params,
-            "batch_size": batch_size
-        }
+    # --- Loss ---
+    loss_type="exact",
+    entropy="renyi",
+    cov_weight=1.0,
+    penalty_type="repulsion",
+    n_c_bins=10,
 
-        # Create sweep config (latent_dim_list and n_units_list need to be lists for SweepConfig)
-        sweep_config = SweepConfig(
-            n_families=n_families,
-            latent_dim_list=[latent_dim],
-            n_units_list=[n_units],
-            n_samples=args.samples,
-            base_folder=args.base_folder,
-            sweep_name=sweep_name,
-            base_run_params=base_run_params
-        )
+    # --- Training ---
+    epochs=500,
+    lr=0.05,
+    use_scheduler=False,
+    test_batch_size=2**12,
+    measurement_fns=["full_array_entropy"],
 
-        print(f"→ Running sweep: {sweep_config.sweep_name}")
-        print(f"   batch_size={batch_size}")
+    # --- Sweep control ---
+    n_samples=5,
+    sweep_name="batch_size_sweep",
+    base_folder="/app/data/batch_size_sweep",
+    warm_start_axis="n_genes",  # n_genes is scalar here, so warm-starting is a no-op
+    seed=0,
+)
 
-        # Execute sweep
-        runner = SweepRunner(sweep_config)
-        runner.execute()
+print(config)
 
-        print()
-
-    # Wrap up
-    total_time = time.time() - start_time
-    hours, rem = divmod(total_time, 3600)
-    minutes, seconds = divmod(rem, 60)
-    print(f"\n✅ Batch size investigation complete!")
-    print(f"   Total execution time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
-    print(f"\n📊 Analysis suggestion:")
-    print(f"   Load results with SweepLoader and plot:")
-    print(f"   - Entropy vs batch_size (log scale)")
-    print(f"   - Training stability (variance across samples) vs batch_size")
-    print(f"   - Convergence speed vs batch_size")
-    print(f"   - Look for batch sizes that are too small (high noise) or too large (memory issues)")
-
-if __name__ == "__main__":
-    main()
+start_time = time.time()
+SweepRunner(config).execute()
+total_time = time.time() - start_time
+hours, rem = divmod(total_time, 3600)
+minutes, seconds = divmod(rem, 60)
+print(f"\nBatch size sweep complete! Total execution time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")

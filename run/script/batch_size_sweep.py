@@ -26,7 +26,7 @@ config = RunConfig(
     n_families=1,
     n_ligands=500,
     latent_dim=20,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
-    family_spread=100.,
+    family_spread=[0.1,1.,10.],
     average_family_distance=0.0,              # family centre fixed at origin
     environment_geometry="asymmetric",
     distribution_type="gaussian",

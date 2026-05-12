@@ -26,7 +26,7 @@ config = RunConfig(
     n_families=1,
     n_ligands=500,
     latent_dim=20,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
-    family_spread=1.,
+    family_spread=100.,
     average_family_distance=0.0,              # family centre fixed at origin
     environment_geometry="asymmetric",
     distribution_type="gaussian",
@@ -50,7 +50,7 @@ config = RunConfig(
     # --- Loss ---
     loss_type="exact",
     entropy="renyi",
-    cov_weight=1.0,
+    cov_weight=0.0,
     penalty_type="repulsion",
     n_c_bins=10,
 

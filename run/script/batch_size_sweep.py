@@ -49,9 +49,11 @@ config = RunConfig(
 
     # --- Loss ---
     loss_type="exact",
-    entropy="renyi",
+    entropy="shannon",
+    # only matters if loss_type=proxy
     cov_weight=0.0,
     penalty_type="repulsion",
+    # only matter for conditional MI
     n_c_bins=10,
 
     # --- Training ---

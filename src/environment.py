@@ -211,8 +211,8 @@ class LigandEnvironment(nn.Module):
         p_tensor = torch.tensor(p_presence, dtype=torch.float32)
         self.register_buffer('p_presence_tensor', p_tensor)
 
-        if distribution_type not in ['gaussian', 'uniform']:
-            raise ValueError("distribution_type must be 'gaussian' or 'uniform'")
+        if distribution_type not in ['gaussian', 'uniform', 'shell']:
+            raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
         self.distribution_type = distribution_type
 
         # 1. Inject the Concentration Strategy
@@ -252,6 +252,14 @@ class LigandEnvironment(nn.Module):
             elif self.distribution_type == 'uniform':
                 ligand_dist = UniformNBall(loc=base_centers, radius=self.family_spread, dim=self.latent_dim)
                 fixed_ligands = ligand_dist.rsample()
+            elif self.distribution_type == 'shell':
+                # Defeats high-D concentration-of-measure: direction uniform on sphere,
+                # radius uniform in [0, family_spread] — equal weight at every shell radius.
+                direction = torch.nn.functional.normalize(
+                    torch.randn_like(base_centers), p=2, dim=-1
+                )
+                r = torch.rand(n_ligands, 1) * self.family_spread
+                fixed_ligands = base_centers + direction * r
 
             self.register_buffer('ligand_latent', fixed_ligands)
 

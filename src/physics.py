@@ -133,6 +133,44 @@ class BaseReceptor(nn.Module, ABC):
         return c_sweep.cpu().numpy(), p_o.cpu().numpy()
 
 
+@torch.no_grad()
+def compute_initial_temperature(env, receptor_indices: torch.Tensor, calibration_batch_size: int = 2048) -> float:
+    """
+    Returns a well-calibrated T_init by measuring the empirical std of the
+    pre-sigmoid log-sum-exp activation over a calibration batch.
+
+    Setting T_init = std(ln_sum_terms) gives the sigmoid arguments unit
+    standard deviation at the start of training, avoiding the saturated
+    (all 0/1, vanishing gradient) and mushy (all 0.5, non-discriminating)
+    regimes.
+
+    Args:
+        env: A LigandEnvironment instance (already on the target device).
+        receptor_indices: (N_receptors, k_sub) long tensor.
+        calibration_batch_size: Number of samples to estimate the spread.
+
+    Returns:
+        Scalar float T_init >= 1e-3.
+    """
+    E_open, concs, _ = env.sample_batch(calibration_batch_size)
+    batch_size  = E_open.shape[0]
+    n_ligands   = E_open.shape[1]
+    n_receptors = receptor_indices.shape[0]
+    k_sub       = receptor_indices.shape[1]
+
+    flat_indices = receptor_indices.view(-1)
+    gathered     = E_open[:, :, flat_indices]                              # (B, L, R*k_sub)
+    energies_k   = gathered.view(batch_size, n_ligands, n_receptors, k_sub)
+
+    log_ec50      = energies_k.mean(dim=-1)                                # (B, L, R)
+    ln_c          = torch.log(concs.unsqueeze(-1) + 1e-12)                 # (B, L, 1)
+    log_terms     = ln_c - log_ec50                                        # (B, L, R)
+    ln_sum_terms  = torch.logsumexp(log_terms, dim=1)                      # (B, R)
+
+    T_init = ln_sum_terms.std().item()
+    return max(T_init, 1e-3)
+
+
 class MWCReceptor(BaseReceptor):
     """
     The classic MWC Model.

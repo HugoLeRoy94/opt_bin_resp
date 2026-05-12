@@ -13,9 +13,9 @@ config = RunConfig(
     # --- Environment ---
     n_families=1,
     n_ligands=100,
-    latent_dim=3,
-    family_spread=0.1,
-    average_family_distance=5.0,
+    latent_dim=20,
+    family_spread=.1,
+    average_family_distance=1.0,
     environment_geometry="asymmetric",
     distribution_type="gaussian",
     observation_noise_sigma=0.,
@@ -23,12 +23,12 @@ config = RunConfig(
 
     # --- Concentration ---
     conc_model_type="lognormal",
-    conc_mean_range=(-7.0, -5.0),
-    conc_std_range=(0.5, 1.5),
-    p_presence_range=(0.05, 0.5),
+    conc_mean_range=(-6.0, -6.0),
+    conc_std_range=(1.0, 1.0),
+    p_presence_range=(1., 1.),
 
     # --- Physics ---
-    n_genes=5,
+    n_genes=20,
     k_sub=5,
     temperature=0.1,
 
@@ -37,7 +37,7 @@ config = RunConfig(
 
     # --- Loss ---
     loss_type="exact",
-    entropy="renyi",
+    entropy="shannon", # shannon or renyi
     cov_weight=None,
     penalty_type=None,
     n_c_bins=10,
@@ -47,7 +47,7 @@ config = RunConfig(
     lr=0.05,
     use_scheduler=False,
     test_batch_size=2**12,
-    measurement_fns=["full_array_entropy","rank_ordered_distances"],
+    measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---
     n_samples=1,

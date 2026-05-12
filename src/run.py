@@ -14,6 +14,7 @@ from src import (LigandEnvironment,
                  BinaryReceptor,
                  LogNormalConcentration,
                  NormalConcentration)
+from src.physics import compute_initial_temperature
 
 from src.analysis_helper import (
     full_array_entropy,
@@ -147,7 +148,8 @@ class SimulationRunner:
         return stat
 
     def _train(self, env, physics, loss_fn, optimizer, receptor_indices):
-        start_temp = 1.0
+        start_temp = compute_initial_temperature(env, receptor_indices)
+        print(start_temp)
         end_temp   = self.config.temperature
         scheduler  = (
             optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.epochs, eta_min=1e-5)

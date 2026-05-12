@@ -7,7 +7,7 @@ from .environment import (
     LogNormalConcentration, 
     NormalConcentration
 )
-from .physics import BinaryReceptor,MWCReceptor,BaseReceptor
+from .physics import BinaryReceptor, MWCReceptor, BaseReceptor, compute_initial_temperature
 from .geometry import (generate_receptor_indices, generate_cascading_receptors,
                        generate_targeted_receptors, generate_exp_distributed_receptors, 
                        generate_bernoulli_receptors)
@@ -39,6 +39,7 @@ __all__ = [
     "BinaryReceptor",
     "BaseReceptor",
     "MWCReceptor",
+    "compute_initial_temperature",
     "ConcentrationModel", 
     "LogNormalConcentration", 
     "NormalConcentration",

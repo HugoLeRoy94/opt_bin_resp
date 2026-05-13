@@ -18,8 +18,9 @@ def parse_args():
     parser.add_argument("--base_folder", type=str, default="/app/data/homomers_w")
     parser.add_argument("--environment_geometry", type=str,
                         choices=["asymmetric", "symmetric"], default="asymmetric")
-    parser.add_argument("--loss_type", type=str,
-                        choices=["exact", "proxy", "family", "conc"], default="exact")
+    parser.add_argument("--entropy", type=str,
+                        choices=["shannon", "renyi", "blocked", "proxy", "mi_ligand", "mi_conc"],
+                        default="renyi")
     return parser.parse_args()
 
 
@@ -53,8 +54,7 @@ def main():
         batch_size=2**12,
 
         # --- Loss ---
-        loss_type=args.loss_type,
-        entropy="renyi",
+        entropy=args.entropy,
         cov_weight=1.0,
         penalty_type="repulsion",
         n_c_bins=10,

@@ -24,7 +24,7 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment: single family at the origin, same as cover_bound_sharpness ---
     n_families=1,
-    n_ligands=500,
+    n_ligands=1,
     latent_dim=20,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
     family_spread=[0.1,1.,10.],
     average_family_distance=0.0,              # family centre fixed at origin
@@ -48,16 +48,14 @@ config = RunConfig(
     batch_size=[2**i for i in range(6, 15)],  # 64 → 16384, independent sweep axis
 
     # --- Loss ---
-    loss_type="exact",
     entropy="shannon",
-    # only matters if loss_type=proxy
     cov_weight=0.0,
     penalty_type="repulsion",
     # only matter for conditional MI
     n_c_bins=10,
 
     # --- Training ---
-    epochs=500,
+    epochs=5000,
     lr=0.05,
     use_scheduler=False,
     test_batch_size=2**14,                    # large fixed eval batch for accurate measurement

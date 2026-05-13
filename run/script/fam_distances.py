@@ -36,7 +36,6 @@ config = RunConfig(
     batch_size=2**12,
 
     # --- Loss ---
-    loss_type="exact",
     entropy="renyi",
     cov_weight=1.0,
     penalty_type="repulsion",

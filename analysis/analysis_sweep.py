@@ -24,16 +24,10 @@ from src.IO import SingleRunLoader, SweepLoader, find_latest_sweep
 from src.config import SingleRunConfig
 from src.environment import LigandEnvironment, SymmetricLigandEnvironment, LogNormalConcentration, NormalConcentration
 from src.physics import BinaryReceptor
-from src.bin_loss import DiscreteExactLoss, DiscreteProxyLoss
+from src.bin_loss import DiscreteExactLoss
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
-
-LOSS_REGISTRY = {
-    "exact":  lambda cfg: DiscreteExactLoss(entropy_type=cfg.entropy),
-    "proxy":  lambda cfg: DiscreteProxyLoss(cov_weight=cfg.cov_weight, penalty_type=cfg.penalty_type),
-    "ligand": lambda cfg: MaximizeMutualInformationLigandLoss(entropy_type=cfg.entropy),
-    "conc":   lambda cfg: MaximizeMutualInformationConcentrationLoss(n_c_bins=cfg.n_c_bins, entropy_type=cfg.entropy),
-}
+from src.run import _build_loss
 
 ENV_REGISTRY = {
     "asymmetric": LigandEnvironment,
@@ -78,7 +72,7 @@ def load_run_objects(run_dir: str):
     physics.load_state_dict(checkpoint["physics_state"])
     physics.eval()
 
-    loss_fn = LOSS_REGISTRY[config.loss_type](config)
+    loss_fn = _build_loss(config)
     loss_fn.eval()
 
     receptor_indices = checkpoint["receptor_indices"]

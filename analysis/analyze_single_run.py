@@ -1,7 +1,8 @@
 # %%
 """
 Analysis of a single training run.
-Loads the most recent run from ../data/single_run/ and plots:
+Loads the most recent run fro
+m ../data/single_run/ and plots:
   - Training curves (stats.csv)
   - Test result histograms (test_results.json)
   - Latent space UMAP and radar chart (if env can be reconstructed)
@@ -25,7 +26,7 @@ from src.environment import LigandEnvironment, SymmetricLigandEnvironment, LogNo
 # single_run.py writes to: ../data/single_run_{timestamp}/sample_0/
 base_dir = Path("../data")
 
-sweep_root = find_latest_sweep(str(base_dir), prefix="single_run")
+sweep_root = find_latest_sweep(str(base_dir), prefix="single_run")[0]
 run_dir    = Path(sweep_root) / "sample_0"
 
 print(f"Analysing run: {run_dir}")
@@ -43,6 +44,8 @@ if config_path.exists():
         print(f"  {k}: {v}")
     print("=====================\n")
 
+# %% 
+
 # %% 3. Plot training curves
 stats_path = run_dir / "stats.csv"
 if stats_path.exists():
@@ -51,10 +54,12 @@ if stats_path.exists():
 
     x_col = "epoch" if "epoch" in df.columns else df.index
     x_vals = df[x_col] if isinstance(x_col, str) else x_col
+    
 
     # Plot full array entropy over optimization
     if "full_array_entropy" in df.columns:
         fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(x_vals, df["full_array_entropy_blocked"], linewidth=2)
         ax.plot(x_vals, df["full_array_entropy"], linewidth=2, color="tab:blue")
         ax.set_title("Full Array Entropy over Optimization", fontweight="bold")
         ax.set_xlabel("Epoch"); ax.set_ylabel("Full Array Entropy")

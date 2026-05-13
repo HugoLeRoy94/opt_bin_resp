@@ -88,7 +88,6 @@ if __name__ == "__main__":
                             batch_size=N_train,
                             epochs=500,
                             lr=0.05,
-                            loss_type="exact",
                             entropy="renyi",
                             cov_weight=1.0,
                             penalty_type="repulsion",

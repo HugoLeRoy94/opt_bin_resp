@@ -33,11 +33,11 @@ config = RunConfig(
     temperature=0.1,
 
     # --- Mixture ---
-    batch_size=2**12,
+    batch_size=2**14,
 
     # --- Loss ---
     loss_type="exact",
-    entropy="shannon", # shannon or renyi
+    entropy="renyi", # shannon or renyi
     cov_weight=None,
     penalty_type=None,
     n_c_bins=10,
@@ -46,7 +46,7 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**12,
+    test_batch_size=2**14,
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---

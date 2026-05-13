@@ -13,7 +13,7 @@ config = RunConfig(
     # --- Environment ---
     n_families=1,
     n_ligands=100,
-    latent_dim=20,
+    latent_dim=15,
     family_spread=.1,
     average_family_distance=1.0,
     environment_geometry="asymmetric",

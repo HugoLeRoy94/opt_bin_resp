@@ -26,18 +26,16 @@ config = RunConfig(
     conc_mean_range=(-6.0, -6.0),
     conc_std_range=(1.0, 1.0),
     p_presence_range=(.2, .2),
-
     # --- Physics ---
     n_genes=20,
     k_sub=5,
     temperature=0.1,
 
     # --- Mixture ---
-    batch_size=2**14,
+    batch_size=2**20,
 
     # --- Loss ---
-    loss_type="exact",
-    entropy="renyi", # shannon or renyi
+    entropy="renyi", # shannon | renyi | blocked | proxy
     cov_weight=None,
     penalty_type=None,
     n_c_bins=10,
@@ -46,7 +44,7 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**14,
+    test_batch_size=2**20,
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---

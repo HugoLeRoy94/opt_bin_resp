@@ -13,7 +13,7 @@ config = RunConfig(
     # --- Environment ---
     n_families=1,
     n_ligands=100,
-    latent_dim=15,
+    latent_dim=20,
     family_spread=.1,
     average_family_distance=1.0,
     environment_geometry="asymmetric",
@@ -33,7 +33,7 @@ config = RunConfig(
     temperature=0.1,
 
     # --- Mixture ---
-    batch_size=2**14,
+    batch_size=2**12,
 
     # --- Loss ---
     loss_type="exact",
@@ -46,7 +46,7 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**14,
+    test_batch_size=2**12,
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---

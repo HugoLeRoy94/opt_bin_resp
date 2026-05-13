@@ -92,28 +92,106 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
 
     return joint_h
 
+def compute_blocked_entropy(
+    soft_assign: torch.Tensor,
+    block_size: int = 12,
+    n_partitions: int = 4,
+) -> torch.Tensor:
+    """
+    Approximates the joint Shannon entropy by partitioning receptors into small
+    blocks and computing the exact Shannon entropy within each block, then summing
+    under a between-block independence assumption:
+
+        H_blocked = (1/n_partitions) * Σ_partitions [ Σ_k H_exact(block_k) ]
+
+    This is fundamentally different from pairwise (Bethe) approximations: it
+    captures all within-block higher-order interactions exactly. Cross-block
+    correlations are the only source of error, and that error vanishes at the
+    entropy-maximizing solution (independent receptors).
+
+    Averaging over multiple random partitions reduces bias from whichever
+    cross-block correlations happen to be ignored in a single partition.
+
+    Memory: O(B * 2^block_size) per block — for block_size=12 and B=5000, ~80 MB,
+    vs O(B * 2^R) for the exact joint computation.
+    """
+    B, R, _ = soft_assign.shape
+
+    partition_entropies = []
+    for _ in range(n_partitions):
+        perm = torch.randperm(R, device=soft_assign.device)
+        h_partition = soft_assign.new_zeros(())
+
+        for k in range(math.ceil(R / block_size)):
+            block_idx = perm[k * block_size : (k + 1) * block_size]
+            h_partition = h_partition + compute_shannon_joint_entropy(soft_assign[:, block_idx, :])
+
+        partition_entropies.append(h_partition)
+
+    return torch.stack(partition_entropies).mean()
+
+
 class DiscreteExactLoss(nn.Module):
     """
-    Maximizes the exact discrete binary joint entropy of the array.
-    Ideal for systems where components must be correlated (like a thermometer code).
+    Maximizes the discrete binary joint entropy of the array.
+
+    Supports three estimators via `entropy_type`:
+      - 'shannon' : exact enumeration, O(B * 2^R) — only for small R
+      - 'renyi'   : exact Rényi H2 via collision probability, O(B^2 * R)
+      - 'blocked' : blocked Shannon approximation, O(B * 2^block_size * R/block_size)
+
+    Training and evaluation can use *different* estimators. The typical pattern
+    is to train with 'renyi' (fast, scalable gradients) and evaluate with
+    'blocked' (captures higher-order interactions, more accurate):
+
+        criterion = DiscreteExactLoss(entropy_type='renyi', block_size=12, n_partitions=4)
+
+        # Training:
+        loss = criterion(activity)
+
+        # Evaluation — compare both metrics without a second loss object:
+        with torch.no_grad():
+            h_renyi   = criterion.compute_entropy(activity)
+            h_blocked = criterion.compute_entropy(activity, entropy_type='blocked')
     """
-    def __init__(self, entropy_type: str):
+    _ENTROPY_FNS = ('shannon', 'renyi', 'blocked')
+
+    def __init__(self, entropy_type: str, block_size: int = 12, n_partitions: int = 4):
         super().__init__()
-        self.entropy_type = entropy_type
+        if entropy_type not in self._ENTROPY_FNS:
+            raise ValueError(f"Unknown entropy_type: {entropy_type!r}. Choose from {self._ENTROPY_FNS}.")
+        self.entropy_type  = entropy_type
+        self.block_size    = block_size
+        self.n_partitions  = n_partitions
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
         # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
         return torch.stack([1.0 - activity, activity], dim=-1)
 
-    def forward(self, activity: torch.Tensor):
+    def compute_entropy(self, activity: torch.Tensor, entropy_type: str = None) -> torch.Tensor:
+        """
+        Returns the joint entropy in bits (positive scalar).
+
+        Args:
+            activity:     Soft binary activity, shape (B, R).
+            entropy_type: Override the instance entropy_type for this call.
+                          Useful for computing a more accurate estimate at eval time
+                          without a second loss object.
+        """
+        etype = entropy_type if entropy_type is not None else self.entropy_type
+        if etype not in self._ENTROPY_FNS:
+            raise ValueError(f"Unknown entropy_type: {etype!r}. Choose from {self._ENTROPY_FNS}.")
+
         soft_assign = self.compute_soft_assignment(activity)
-        if self.entropy_type == 'shannon':
-            joint_h = compute_shannon_joint_entropy(soft_assign)
-        elif self.entropy_type == 'renyi':
-            joint_h = compute_renyi_joint_entropy(soft_assign)
-        else:
-            raise ValueError(f"Unknown entropy_type: {self.entropy_type}. Choose 'shannon' or 'renyi'.")
-        return -joint_h  # Maximize joint entropy
+        if etype == 'shannon':
+            return compute_shannon_joint_entropy(soft_assign)
+        elif etype == 'renyi':
+            return compute_renyi_joint_entropy(soft_assign)
+        else:  # blocked
+            return compute_blocked_entropy(soft_assign, self.block_size, self.n_partitions)
+
+    def forward(self, activity: torch.Tensor) -> torch.Tensor:
+        return -self.compute_entropy(activity)  # Maximize joint entropy
 
 class DiscreteProxyLoss(nn.Module):
     """

@@ -7,7 +7,7 @@ import seaborn as sns
 import umap
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
-from src.bin_loss import DiscreteProxyLoss, compute_shannon_joint_entropy, compute_renyi_joint_entropy
+from src.bin_loss import DiscreteProxyLoss, compute_shannon_joint_entropy, compute_renyi_joint_entropy, compute_blocked_entropy
 
 
 @torch.no_grad()
@@ -474,24 +474,50 @@ def marginal_entropy(activity, loss_fn):
 
 @torch.no_grad()
 def full_array_entropy(activity, loss_fn):
-    """Computes the joint entropy of the full receptor array."""
+    """
+    Computes the joint entropy of the full receptor array.
+
+    Returns a dict so that _eval_stats can unpack each key as its own logged
+    column (run.py already handles dict results via stat.update(result)):
+
+      'full_array_entropy'         — Rényi H2 (fast, used for training)
+      'full_array_entropy_blocked' — blocked Shannon approximation (more accurate)
+
+    Existing analysis scripts that read df["full_array_entropy"] keep working
+    unchanged; the blocked metric is simply available as a new column.
+
+    For DiscreteExactLoss, block_size / n_partitions come from the loss object.
+    For other loss types the single available metric fills both slots.
+    """
     act = activity.detach()
+
+    if hasattr(loss_fn, 'compute_entropy'):
+        # DiscreteExactLoss: both estimators available.
+        h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi').item()
+        h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked').item()
+        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked}
+
+    # Legacy path for other loss types.
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(act)
-        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
-        joint_h = entropy_fn(soft_assign)
-        return joint_h.item() if isinstance(joint_h, torch.Tensor) else joint_h
+        entropy_fn = (compute_renyi_joint_entropy
+                      if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                      else compute_shannon_joint_entropy)
+        h = entropy_fn(soft_assign).item()
     elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
-        joint_h = loss_fn.compute_knn_joint_entropy(act, k=5)
-        return joint_h.item() if isinstance(joint_h, torch.Tensor) else joint_h
-    return 0.0
+        h = loss_fn.compute_knn_joint_entropy(act, k=5).item()
+    else:
+        h = 0.0
+
+    return {'full_array_entropy': h, 'full_array_entropy_blocked': h}
 
 @torch.no_grad()
 def total_correlation(activity, loss_fn):
-    """Computes the total correlation (redundancy) of the array."""
+    """Computes the total correlation (redundancy) of the array using Rényi entropy."""
     h_marginals = marginal_entropy(activity, loss_fn)
-    h_joint = full_array_entropy(activity, loss_fn)
-    return h_marginals - h_joint
+    h_joint     = full_array_entropy(activity, loss_fn)
+    h_joint_val = h_joint.get('full_array_entropy', 0.0) if isinstance(h_joint, dict) else h_joint
+    return h_marginals - h_joint_val
 
 @torch.no_grad()
 def conditional_entropy_ligand(activity, mixture_masks, loss_fn):

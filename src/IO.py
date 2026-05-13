@@ -189,10 +189,11 @@ class SweepLoader:
 # MODULE-LEVEL UTILITIES
 # ==========================================
 
-def find_latest_sweep(base_dir: str, prefix: str = "") -> str:
+def find_latest_sweep(base_dir: str, prefix: str = "") -> list[str]:
     """
-    Returns the path of the most recently modified sweep directory under base_dir.
+    Returns sweep directories under base_dir ordered from most to least recently modified.
     Optionally filters by a name prefix (e.g. "latent_dim_sweep").
+    Index [0] is the latest, [1] the second latest, etc.
     Raises FileNotFoundError if nothing matches.
     """
     from pathlib import Path
@@ -202,4 +203,4 @@ def find_latest_sweep(base_dir: str, prefix: str = "") -> str:
         raise FileNotFoundError(
             f"No directories matching '{prefix}*' found in {base_dir}"
         )
-    return str(max(dirs, key=lambda d: d.stat().st_mtime))
+    return [str(d) for d in sorted(dirs, key=lambda d: d.stat().st_mtime, reverse=True)]

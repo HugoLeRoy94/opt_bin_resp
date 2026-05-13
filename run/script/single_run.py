@@ -19,7 +19,7 @@ config = RunConfig(
     environment_geometry="asymmetric",
     distribution_type="gaussian",
     observation_noise_sigma=0.,
-    affinity_length_scale=.1,
+    affinity_length_scale=1.,
 
     # --- Concentration ---
     conc_model_type="lognormal",

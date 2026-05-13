@@ -32,7 +32,7 @@ config = RunConfig(
     temperature=0.1,
 
     # --- Mixture ---
-    batch_size=2**20,
+    batch_size=2**16,
 
     # --- Loss ---
     entropy="renyi", # shannon | renyi | blocked | proxy

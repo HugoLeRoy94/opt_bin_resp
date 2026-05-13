@@ -19,6 +19,7 @@ from src.physics import compute_initial_temperature
 
 from src.analysis_helper import (
     full_array_entropy,
+    miller_madow_entropy,
     mean_receptor_distance,
     conditional_entropy_ligand,
     mutual_information_ligand,
@@ -133,10 +134,31 @@ class SimulationRunner:
         return env, physics, loss_fn, optimizer, receptor_indices
 
     def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch):
-        """Runs one evaluation batch and returns a stats dict."""
+        """Evaluation over batch_size total samples, with bounded per-pass memory.
+
+        chunk_size = min(eval_chunk_size or batch_size, batch_size)
+          defaults to self.config.batch_size (training batch size), so memory
+          per forward pass matches training without any explicit config.
+
+        Soft metrics (Rényi, blocked Shannon, distances …) run on a single
+        chunk_size forward pass.
+
+        Hard-codeword metrics (plug-in, Miller-Madow, K_hat, K_frac) are
+        accumulated over ceil(batch_size / chunk_size) forward passes so the
+        full batch_size budget drives bias estimation.  When batch_size ==
+        chunk_size the single-pass path in full_array_entropy covers both.
+        """
+        chunk_size = min(self.config.eval_chunk_size or self.config.batch_size, batch_size)
+        do_mm_accumulation = (
+            'full_array_entropy' in self.config.measurement_fns
+            and batch_size > chunk_size
+        )
+
         with torch.no_grad():
-            E, concs, masks = env.sample_batch(batch_size=batch_size)
+            # --- First chunk: soft metrics + soft assignments ---
+            E, concs, masks = env.sample_batch(batch_size=chunk_size)
             activity = physics(E, concs, receptor_indices)
+
             stat = {}
             for fn_name in self.config.measurement_fns:
                 fn  = MEASUREMENT_REGISTRY[fn_name]
@@ -155,6 +177,29 @@ class SimulationRunner:
                     stat.update(result)
                 else:
                     stat[fn_name] = result
+
+            if do_mm_accumulation:
+                # Accumulate hard codewords on CPU over the full budget.
+                # (B_eval, R) bool tensor — 2.5 MB for B=2^20, R=20.
+                all_codes = [(activity > 0.5).cpu()]
+                n_so_far = chunk_size
+                while n_so_far < batch_size:
+                    this_chunk = min(chunk_size, batch_size - n_so_far)
+                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk)
+                    act_c = physics(E_c, concs_c, receptor_indices)
+                    all_codes.append((act_c > 0.5).cpu())
+                    n_so_far += this_chunk
+
+                all_codes_cat = torch.cat(all_codes, dim=0)  # (batch_size, R) on CPU
+                H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(all_codes_cat)
+                stat.update({
+                    'full_array_entropy_plugin': H_plugin,
+                    'full_array_entropy_mm':     H_MM,
+                    'full_array_entropy_log2B':  log2_B,
+                    'full_array_entropy_K_hat':  float(K_hat),
+                    'full_array_entropy_K_frac': K_frac,
+                })
+
         return stat
 
     def _train(self, env, physics, loss_fn, optimizer, receptor_indices):

@@ -472,6 +472,29 @@ def marginal_entropy(activity, loss_fn):
         return loss_fn._compute_analytical_marginal_entropies(act).sum().item()
     return 0.0
 
+def miller_madow_entropy(activity: torch.Tensor):
+    """
+    Hard-codeword plug-in entropy and Miller-Madow bias correction.
+
+    Binarises activity at 0.5, treats each R-bit row as a symbol, and computes:
+      H_plugin  = -Σ p_k log2(p_k)   (plug-in estimator, biased downward)
+      H_MM      = H_plugin + (K_hat - 1) / (2 · B · ln2)   (bias-corrected)
+      log2_B    = log2(B)             (trivial upper ceiling)
+      K_hat     = # distinct codewords observed
+      K_frac    = K_hat / 2^R         (fraction of the binary alphabet seen)
+
+    Uses torch.unique (sort-based, O(B log B)) — no 2^R allocation.
+    """
+    B, R = activity.shape
+    codes = (activity > 0.5).long()
+    _, counts = torch.unique(codes, dim=0, return_counts=True)
+    K_hat = counts.numel()
+    p = counts.float() / B
+    H_plugin = -(p * torch.log2(p.clamp(min=1e-12))).sum().item()
+    H_MM = H_plugin + (K_hat - 1) / (2 * B * math.log(2))
+    return H_plugin, H_MM, K_hat, math.log2(B), K_hat / (2 ** R)
+
+
 @torch.no_grad()
 def full_array_entropy(activity, loss_fn):
     """
@@ -482,20 +505,30 @@ def full_array_entropy(activity, loss_fn):
 
       'full_array_entropy'         — Rényi H2 (fast, used for training)
       'full_array_entropy_blocked' — blocked Shannon approximation (more accurate)
+      'full_array_entropy_plugin'  — hard-codeword plug-in estimator (biased)
+      'full_array_entropy_mm'      — Miller-Madow bias-corrected estimate
+      'full_array_entropy_log2B'   — log2(B), trivial upper ceiling
+      'full_array_entropy_K_hat'   — distinct codewords observed
+      'full_array_entropy_K_frac'  — K_hat / 2^R, fraction of alphabet sampled
 
     Existing analysis scripts that read df["full_array_entropy"] keep working
-    unchanged; the blocked metric is simply available as a new column.
-
-    For DiscreteExactLoss, block_size / n_partitions come from the loss object.
-    For other loss types the single available metric fills both slots.
+    unchanged; the new metrics are additional columns.
     """
     act = activity.detach()
+    H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(act)
+    mm_stats = {
+        'full_array_entropy_plugin': H_plugin,
+        'full_array_entropy_mm':     H_MM,
+        'full_array_entropy_log2B':  log2_B,
+        'full_array_entropy_K_hat':  float(K_hat),
+        'full_array_entropy_K_frac': K_frac,
+    }
 
     if hasattr(loss_fn, 'compute_entropy'):
-        # DiscreteExactLoss: both estimators available.
+        # DiscreteExactLoss: both soft estimators available.
         h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi').item()
         h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked').item()
-        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked}
+        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked, **mm_stats}
 
     # Legacy path for other loss types.
     if hasattr(loss_fn, 'compute_soft_assignment'):
@@ -509,7 +542,7 @@ def full_array_entropy(activity, loss_fn):
     else:
         h = 0.0
 
-    return {'full_array_entropy': h, 'full_array_entropy_blocked': h}
+    return {'full_array_entropy': h, 'full_array_entropy_blocked': h, **mm_stats}
 
 @torch.no_grad()
 def total_correlation(activity, loss_fn):

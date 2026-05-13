@@ -60,10 +60,9 @@ class SingleRunConfig:
     epochs:          int
     lr:              float
     use_scheduler:   bool
-    test_batch_size: int
-    measurement_fns: List[str]
-
-    # --- Computed / heteromer override ---
+    test_batch_size:  int
+    eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
+    measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
     receptor_indices: Optional[List[List[int]]] = None
 
@@ -142,6 +141,9 @@ class RunConfig:
     use_scheduler:   Union[bool,  List[bool]]
     test_batch_size: Union[int,   List[int]]
     measurement_fns: List[str]   # always a list — not a sweep axis
+
+    # --- Evaluation chunking ---
+    eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None  # per-forward-pass budget; None → use batch_size
 
     # --- Sweep control ---
     n_samples:       int           = 1

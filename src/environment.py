@@ -348,9 +348,11 @@ class LigandEnvironment(nn.Module):
         v_ligands = self.ligand_latent.unsqueeze(0) + noise
 
         # 4. Calculate Energies using saturating affinity kernel
-        # v_ligands: (Batch, L, D) -> (Batch, L, 1, D); unit_latent: (U, D) -> (1, 1, U, D)
-        diff = v_ligands.unsqueeze(2) - self.unit_latent.unsqueeze(0).unsqueeze(0)
-        dist_sq = (diff ** 2).sum(dim=-1)  # (Batch, L, U)
+        # Avoid the (B, L, U, D) broadcast by using ||a-b||² = ||a||² + ||b||² - 2<a,b>.
+        a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)                   # (B, L, 1)
+        b_sq    = (self.unit_latent ** 2).sum(dim=-1)                          # (U,)
+        ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent)     # (B, L, U)
+        dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)     # (B, L, U)
         max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
         lambda_sq = self.affinity_length_scale ** 2
         E_open = (self.base_energy_u.unsqueeze(0).unsqueeze(0)

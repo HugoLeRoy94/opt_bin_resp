@@ -14,12 +14,12 @@ config = RunConfig(
     n_families=1,
     n_ligands=100,
     latent_dim=20,
-    family_spread=1.,
+    family_spread=.1,
     average_family_distance=1.0,
     environment_geometry="asymmetric",
     distribution_type="gaussian",
     observation_noise_sigma=0.,
-    affinity_length_scale=1.0,
+    affinity_length_scale=.1,
 
     # --- Concentration ---
     conc_model_type="lognormal",

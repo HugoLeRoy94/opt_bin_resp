@@ -51,7 +51,6 @@ class SingleRunConfig:
     batch_size: int
 
     # --- Loss ---
-    loss_type:    str
     entropy:      str
     cov_weight:   Optional[float]
     penalty_type: Optional[str]
@@ -132,7 +131,6 @@ class RunConfig:
     batch_size: Union[int, List[int]]
 
     # --- Loss ---
-    loss_type:    Union[str,             List[str]]
     entropy:      Union[str,             List[str]]
     cov_weight:   Union[Optional[float], List[Optional[float]]]
     penalty_type: Union[Optional[str],   List[Optional[str]]]

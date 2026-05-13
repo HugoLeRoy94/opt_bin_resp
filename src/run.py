@@ -29,7 +29,7 @@ from src.analysis_helper import (
     receptor_conditioned_entropy
 )
 
-from src.bin_loss import DiscreteProxyLoss, DiscreteExactLoss
+from src.bin_loss import DiscreteExactLoss
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
@@ -55,12 +55,21 @@ ENV_REGISTRY = {
     "symmetric":  SymmetricLigandEnvironment,
 }
 
-LOSS_REGISTRY = {
-    "exact":  lambda cfg: DiscreteExactLoss(entropy_type=cfg.entropy),
-    "proxy":  lambda cfg: DiscreteProxyLoss(cov_weight=cfg.cov_weight, penalty_type=cfg.penalty_type),
-    "ligand": lambda cfg: MaximizeMutualInformationLigandLoss(entropy_type=cfg.entropy),
-    "conc":   lambda cfg: MaximizeMutualInformationConcentrationLoss(n_c_bins=cfg.n_c_bins, entropy_type=cfg.entropy),
-}
+def _build_loss(cfg) -> nn.Module:
+    """Dispatch on cfg.entropy to construct the appropriate loss module."""
+    if cfg.entropy in DiscreteExactLoss._ENTROPY_FNS:
+        return DiscreteExactLoss(
+            entropy_type=cfg.entropy,
+            cov_weight=cfg.cov_weight or 0.0,
+            penalty_type=cfg.penalty_type or 'covariance',
+        )
+    elif cfg.entropy == 'mi_ligand':
+        return MaximizeMutualInformationLigandLoss(entropy_type='renyi')
+    elif cfg.entropy == 'mi_conc':
+        return MaximizeMutualInformationConcentrationLoss(n_c_bins=cfg.n_c_bins, entropy_type='renyi')
+    else:
+        raise ValueError(f"Unknown entropy: {cfg.entropy!r}. "
+                         f"Choose from {DiscreteExactLoss._ENTROPY_FNS} or 'mi_ligand' / 'mi_conc'.")
 
 CONC_REGISTRY = {
     "lognormal": lambda cfg: LogNormalConcentration(
@@ -112,7 +121,7 @@ class SimulationRunner:
         physics = BinaryReceptor(
             self.config.n_genes, self.config.k_sub, temperature=self.config.temperature
         ).to(self.device)
-        loss_fn = LOSS_REGISTRY[self.config.loss_type](self.config).to(self.device)
+        loss_fn = _build_loss(self.config).to(self.device)
 
         # Dampen LR when picking up from a previous env to preserve learned representations
         lr = self.config.lr if prev_env is None else self.config.lr * 0.1

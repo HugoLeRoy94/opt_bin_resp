@@ -28,7 +28,7 @@ from .analysis_helper import (plot_ligand_summary,
                                 receptor_conditioned_entropy)
 from .IO import SingleRunLoader, SweepLoader, ExperimentLogger
 
-from .bin_loss import DiscreteExactLoss, DiscreteProxyLoss
+from .bin_loss import DiscreteExactLoss
 from .run import SimulationRunner, SweepRunner
 
 # Exposing these allows for clean imports like:
@@ -69,7 +69,6 @@ __all__ = [
     "evaluate_model",
     "plot_latent_radar_chart",
     "DiscreteExactLoss",
-    "DiscreteProxyLoss",
     "SimulationRunner",
     "SweepRunner"
 ]

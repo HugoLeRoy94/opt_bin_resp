@@ -8,42 +8,43 @@ def compute_shannon_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     using exact enumeration. Ideal for small state spaces.
     """
     # B : batch size
-    # R : # of receptors 
+    # R : # of receptors
     # K : # of activity bins = 2
-    B, R, K = soft_assign.shape 
-    
+    B, R, K = soft_assign.shape
+
     # We iteratively build the exact (B, K^R) probability tensor
     joint_p = soft_assign[:, 0, :] # Start with receptor 0: (B, K)
-    
+
     for r in range(1, R):
         # Multiply current combinations by the probabilities of the next receptor
         # (B, K^{r}, 1) * (B, 1, K) -> flat to (B, K^{r+1})
         joint_p = (joint_p.unsqueeze(-1) * soft_assign[:, r, :].unsqueeze(1)).view(B, -1)
-    
+
     # Average across the batch to get the true probability of every possible state
     p_a = joint_p.mean(dim=0) # Shape: (K^R,)
-    
+
     # Use clamp to prevent log2(0) while maintaining stable gradients
     p_a_safe = torch.clamp(p_a, min=1e-12)
     log_2_p = torch.log2(p_a_safe)
     joint_h = -torch.sum(p_a * log_2_p)
-    
+
     return joint_h
+
 
 def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     """
     Computes the Rényi joint entropy (H2) using exact pairwise collision.
-    Bypasses the O(K^R) wall entirely by calculating the probability 
-    that two random ligands produce the EXACT same array state. 
+    Bypasses the O(K^R) wall entirely by calculating the probability
+    that two random ligands produce the EXACT same array state.
     """
-    B, R, K = soft_assign.shape 
+    B, R, K = soft_assign.shape
     chunk_size = 2048
-    
+
     if B <= chunk_size:
         S_R = soft_assign.permute(1, 0, 2)
         # Compute all pairs, then multiply along the receptor dimension
         match_prob_per_receptor = torch.bmm(S_R, S_R.permute(0, 2, 1)) # (R, B, B)
-        
+
         # Switch to log-space to avoid numerical underflow from product over R
         # This is the log-sum-exp trick for stable computation of log(mean(prod(P)))
         # Add a tiny epsilon to prevent log(0)
@@ -62,7 +63,7 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         joint_h = -log_mean_coll_prob_nats / math.log(2)
 
     else:
-        # Chunked evaluation: average the collision probability over multiple 
+        # Chunked evaluation: average the collision probability over multiple
         # independent sub-batches. This reduces estimator variance
         # while keeping autograd memory usage strictly bounded.
         max_chunks = 8 # Process up to 8 chunks (16,384 ligands) per step
@@ -76,7 +77,7 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         for i in range(n_chunks - 1):
             idx_A = indices[i * chunk_size : (i + 1) * chunk_size]
             idx_B = indices[(i + 1) * chunk_size : (i + 2) * chunk_size]
-            
+
             S_A = soft_assign[idx_A].permute(1, 0, 2) # (R, chunk, K)
             S_B = soft_assign[idx_B].permute(1, 0, 2) # (R, chunk, K)
 
@@ -91,6 +92,7 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
         joint_h = -log_mean_coll_prob_nats / math.log(2)
 
     return joint_h
+
 
 def compute_blocked_entropy(
     soft_assign: torch.Tensor,
@@ -131,42 +133,98 @@ def compute_blocked_entropy(
     return torch.stack(partition_entropies).mean()
 
 
+def compute_proxy_entropy(
+    soft_assign: torch.Tensor,
+    cov_weight: float,
+    penalty_type: str,
+) -> torch.Tensor:
+    """
+    Proxy approximation to the joint Shannon entropy:
+
+        H_proxy = Σ_r H(X_r) − cov_weight · penalty
+
+    The sum of marginal entropies (Σ H_r) equals the joint entropy when receptors
+    are independent, and exceeds it otherwise. The penalty term corrects for
+    correlation, pushing toward independence during optimisation.
+
+    penalty_type options:
+      'covariance' — Σ_{i≠j} Cov(X_i, X_j)²   penalises linear correlation
+      'repulsion'  — Σ_{i≠j} exp(−‖A_i−A_j‖²/τ)  penalises similar profiles
+
+    O(B·R²), fully differentiable, no exponential memory.
+    The return value is on the same scale as the other entropy functions (up to R bits).
+    """
+    B, R, _ = soft_assign.shape
+    activity = soft_assign[:, :, 1]  # (B, R)
+
+    p = soft_assign.mean(dim=0).clamp(min=1e-12)          # (R, 2)
+    h_marginals = -(p * torch.log2(p)).sum()               # scalar, sum over R receptors
+
+    if penalty_type == 'covariance':
+        centered = activity - activity.mean(dim=0, keepdim=True)
+        cov = (centered.T @ centered) / (B - 1)            # (R, R)
+        mask = ~torch.eye(R, dtype=torch.bool, device=soft_assign.device)
+        penalty = (cov[mask] ** 2).sum()
+    elif penalty_type == 'repulsion':
+        A    = activity.T                                   # (R, B)
+        A_sq = (A ** 2).sum(dim=1, keepdim=True)
+        dist = (A_sq + A_sq.T - 2.0 * (A @ A.T)) / B      # normalised squared distance (R, R)
+        mask = ~torch.eye(R, dtype=torch.bool, device=soft_assign.device)
+        penalty = torch.exp(-dist / 0.05)[mask].sum()
+    else:
+        raise ValueError(f"Unknown penalty_type: {penalty_type!r}. Choose 'covariance' or 'repulsion'.")
+
+    return h_marginals - cov_weight * penalty
+
+
 class DiscreteExactLoss(nn.Module):
     """
-    Maximizes the discrete binary joint entropy of the array.
+    Maximizes the discrete binary joint entropy of the receptor array.
 
-    Supports three estimators via `entropy_type`:
-      - 'shannon' : exact enumeration, O(B * 2^R) — only for small R
-      - 'renyi'   : exact Rényi H2 via collision probability, O(B^2 * R)
-      - 'blocked' : blocked Shannon approximation, O(B * 2^block_size * R/block_size)
+    entropy_type selects the estimator used for training:
+      'shannon' : exact enumeration         O(B · 2^R)            only for small R
+      'renyi'   : exact Rényi H2            O(B² · R)             scalable, good gradients
+      'blocked' : blocked Shannon approx    O(B · 2^block_size)   captures higher-order terms
+      'proxy'   : Σ H_r − cov_weight·penalty  O(B · R²)           fast pairwise approximation
 
-    Training and evaluation can use *different* estimators. The typical pattern
-    is to train with 'renyi' (fast, scalable gradients) and evaluate with
-    'blocked' (captures higher-order interactions, more accurate):
+    Training with one estimator and evaluating with another is supported via
+    compute_entropy(activity, entropy_type='blocked').  Typical pattern:
 
-        criterion = DiscreteExactLoss(entropy_type='renyi', block_size=12, n_partitions=4)
+        criterion = DiscreteExactLoss(entropy_type='renyi')
 
-        # Training:
-        loss = criterion(activity)
-
-        # Evaluation — compare both metrics without a second loss object:
-        with torch.no_grad():
-            h_renyi   = criterion.compute_entropy(activity)
-            h_blocked = criterion.compute_entropy(activity, entropy_type='blocked')
+        loss      = criterion(activity)                          # training
+        h_renyi   = criterion.compute_entropy(activity)          # Rényi in bits
+        h_blocked = criterion.compute_entropy(activity, 'blocked')  # blocked in bits
     """
-    _ENTROPY_FNS = ('shannon', 'renyi', 'blocked')
+    _ENTROPY_FNS = ('shannon', 'renyi', 'blocked', 'proxy')
 
-    def __init__(self, entropy_type: str, block_size: int = 12, n_partitions: int = 4):
+    def __init__(
+        self,
+        entropy_type: str,
+        block_size:   int   = 12,
+        n_partitions: int   = 4,
+        cov_weight:   float = 0.0,
+        penalty_type: str   = 'covariance',
+    ):
         super().__init__()
         if entropy_type not in self._ENTROPY_FNS:
             raise ValueError(f"Unknown entropy_type: {entropy_type!r}. Choose from {self._ENTROPY_FNS}.")
-        self.entropy_type  = entropy_type
-        self.block_size    = block_size
-        self.n_partitions  = n_partitions
+        if penalty_type not in ('covariance', 'repulsion'):
+            raise ValueError(f"Unknown penalty_type: {penalty_type!r}. Choose 'covariance' or 'repulsion'.")
+        self.entropy_type = entropy_type
+        self.block_size   = block_size
+        self.n_partitions = n_partitions
+        self.cov_weight   = cov_weight
+        self.penalty_type = penalty_type
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
         # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
         return torch.stack([1.0 - activity, activity], dim=-1)
+
+    def _compute_soft_histogram_entropy(self, activity: torch.Tensor) -> torch.Tensor:
+        """Per-receptor marginal binary Shannon entropy, shape (R,) in bits."""
+        p = self.compute_soft_assignment(activity).mean(dim=0).clamp(min=1e-12)  # (R, 2)
+        return -(p * torch.log2(p)).sum(dim=-1)                                   # (R,)
 
     def compute_entropy(self, activity: torch.Tensor, entropy_type: str = None) -> torch.Tensor:
         """
@@ -175,8 +233,7 @@ class DiscreteExactLoss(nn.Module):
         Args:
             activity:     Soft binary activity, shape (B, R).
             entropy_type: Override the instance entropy_type for this call.
-                          Useful for computing a more accurate estimate at eval time
-                          without a second loss object.
+                          Useful for computing a more accurate estimate at eval time.
         """
         etype = entropy_type if entropy_type is not None else self.entropy_type
         if etype not in self._ENTROPY_FNS:
@@ -187,131 +244,10 @@ class DiscreteExactLoss(nn.Module):
             return compute_shannon_joint_entropy(soft_assign)
         elif etype == 'renyi':
             return compute_renyi_joint_entropy(soft_assign)
-        else:  # blocked
+        elif etype == 'blocked':
             return compute_blocked_entropy(soft_assign, self.block_size, self.n_partitions)
+        else:  # proxy
+            return compute_proxy_entropy(soft_assign, self.cov_weight, self.penalty_type)
 
     def forward(self, activity: torch.Tensor) -> torch.Tensor:
         return -self.compute_entropy(activity)  # Maximize joint entropy
-
-class DiscreteProxyLoss(nn.Module):
-    """
-    Maximizes the discrete binary Shannon entropy of the marginals,
-    while minimizing a penalty term to encourage receptor independence or diversity.
-    """
-    def __init__(self, cov_weight: float, penalty_type: str):
-        """
-        Args:
-            cov_weight: Weight for the penalty term.
-            penalty_type: The type of penalty to apply. Can be 'repulsion' (penalizes
-                          similar activation profiles) or 'covariance' (penalizes linear
-                          correlation).
-        """
-        super().__init__()
-        self.cov_weight = cov_weight
-        self.penalty_type = penalty_type
-
-        if self.penalty_type not in ['repulsion', 'covariance']:
-            raise ValueError("penalty_type must be 'repulsion' or 'covariance'")
-
-    def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
-        """
-        Computes binary soft assignments from continuous activity.
-
-        Args:
-            activity (torch.Tensor): Continuous activity tensor of shape (Batch, R).
-
-        Returns:
-            torch.Tensor: Soft assignment tensor of shape (Batch, R, 2).
-        """
-        return torch.stack([1.0 - activity, activity], dim=-1)
-
-    def compute_soft_marginal_probabilities(self, activity: torch.Tensor) -> torch.Tensor:
-        """
-        Computes marginal probabilities for binary states.
-
-        Args:
-            activity (torch.Tensor): Continuous activity tensor of shape (Batch, R).
-
-        Returns:
-            torch.Tensor: Marginal probabilities of shape (R, 2).
-        """
-        soft_assign = self.compute_soft_assignment(activity)
-        p_marginal = soft_assign.mean(dim=0)
-        return p_marginal
-
-    def _compute_soft_histogram_entropy(self, activity: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the discrete binary Shannon entropy.
-        activity shape: (Batch, R)
-        Returns shape: (R,) - entropy in bits.
-        """
-        # 1. Get marginal probabilities from the shared function
-        p_marginal = self.compute_soft_marginal_probabilities(activity)
-        
-        # 2. Clamp to prevent log2(0) crashes
-        p_marginal = torch.clamp(p_marginal, min=1e-12)
-        
-        # 3. Calculate log2(p)
-        log_2_p = torch.log2(p_marginal)
-        
-        # 4. Exact Shannon Entropy in bits
-        entropy = -torch.sum(p_marginal * log_2_p, dim=-1)
-        
-        return entropy
-
-    def _compute_repulsion_penalty(self, activity: torch.Tensor) -> torch.Tensor:
-        """
-        Penalizes receptors for having identical continuous activation profiles.
-        A perfectly shifted thermometer code has low overlap (low penalty),
-        while identical receptors have max overlap (high penalty).
-        """
-        B, R = activity.shape
-        A = activity.T # (R, B)
-        
-        # Pairwise squared Euclidean distance: ||A_i - A_j||^2
-        A_sq = (A ** 2).sum(dim=1, keepdim=True) # (R, 1)
-        dist_matrix = (A_sq + A_sq.T - 2.0 * torch.matmul(A, A.T)) / B
-        
-        # Repulsion kernel: exp(-dist / tau)
-        tau = 0.05 
-        repulsion = torch.exp(-dist_matrix / tau)
-        
-        mask = ~torch.eye(R, dtype=torch.bool, device=activity.device)
-        
-        return repulsion[mask].sum()
-
-    def _compute_covariance_penalty(self, activity: torch.Tensor) -> torch.Tensor:
-        """
-        Minimizes the off-diagonal terms of the covariance matrix 
-        to encourage independent receptors.
-        """
-        B, R = activity.shape
-        
-        # Center the probabilities
-        mean = activity.mean(dim=0, keepdim=True)
-        centered = activity - mean
-        
-        # Compute Covariance Matrix: (R, B) @ (B, R) -> (R, R)
-        cov_matrix = (centered.T @ centered) / (B - 1)
-        
-        # Create a mask to ignore the diagonal (variance)
-        mask = ~torch.eye(R, dtype=torch.bool, device=activity.device)
-        
-        # Sum of squared off-diagonal elements
-        return (cov_matrix[mask] ** 2).sum()
-
-    def forward(self, activity: torch.Tensor):
-        # 1. Compute Entropy using Differentiable Bins
-        marginals = self._compute_soft_histogram_entropy(activity)
-        loss_entropy = -marginals.mean() # Maximize entropy
-        
-        # 2. Compute selected penalty
-        if self.penalty_type == 'repulsion':
-            penalty = self._compute_repulsion_penalty(activity)
-        else: # covariance
-            penalty = self._compute_covariance_penalty(activity)
-        
-        # 3. Total Loss
-        total_loss = loss_entropy + (self.cov_weight * penalty)
-            
-        return total_loss

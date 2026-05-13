@@ -25,7 +25,7 @@ config = RunConfig(
     conc_model_type="lognormal",
     conc_mean_range=(-6.0, -6.0),
     conc_std_range=(1.0, 1.0),
-    p_presence_range=(1., 1.),
+    p_presence_range=(.2, .2),
 
     # --- Physics ---
     n_genes=20,
@@ -33,7 +33,7 @@ config = RunConfig(
     temperature=0.1,
 
     # --- Mixture ---
-    batch_size=2**12,
+    batch_size=2**14,
 
     # --- Loss ---
     loss_type="exact",
@@ -46,7 +46,7 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**12,
+    test_batch_size=2**14,
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---

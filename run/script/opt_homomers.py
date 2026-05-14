@@ -37,7 +37,8 @@ def main():
         environment_geometry=args.environment_geometry,
         distribution_type="gaussian",
         observation_noise_sigma=0.,
-        affinity_length_scale=1.0,
+        affinity_kernel="gaussian",
+        kernel_params=[1.0],
 
         # --- Concentration ---
         conc_model_type="lognormal",

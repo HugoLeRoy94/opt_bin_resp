@@ -19,6 +19,7 @@ from src.physics import compute_initial_temperature
 
 from src.analysis_helper import (
     full_array_entropy,
+    codeword_entropy,
     miller_madow_entropy,
     mean_receptor_distance,
     conditional_entropy_ligand,
@@ -41,6 +42,7 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
 MEASUREMENT_REGISTRY = {
     "full_array_entropy":              full_array_entropy,
+    "codeword_entropy":                codeword_entropy,
     "mean_receptor_distance":          mean_receptor_distance,
     "conditional_entropy_ligand":      conditional_entropy_ligand,
     "mutual_information_ligand":       mutual_information_ligand,
@@ -116,7 +118,8 @@ class SimulationRunner:
                 latent_dim=self.config.latent_dim,
                 family_spread=self.config.family_spread,
                 avg_family_distance=self.config.average_family_distance,
-                affinity_length_scale=self.config.affinity_length_scale,
+                affinity_kernel=self.config.affinity_kernel,
+                kernel_params=self.config.kernel_params,
                 distribution_type=self.config.distribution_type,
             ).to(self.device)
 
@@ -150,7 +153,7 @@ class SimulationRunner:
         """
         chunk_size = min(self.config.eval_chunk_size or self.config.batch_size, batch_size)
         do_mm_accumulation = (
-            'full_array_entropy' in self.config.measurement_fns
+            'codeword_entropy' in self.config.measurement_fns
             and batch_size > chunk_size
         )
 
@@ -193,11 +196,11 @@ class SimulationRunner:
                 all_codes_cat = torch.cat(all_codes, dim=0)  # (batch_size, R) on CPU
                 H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(all_codes_cat)
                 stat.update({
-                    'full_array_entropy_plugin': H_plugin,
-                    'full_array_entropy_mm':     H_MM,
-                    'full_array_entropy_log2B':  log2_B,
-                    'full_array_entropy_K_hat':  float(K_hat),
-                    'full_array_entropy_K_frac': K_frac,
+                    'codeword_entropy_plugin': H_plugin,
+                    'codeword_entropy_mm':     H_MM,
+                    'codeword_entropy_log2B':  log2_B,
+                    'codeword_entropy_K_hat':  float(K_hat),
+                    'codeword_entropy_K_frac': K_frac,
                 })
 
         return stat

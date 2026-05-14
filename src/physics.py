@@ -104,17 +104,20 @@ class BaseReceptor(nn.Module, ABC):
         unit_latents = env.unit_latent[receptor_indices]
         ligand_latent = env.ligand_latent[ligand_id]
         base_energies = env.base_energy_u[receptor_indices]
-        max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]
 
         # 3. Transform nodes to sample from ligand observation noise v ~ N(ligand_latent, env.observation_noise_sigma)
         v_samples = ligand_latent.unsqueeze(0) + nodes_grid * env.observation_noise_sigma
 
-        # 4. Calculate energies using saturating affinity kernel
+        # 4. Calculate energies using the configured affinity kernel
         diff = v_samples.view(n_quad, 1, 1, env.latent_dim) - unit_latents.view(1, *unit_latents.shape)
         dist_sq = (diff ** 2).sum(dim=-1)
-        lambda_sq = env.affinity_length_scale ** 2
-        E_open_samples = (base_energies.unsqueeze(0)
-                          + max_energies.unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+        if env.affinity_kernel == "gaussian":
+            max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]
+            lambda_sq = env.kernel_params[0] ** 2
+            E_open_samples = (base_energies.unsqueeze(0)
+                              + max_energies.unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+        else:  # "quadratic"
+            E_open_samples = base_energies.unsqueeze(0) + dist_sq
 
         # 5. Compute p_open for each sample and concentration, then average
         log_ec50 = E_open_samples.mean(dim=-1) # (n_quad, N_r)

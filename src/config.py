@@ -10,7 +10,7 @@ _SWEEP_CONTROL_FIELDS = frozenset({
     "conc_mean_range", "conc_std_range", "p_presence_range", "seed",
 })
 # Fields that are always lists but are NOT sweep axes.
-_ALWAYS_LIST_FIELDS = frozenset({"measurement_fns"})
+_ALWAYS_LIST_FIELDS = frozenset({"measurement_fns", "kernel_params"})
 _NON_RUN_FIELDS = _SWEEP_CONTROL_FIELDS | _ALWAYS_LIST_FIELDS
 
 
@@ -45,7 +45,8 @@ class SingleRunConfig:
     n_genes:               int
     k_sub:                 int
     temperature:           float
-    affinity_length_scale: float
+    affinity_kernel:       str          # "gaussian" or "quadratic"
+    kernel_params:         List[float]  # [lambda] for gaussian, [] for quadratic
 
     # --- Mixture ---
     batch_size: int
@@ -124,7 +125,8 @@ class RunConfig:
     n_genes:               Union[int,   List[int]]
     k_sub:                 Union[int,   List[int]]
     temperature:           Union[float, List[float]]
-    affinity_length_scale: Union[float, List[float]]
+    affinity_kernel:       Union[str,   List[str]]   # "gaussian" or "quadratic"
+    kernel_params:         List[float]               # always a list — not a sweep axis
 
     # --- Mixture ---
     batch_size: Union[int, List[int]]
@@ -261,6 +263,10 @@ class RunConfig:
         for key in ("conc_mean_range", "conc_std_range", "p_presence_range"):
             if key in d and isinstance(d[key], list):
                 d[key] = tuple(d[key])
+        # Backward compat: old configs used affinity_length_scale float
+        if "affinity_length_scale" in d and "affinity_kernel" not in d:
+            d["affinity_kernel"] = "gaussian"
+            d["kernel_params"] = [d.pop("affinity_length_scale")]
         return cls(**d)
 
     def __str__(self) -> str:

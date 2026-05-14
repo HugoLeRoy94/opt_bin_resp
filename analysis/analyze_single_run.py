@@ -43,9 +43,7 @@ if config_path.exists():
     for k, v in config_dict.items():
         print(f"  {k}: {v}")
     print("=====================\n")
-
-# %% 
-
+    
 # %% 3. Plot training curves
 stats_path = run_dir / "stats.csv"
 if stats_path.exists():
@@ -136,7 +134,8 @@ try:
         latent_dim=config.latent_dim,
         family_spread=config.family_spread,
         avg_family_distance=config.average_family_distance,
-        affinity_length_scale=config.affinity_length_scale,
+        affinity_kernel=config.affinity_kernel,
+        kernel_params=config.kernel_params,
         distribution_type=config.distribution_type,
     )
     env.load_state_dict(checkpoint["env_state"])

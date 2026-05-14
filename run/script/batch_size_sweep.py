@@ -31,7 +31,8 @@ config = RunConfig(
     environment_geometry="asymmetric",
     distribution_type="gaussian",
     observation_noise_sigma=0.,
-    affinity_length_scale=1.0,
+    affinity_kernel="gaussian",
+    kernel_params=[1.0],
 
     # --- Concentration: identical distribution for every ligand ---
     conc_model_type="lognormal",

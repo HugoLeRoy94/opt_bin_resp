@@ -182,7 +182,8 @@ class LigandEnvironment(nn.Module):
     def __init__(self, n_genes: int, n_families: int, conc_model: ConcentrationModel,
                  n_ligands: int, p_presence: list, observation_noise_sigma: float,
                  latent_dim: int, family_spread: float, distribution_type: str,
-                 avg_family_distance: float, affinity_length_scale: float = 1.0):
+                 avg_family_distance: float, affinity_kernel: str = "gaussian",
+                 kernel_params: list = None):
         """
         Args:
             n_genes: Number of gene units
@@ -195,7 +196,10 @@ class LigandEnvironment(nn.Module):
             family_spread: Fixed spatial spread (fuzziness) of the ligand families
             distribution_type: 'gaussian' or 'uniform'
             avg_family_distance: Target average Euclidean distance between ligand families
-            affinity_length_scale: Global λ — controls Gaussian breadth of affinity kernel
+            affinity_kernel: "gaussian" (E_base + E_max*(1−exp(−d²/λ²))) or
+                             "quadratic" (E_base + d²)
+            kernel_params: hyperparameters for the chosen kernel:
+                           [lambda] for "gaussian", [] for "quadratic"
         """
         super().__init__()
         self.n_genes = n_genes
@@ -206,7 +210,8 @@ class LigandEnvironment(nn.Module):
         self.avg_family_distance = avg_family_distance
         self.p_presence = p_presence
         self.observation_noise_sigma = observation_noise_sigma
-        self.affinity_length_scale = affinity_length_scale
+        self.affinity_kernel = affinity_kernel
+        self.kernel_params = kernel_params if kernel_params is not None else []
 
         p_tensor = torch.tensor(p_presence, dtype=torch.float32)
         self.register_buffer('p_presence_tensor', p_tensor)
@@ -225,9 +230,10 @@ class LigandEnvironment(nn.Module):
         # Learnable Unit Coordinates
         self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
 
-        # Per-unit saturation ceiling: E_o(u, ℓ_far) - E_o(u, ℓ_opt) = softplus(max_energy_u_raw)
-        # Initialized so softplus(x) ≈ 10.0 (ln(e^10 - 1) ≈ 10)
-        self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), math.log(math.e ** 10.0 - 1.0)))
+        # Per-unit saturation ceiling — only used by the "gaussian" kernel.
+        # softplus(max_energy_u_raw) ≈ 10.0 at init (ln(e^10 − 1) ≈ 10)
+        if affinity_kernel == "gaussian":
+            self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), math.log(math.e ** 10.0 - 1.0)))
 
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -289,7 +295,8 @@ class LigandEnvironment(nn.Module):
             family_spread=self.family_spread,
             distribution_type=self.distribution_type,
             avg_family_distance=self.avg_family_distance,
-            affinity_length_scale=self.affinity_length_scale,
+            affinity_kernel=self.affinity_kernel,
+            kernel_params=self.kernel_params,
         ).to(self.unit_latent.device)
 
         with torch.no_grad():
@@ -297,7 +304,8 @@ class LigandEnvironment(nn.Module):
             new_env.ligand_family_assignments.copy_(self.ligand_family_assignments)
             new_env.ligand_latent.copy_(self.ligand_latent)
             new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
-            new_env.max_energy_u_raw.data[:self.n_genes] = self.max_energy_u_raw.data.clone()
+            if self.affinity_kernel == "gaussian":
+                new_env.max_energy_u_raw.data[:self.n_genes] = self.max_energy_u_raw.data.clone()
             new_env.base_energy_u.data[:self.n_genes] = self.base_energy_u.data.clone()
             
         return new_env
@@ -329,10 +337,12 @@ class LigandEnvironment(nn.Module):
         """
         diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0)  # (U, L, D)
         dist_sq = (diff ** 2).sum(dim=-1)  # (U, L)
-        max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
-        lambda_sq = self.affinity_length_scale ** 2
-        mu_open = self.base_energy_u.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
-        return mu_open
+        if self.affinity_kernel == "gaussian":
+            max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
+            lambda_sq = self.kernel_params[0] ** 2
+            return self.base_energy_u.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
+        else:  # "quadratic"
+            return self.base_energy_u.unsqueeze(1) + dist_sq
 
     def sample_batch(self, batch_size: int):
         device = self.unit_latent.device
@@ -353,10 +363,13 @@ class LigandEnvironment(nn.Module):
         b_sq    = (self.unit_latent ** 2).sum(dim=-1)                          # (U,)
         ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent)     # (B, L, U)
         dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)     # (B, L, U)
-        max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
-        lambda_sq = self.affinity_length_scale ** 2
-        E_open = (self.base_energy_u.unsqueeze(0).unsqueeze(0)
-                  + max_e.unsqueeze(0).unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))  # (Batch, L, U)
+        if self.affinity_kernel == "gaussian":
+            max_e = torch.nn.functional.softplus(self.max_energy_u_raw)  # (U,)
+            lambda_sq = self.kernel_params[0] ** 2
+            E_open = (self.base_energy_u.unsqueeze(0).unsqueeze(0)
+                      + max_e.unsqueeze(0).unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+        else:  # "quadratic"
+            E_open = self.base_energy_u.unsqueeze(0).unsqueeze(0) + dist_sq  # (Batch, L, U)
         
         return E_open, concs, mixture_masks
 

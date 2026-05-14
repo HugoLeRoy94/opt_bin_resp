@@ -17,9 +17,10 @@ config = RunConfig(
     family_spread=.1,
     average_family_distance=1.0,
     environment_geometry="asymmetric",
-    distribution_type="gaussian",
+    distribution_type="quadratic", # "gaussian" for a saturation/ "quadratic"
     observation_noise_sigma=0.,
-    affinity_length_scale=1.,
+    affinity_kernel="gaussian",
+    kernel_params=[1.0],
 
     # --- Concentration ---
     conc_model_type="lognormal",

@@ -216,10 +216,13 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     # 1. Compute exact Unit-Family Interaction Energies: (n_genes, n_families)
     diff = env.unit_latent.unsqueeze(1) - env.family_latent.unsqueeze(0)  # (U, F, D)
     dist_sq = (diff ** 2).sum(dim=-1)  # (U, F)
-    max_e = torch.nn.functional.softplus(env.max_energy_u_raw)  # (U,)
-    lambda_sq = env.affinity_length_scale ** 2
-    unit_family_energies = (env.base_energy_u.unsqueeze(1)
-                            + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))).cpu()
+    if env.affinity_kernel == "gaussian":
+        max_e = torch.nn.functional.softplus(env.max_energy_u_raw)  # (U,)
+        lambda_sq = env.kernel_params[0] ** 2
+        unit_family_energies = (env.base_energy_u.unsqueeze(1)
+                                + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))).cpu()
+    else:  # "quadratic"
+        unit_family_energies = (env.base_energy_u.unsqueeze(1) + dist_sq).cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)
@@ -498,37 +501,22 @@ def miller_madow_entropy(activity: torch.Tensor):
 @torch.no_grad()
 def full_array_entropy(activity, loss_fn):
     """
-    Computes the joint entropy of the full receptor array.
+    Soft-assignment joint entropy of the full receptor array.
 
-    Returns a dict so that _eval_stats can unpack each key as its own logged
-    column (run.py already handles dict results via stat.update(result)):
-
-      'full_array_entropy'         — Rényi H2 (fast, used for training)
+    Returns a dict with keys:
+      'full_array_entropy'         — Rényi H2 (fast, used as training loss)
       'full_array_entropy_blocked' — blocked Shannon approximation (more accurate)
-      'full_array_entropy_plugin'  — hard-codeword plug-in estimator (biased)
-      'full_array_entropy_mm'      — Miller-Madow bias-corrected estimate
-      'full_array_entropy_log2B'   — log2(B), trivial upper ceiling
-      'full_array_entropy_K_hat'   — distinct codewords observed
-      'full_array_entropy_K_frac'  — K_hat / 2^R, fraction of alphabet sampled
 
-    Existing analysis scripts that read df["full_array_entropy"] keep working
-    unchanged; the new metrics are additional columns.
+    Both estimators work on continuous soft probabilities, so they are not
+    limited by log₂(B). Add 'codeword_entropy' to measurement_fns for the
+    hard-codeword plug-in / Miller-Madow estimates.
     """
     act = activity.detach()
-    H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(act)
-    mm_stats = {
-        'full_array_entropy_plugin': H_plugin,
-        'full_array_entropy_mm':     H_MM,
-        'full_array_entropy_log2B':  log2_B,
-        'full_array_entropy_K_hat':  float(K_hat),
-        'full_array_entropy_K_frac': K_frac,
-    }
 
     if hasattr(loss_fn, 'compute_entropy'):
-        # DiscreteExactLoss: both soft estimators available.
         h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi').item()
         h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked').item()
-        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked, **mm_stats}
+        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked}
 
     # Legacy path for other loss types.
     if hasattr(loss_fn, 'compute_soft_assignment'):
@@ -542,7 +530,34 @@ def full_array_entropy(activity, loss_fn):
     else:
         h = 0.0
 
-    return {'full_array_entropy': h, 'full_array_entropy_blocked': h, **mm_stats}
+    return {'full_array_entropy': h, 'full_array_entropy_blocked': h}
+
+
+@torch.no_grad()
+def codeword_entropy(activity):
+    """
+    Hard-codeword plug-in entropy and Miller-Madow bias correction.
+
+    Binarises activity at 0.5, counts distinct R-bit patterns, and returns:
+      'codeword_entropy_plugin' — plug-in estimator (biased downward, ≤ log₂B)
+      'codeword_entropy_mm'     — Miller-Madow corrected estimate
+      'codeword_entropy_log2B'  — log₂(B), trivial ceiling for the plugin
+      'codeword_entropy_K_hat'  — number of distinct codewords observed
+      'codeword_entropy_K_frac' — K_hat / 2^R, fraction of alphabet sampled
+
+    Add 'codeword_entropy' to measurement_fns to opt in.
+    When eval_chunk_size < test_batch_size, _eval_stats accumulates hard codes
+    across all chunks so that the full test_batch_size budget is used here.
+    """
+    act = activity.detach()
+    H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(act)
+    return {
+        'codeword_entropy_plugin': H_plugin,
+        'codeword_entropy_mm':     H_MM,
+        'codeword_entropy_log2B':  log2_B,
+        'codeword_entropy_K_hat':  float(K_hat),
+        'codeword_entropy_K_frac': K_frac,
+    }
 
 @torch.no_grad()
 def total_correlation(activity, loss_fn):

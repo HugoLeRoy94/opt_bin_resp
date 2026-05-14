@@ -62,7 +62,8 @@ def load_run_objects(run_dir: str):
         latent_dim=config.latent_dim,
         family_spread=config.family_spread,
         avg_family_distance=config.average_family_distance,
-        affinity_length_scale=config.affinity_length_scale,
+        affinity_kernel=config.affinity_kernel,
+        kernel_params=config.kernel_params,
         distribution_type=config.distribution_type,
     )
     env.load_state_dict(checkpoint["env_state"])

@@ -27,7 +27,7 @@ config = RunConfig(
     conc_std_range=(1.0, 1.0),
     p_presence_range=(.2, .2),
     # --- Physics ---
-    n_genes=20,
+    n_genes=30,
     k_sub=5,
     temperature=0.1,
 

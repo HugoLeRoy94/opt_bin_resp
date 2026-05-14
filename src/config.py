@@ -204,6 +204,7 @@ class RunConfig:
             and not isinstance(getattr(self, f.name), list)
         }
         fixed["measurement_fns"] = self.measurement_fns
+        fixed["kernel_params"]   = self.kernel_params
 
         # Cartesian product of independent sweep axes
         ind_keys = list(sweep.keys())

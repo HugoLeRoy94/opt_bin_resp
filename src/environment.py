@@ -230,10 +230,13 @@ class LigandEnvironment(nn.Module):
         # Learnable Unit Coordinates
         self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
 
-        # Per-unit saturation ceiling — only used by the "gaussian" kernel.
-        # softplus(max_energy_u_raw) ≈ 10.0 at init (ln(e^10 − 1) ≈ 10)
+        _init_val = math.log(math.e ** 10.0 - 1.0)   # softplus(x) ≈ 10 at init
         if affinity_kernel == "gaussian":
-            self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), math.log(math.e ** 10.0 - 1.0)))
+            # E_max per unit: E_base + softplus(max_energy_u_raw) * (1 − exp(−d²/λ²))
+            self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), _init_val))
+        else:  # "quadratic"
+            # dE per unit: E_base + softplus(energy_slope_raw) * d²
+            self.energy_slope_raw = nn.Parameter(torch.full((n_genes,), _init_val))
 
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -306,6 +309,8 @@ class LigandEnvironment(nn.Module):
             new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
             if self.affinity_kernel == "gaussian":
                 new_env.max_energy_u_raw.data[:self.n_genes] = self.max_energy_u_raw.data.clone()
+            else:
+                new_env.energy_slope_raw.data[:self.n_genes] = self.energy_slope_raw.data.clone()
             new_env.base_energy_u.data[:self.n_genes] = self.base_energy_u.data.clone()
             
         return new_env
@@ -342,7 +347,8 @@ class LigandEnvironment(nn.Module):
             lambda_sq = self.kernel_params[0] ** 2
             return self.base_energy_u.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
         else:  # "quadratic"
-            return self.base_energy_u.unsqueeze(1) + dist_sq
+            dE = torch.nn.functional.softplus(self.energy_slope_raw)  # (U,)
+            return self.base_energy_u.unsqueeze(1) + dE.unsqueeze(1) * dist_sq
 
     def sample_batch(self, batch_size: int):
         device = self.unit_latent.device
@@ -369,7 +375,8 @@ class LigandEnvironment(nn.Module):
             E_open = (self.base_energy_u.unsqueeze(0).unsqueeze(0)
                       + max_e.unsqueeze(0).unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
         else:  # "quadratic"
-            E_open = self.base_energy_u.unsqueeze(0).unsqueeze(0) + dist_sq  # (Batch, L, U)
+            dE = torch.nn.functional.softplus(self.energy_slope_raw)  # (U,)
+            E_open = self.base_energy_u.unsqueeze(0).unsqueeze(0) + dE.unsqueeze(0).unsqueeze(0) * dist_sq
         
         return E_open, concs, mixture_masks
 

@@ -117,7 +117,8 @@ class BaseReceptor(nn.Module, ABC):
             E_open_samples = (base_energies.unsqueeze(0)
                               + max_energies.unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
         else:  # "quadratic"
-            E_open_samples = base_energies.unsqueeze(0) + dist_sq
+            dE = torch.nn.functional.softplus(env.energy_slope_raw)[receptor_indices]
+            E_open_samples = base_energies.unsqueeze(0) + dE.unsqueeze(0) * dist_sq
 
         # 5. Compute p_open for each sample and concentration, then average
         log_ec50 = E_open_samples.mean(dim=-1) # (n_quad, N_r)

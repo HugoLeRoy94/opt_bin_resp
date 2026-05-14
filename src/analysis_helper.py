@@ -222,7 +222,8 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
         unit_family_energies = (env.base_energy_u.unsqueeze(1)
                                 + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))).cpu()
     else:  # "quadratic"
-        unit_family_energies = (env.base_energy_u.unsqueeze(1) + dist_sq).cpu()
+        dE = torch.nn.functional.softplus(env.energy_slope_raw)  # (U,)
+        unit_family_energies = (env.base_energy_u.unsqueeze(1) + dE.unsqueeze(1) * dist_sq).cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)

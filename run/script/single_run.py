@@ -19,8 +19,8 @@ config = RunConfig(
     environment_geometry="asymmetric",
     distribution_type="gaussian",
     observation_noise_sigma=0.,
-    affinity_kernel="gaussian",# "gaussian" for a saturation/ "quadratic"
-    kernel_params=[],
+    affinity_kernel="quadratic",# "gaussian" for a saturation/ "quadratic"
+    kernel_params=[],# needs an entry if gaussian is used
 
     # --- Concentration ---
     conc_model_type="lognormal",

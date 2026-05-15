@@ -24,9 +24,9 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment: single family at the origin, same as cover_bound_sharpness ---
     n_families=1,
-    n_ligands=1,
-    latent_dim=20,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
-    family_spread=[0.1,1.,10.],
+    n_ligands=100,
+    latent_dim=10,                            # D >> N/2=5 → Cover bound = 2^N, not limiting
+    family_spread=0.1,
     average_family_distance=0.0,              # family centre fixed at origin
     environment_geometry="asymmetric",
     distribution_type="gaussian",
@@ -38,7 +38,7 @@ config = RunConfig(
     conc_model_type="lognormal",
     conc_mean_range=(-6.0, -6.0),
     conc_std_range=(1.0, 1.0),
-    p_presence_range=(0.05, 0.05),
+    p_presence_range=(0.2, 0.2),
 
     # --- Physics: N=10 receptors (2^10=1024 achievable codes) ---
     n_genes=10,
@@ -46,7 +46,7 @@ config = RunConfig(
     temperature=0.1,
 
     # --- Mixture: sweep batch_size across the 2^10 = 1024 transition point ---
-    batch_size=[2**i for i in range(6, 15)],  # 64 → 16384, independent sweep axis
+    batch_size=[2**i for i in range(6, 16)],  # 64 → 16384, independent sweep axis
 
     # --- Loss ---
     entropy="shannon",
@@ -59,12 +59,12 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**14,                    # large fixed eval batch for accurate measurement
+    test_batch_size=2**16,                    # large fixed eval batch for accurate measurement
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---
     n_samples=1,
-    sweep_name="batch_size_sweep",
+    sweep_name="batch_size_sweep_shannon",
     base_folder="/app/data/batch_size_sweep",
     warm_start_axis=None,                     # no warm-starting; n_genes is fixed
     seed=0,

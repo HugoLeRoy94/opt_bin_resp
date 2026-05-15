@@ -49,7 +49,7 @@ config = RunConfig(
     batch_size=[2**i for i in range(6, 16)],  # 64 → 16384, independent sweep axis
 
     # --- Loss ---
-    entropy="renyi",
+    entropy="shannon",
     cov_weight=0.0,
     penalty_type="repulsion",
     # only matter for conditional MI

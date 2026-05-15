@@ -41,7 +41,7 @@ config = RunConfig(
     p_presence_range=(0.2, 0.2),
 
     # --- Physics: N=10 receptors (2^10=1024 achievable codes) ---
-    n_genes=10,
+    n_genes=20,
     k_sub=5,
     temperature=0.1,
 

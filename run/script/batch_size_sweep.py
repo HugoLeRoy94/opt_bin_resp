@@ -49,7 +49,7 @@ config = RunConfig(
     batch_size=[2**i for i in range(6, 16)],  # 64 → 16384, independent sweep axis
 
     # --- Loss ---
-    entropy="shannon",
+    entropy="renyi",
     cov_weight=0.0,
     penalty_type="repulsion",
     # only matter for conditional MI
@@ -64,7 +64,7 @@ config = RunConfig(
 
     # --- Sweep control ---
     n_samples=1,
-    sweep_name="batch_size_sweep_shannon",
+    sweep_name="batch_size_sweep_renyi",
     base_folder="/app/data/batch_size_sweep",
     warm_start_axis=None,                     # no warm-starting; n_genes is fixed
     seed=0,

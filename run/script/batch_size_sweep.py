@@ -49,7 +49,7 @@ config = RunConfig(
     batch_size=[2**i for i in range(6, 16)],  # 64 → 16384, independent sweep axis
 
     # --- Loss ---
-    entropy="shannon",
+    entropy="renyi",
     cov_weight=0.0,
     penalty_type="repulsion",
     # only matter for conditional MI
@@ -59,7 +59,7 @@ config = RunConfig(
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**16,                    # large fixed eval batch for accurate measurement
+    test_batch_size=2**20,                    # large fixed eval batch for accurate measurement
     measurement_fns=["full_array_entropy"],
 
     # --- Sweep control ---

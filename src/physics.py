@@ -1,3 +1,20 @@
+# Documented in:
+#   doc/theory/02_biophysics_mwc.md  (MWC model, EC50 limit)
+#   doc/theory/06_computational_limits.md  (quadrature fallback)
+#   doc/theory/07_optimization_pipeline.md  (stage 3: receptor physics)
+"""
+physics.py — Receptor activation models.
+
+BinaryReceptor implements the EC50-threshold limit of the MWC model:
+  ln EC50 = (1/k_sub) Σ_u E_open^(u,ℓ)  →  p = sigmoid(logsumexp_ℓ[ln c − ln EC50] / T)
+
+Key numerical tricks:
+  - logsumexp over ligands aggregates mixture binding without float overflow.
+  - compute_initial_temperature: sets T_init = std(pre-sigmoid terms) so the
+    sigmoid starts with unit standard deviation (avoids vanishing/flat gradients).
+  - Gauss-Hermite quadrature for dose-response; falls back to mean-energy
+    approximation when grid size would exceed 1e5 points (see §06.2).
+"""
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod

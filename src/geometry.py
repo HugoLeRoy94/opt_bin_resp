@@ -1,3 +1,16 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (receptor sampling strategies section)
+"""
+geometry.py — Receptor array composition strategies.
+
+Provides several functions for selecting which heteromeric combinations populate
+the receptor array:
+  generate_receptor_indices         — random sample from all combinations_with_replacement
+  generate_targeted_receptors       — explicit count per complexity level (n_unique_subunits)
+  generate_cascading_receptors      — fill quota by complexity: homomers first, then 2-mers, …
+  generate_exp_distributed_receptors — complexity drawn from exponential distribution
+  generate_bernoulli_receptors      — each gene present via Bernoulli(gene_probs)
+"""
 import torch
 import itertools
 import random

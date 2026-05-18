@@ -1,3 +1,12 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (stage 4b: MI ligand loss)
+"""
+family_mi_loss.py — Mutual information loss between array activity and mixture identity.
+
+Maximizes I(A ; M) = H(A) − H(A|M) by minimizing H(A|M) − H(A).
+H(A|M) is computed by hashing mixture masks to integer IDs via binary powers
+(id = Σ_ℓ M_ℓ·2^ℓ), grouping the batch by ID, and averaging entropy per group.
+"""
 import torch
 import torch.nn as nn
 from .bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy

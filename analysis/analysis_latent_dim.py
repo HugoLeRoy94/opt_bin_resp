@@ -40,12 +40,21 @@ if not base_dir.exists():
     print(f"Directory {base_dir} not found.")
     df = None
 else:
-    sweep_root = find_latest_sweep(str(base_dir), prefix="cover_bound_sharpness")
+    sweep_root = find_latest_sweep(str(base_dir), prefix="cover_bound_sharpness")[0]
+    print(sweep_root)
     loader     = SweepLoader(sweep_root)
     df         = loader.load_all_histories()
     print(f"Loaded {len(df)} logged steps across "
           f"{df.groupby(['latent_dim', 'n_genes', 'sample_id']).ngroups} runs")
 
+# %% 2. Load and print configuration
+config_path = sweep_root + "/sweep_config.json"
+with open(config_path) as f:
+    config_dict = json.load(f)
+print("\n=== Configuration ===")
+for k, v in config_dict.items():
+    print(f"  {k}: {v}")
+print("=====================\n")
 # %%
 if df is not None and not df.empty and "full_array_entropy" in df.columns:
 
@@ -127,3 +136,5 @@ if df is not None and not df.empty and "full_array_entropy" in df.columns:
 
 else:
     print("No data to plot.")
+
+# %%

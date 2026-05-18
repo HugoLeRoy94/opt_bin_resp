@@ -1,3 +1,21 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (stage 6: evaluation metrics table)
+"""
+analysis_helper.py — Evaluation metrics and visualisation utilities.
+
+All metric functions are registered in run.py::MEASUREMENT_REGISTRY and called
+via signature introspection, accepting whichever of (env, physics, receptor_indices,
+loss_fn, activity, concs, mixture_masks, epoch) they need.
+
+Key metrics:
+  full_array_entropy      — Rényi H2 + blocked Shannon of soft joint activity
+  codeword_entropy        — hard plug-in entropy + Miller-Madow bias correction
+  mean_specialization_index — S_r = (A_max − A_bg) / (A_max + A_bg)
+  rank_ordered_distances  — average energy gap from preferred ligand (rank-ordered)
+
+Miller-Madow correction: H_MM = H_plugin + (K_hat − 1) / (2·B·ln2) partially corrects
+the downward bias of the plug-in estimator for finite batch sizes.
+"""
 import torch
 import math
 import numpy as np

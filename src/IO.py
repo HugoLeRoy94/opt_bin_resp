@@ -165,6 +165,29 @@ class SweepLoader:
                 rel = _run_rel_path(self.config, meta, single_cfg)
                 yield meta, single_cfg, os.path.join(self.sweep_root, rel)
 
+    def load_all_test_results(self) -> pd.DataFrame:
+        """
+        Crawls the sweep grid, loads all test_results.json files, and returns a
+        DataFrame with one row per run.  Each metric column holds the mean over
+        the test-sample array stored in the JSON.  Metadata columns (independent
+        axes + sample_id + warm axis) are injected for downstream analysis.
+        """
+        rows = []
+        for meta, single_cfg, run_dir in self.iter_run_dirs():
+            json_path = os.path.join(run_dir, "test_results.json")
+            if not os.path.exists(json_path):
+                continue
+            with open(json_path) as f:
+                data = json.load(f)
+            row = {k: float(np.mean(v)) for k, v in data.items() if isinstance(v, list)}
+            for k, v in meta.items():
+                row[k] = v
+            warm_axis = self.config.warm_start_axis
+            if warm_axis and isinstance(getattr(self.config, warm_axis, None), list):
+                row[warm_axis] = getattr(single_cfg, warm_axis)
+            rows.append(row)
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
     def load_all_histories(self) -> pd.DataFrame:
         """
         Crawls the sweep grid, loads all stats.csv files, and injects metadata

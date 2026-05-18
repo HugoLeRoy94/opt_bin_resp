@@ -1,3 +1,18 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (stages 5 & 6: training loop, evaluation)
+"""
+run.py — Training orchestration (SimulationRunner) and parameter sweep execution (SweepRunner).
+
+SimulationRunner.run() executes: initialize → train → checkpoint → test.
+Key behaviours:
+  - Temperature annealing: linear from T_init (calibrated) to T_final.
+  - Warm-starting: environment state passed forward along the warm_start_axis sweep,
+    with LR damped 10× to preserve learned representations.
+  - Chunked evaluation: soft metrics (Rényi, distances) on one chunk; hard codeword
+    metrics accumulated across all chunks for the full test_batch_size budget.
+  - Measurement dispatch: functions selected by name from MEASUREMENT_REGISTRY,
+    called via inspect.signature to inject only the arguments they accept.
+"""
 import torch
 import torch.nn as nn
 import torch.optim as optim

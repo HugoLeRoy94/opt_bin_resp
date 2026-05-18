@@ -1,3 +1,14 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (sweep architecture section)
+"""
+config.py — Run configuration and sweep generation.
+
+SingleRunConfig: scalar-only config consumed by SimulationRunner.
+RunConfig: accepts Union[T, List[T]] for any parameter — list-valued fields become
+sweep axes. generate_trajectories() yields (meta, trajectory) pairs via Cartesian
+product of independent axes, with the warm_start_axis run sequentially within each
+trajectory. Concentration draws are seeded per trajectory for full reproducibility.
+"""
 from dataclasses import dataclass, asdict, field, fields as dc_fields
 from typing import Union, List, Dict, Any, Generator, Tuple, Optional
 import itertools

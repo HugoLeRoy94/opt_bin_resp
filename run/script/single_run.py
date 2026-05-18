@@ -18,9 +18,7 @@ config = RunConfig(
     average_family_distance=1.0,
     environment_geometry="asymmetric",
     distribution_type="gaussian",
-    observation_noise_sigma=0.,
-    affinity_kernel="quadratic",# "gaussian" for a saturation/ "quadratic"
-    kernel_params=[1.],# needs an entry if gaussian is used
+    
 
     # --- Concentration ---
     conc_model_type="lognormal",
@@ -31,6 +29,9 @@ config = RunConfig(
     n_genes=30,
     k_sub=5,
     temperature=0.1,
+    observation_noise_sigma=0.,
+    affinity_kernel="gaussian",# "gaussian" for a saturation/ "quadratic"
+    kernel_params=[1.],# needs an entry if gaussian is used
 
     # --- Mixture ---
     batch_size=2**16,

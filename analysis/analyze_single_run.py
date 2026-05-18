@@ -26,7 +26,7 @@ from src.environment import LigandEnvironment, SymmetricLigandEnvironment, LogNo
 # single_run.py writes to: ../data/single_run_{timestamp}/sample_0/
 base_dir = Path("../data")
 
-sweep_root = find_latest_sweep(str(base_dir), prefix="single_run")[3]
+sweep_root = find_latest_sweep(str(base_dir), prefix="single_run")[0]
 run_dir    = Path(sweep_root) / "sample_0"
 
 print(f"Analysing run: {run_dir}")

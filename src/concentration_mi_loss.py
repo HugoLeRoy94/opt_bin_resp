@@ -1,3 +1,12 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (stage 4c: MI concentration loss)
+"""
+concentration_mi_loss.py — Mutual information loss between array activity and concentration.
+
+Maximizes I(A ; C) = H(A) − H(A|C) by minimizing H(A|C) − H(A).
+H(A|C) is estimated by sorting the batch by total mixture concentration and
+splitting into n_c_bins equal quantile bins, then averaging entropy per bin.
+"""
 import torch
 import torch.nn as nn
 from .bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy

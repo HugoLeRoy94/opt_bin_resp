@@ -1,3 +1,20 @@
+# Documented in:
+#   doc/theory/03_latent_environment.md  (affinity kernel, latent space, concentration models)
+#   doc/theory/07_optimization_pipeline.md  (stages 1 & 2: world building, batch sampling)
+"""
+environment.py — Chemical latent space and batch sampling.
+
+Implements LigandEnvironment (and SymmetricLigandEnvironment) which holds all
+learnable parameters (unit_latent, base_energy_u, max_energy_u_raw) and fixed
+buffers (family_latent, ligand_latent). sample_batch() generates one training
+batch: Bernoulli mixture masks → sampled concentrations → noisy ligand coordinates
+→ open-state energies via the affinity kernel.
+
+Key numerical tricks:
+  - Distance computation: ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B,L,U,D) broadcast.
+  - UniformNBall: direction·radius^(1/D) gives uniform density in the N-ball.
+  - base_energy_u init = E[ln c]: EC50 ≈ typical concentration at iteration 0.
+"""
 import math
 import torch
 import copy

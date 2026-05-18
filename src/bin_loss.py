@@ -1,3 +1,18 @@
+# Documented in:
+#   doc/theory/07_optimization_pipeline.md  (stage 4a: DiscreteExactLoss)
+#   doc/theory/06_computational_limits.md  (memory scaling of each estimator)
+"""
+bin_loss.py — Discrete joint entropy estimators for binary receptor arrays.
+
+Four estimators selectable via entropy_type in DiscreteExactLoss:
+  'shannon' : exact enumeration, O(B·2^R) — only for R < ~15.
+  'renyi'   : exact Rényi H2, O(B²·R) — default scalable choice.
+  'blocked' : block-wise Shannon, O(B·2^block_size) — captures higher-order terms.
+  'proxy'   : Σ H_r − cov_weight·penalty, O(B·R²) — fastest pairwise approximation.
+
+Rényi trick: log P(collision) = Σ_r log P_r(collision) computed in log-space
+via logsumexp, diagonal (self-collision) masked out before averaging.
+"""
 import torch
 import torch.nn as nn
 import math

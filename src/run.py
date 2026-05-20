@@ -41,6 +41,8 @@ from src.analysis_helper import (
     mutual_information_ligand,
     conditional_entropy_concentration,
     mutual_information_concentration,
+    conditional_entropy_family,
+    mutual_information_family,
     receptor_distances,
     rank_ordered_distances,
     mean_specialization_index,
@@ -56,18 +58,46 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 # ==========================================
 
 MEASUREMENT_REGISTRY = {
-    "full_array_entropy":              full_array_entropy,
-    "codeword_entropy":                codeword_entropy,
-    "mean_receptor_distance":          mean_receptor_distance,
-    "conditional_entropy_ligand":      conditional_entropy_ligand,
-    "mutual_information_ligand":       mutual_information_ligand,
+    "full_array_entropy":                full_array_entropy,
+    "codeword_entropy":                  codeword_entropy,
+    "mean_receptor_distance":            mean_receptor_distance,
+    "conditional_entropy_ligand":        conditional_entropy_ligand,
+    "mutual_information_ligand":         mutual_information_ligand,
     "conditional_entropy_concentration": conditional_entropy_concentration,
-    "mutual_information_concentration": mutual_information_concentration,
-    "receptor_distances":              receptor_distances,
-    "rank_ordered_distances":          rank_ordered_distances,
-    "mean_specialization_index":       mean_specialization_index,
-    "receptor_conditioned_entropy":    receptor_conditioned_entropy,
+    "mutual_information_concentration":  mutual_information_concentration,
+    "conditional_entropy_family":        conditional_entropy_family,
+    "mutual_information_family":         mutual_information_family,
+    "receptor_distances":                receptor_distances,
+    "rank_ordered_distances":            rank_ordered_distances,
+    "mean_specialization_index":         mean_specialization_index,
+    "receptor_conditioned_entropy":      receptor_conditioned_entropy,
 }
+
+
+# ---------------------------------------------------------------------------
+# Batch-size auto-scaling
+# ---------------------------------------------------------------------------
+
+def resolve_batch_sizes(n_receptors: int, entropy_type: str = "shannon") -> tuple:
+    """Returns (batch_size, test_batch_size) appropriate for the array size.
+
+    Shannon / exact: B_train = 2^R — one sample per histogram bin for good coverage.
+    Memory cap: soft_assign tensor is (B, 2^R) float32; budget B×2^R ≤ 2^35 floats
+    (~128 GiB), giving ~10^6 max samples at R=15 on an A100.
+
+    Rényi-2: cost is O(B²·R) not O(B·2^R); keep B ~ 16·√(2^R) instead.
+
+    test_batch_size = 4 × batch_size.
+    """
+    B_min = 512
+    if entropy_type != "renyi":
+        b_train = max(B_min, 1 << n_receptors)
+        # B × 2^R ≤ 2^35  →  B ≤ 2^(35-R)
+        mem_cap = max(B_min, 1 << max(0, 35 - n_receptors))
+        b_train = min(b_train, mem_cap)
+    else:
+        b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
+    return b_train, 4 * b_train
 
 ENV_REGISTRY = {
     "asymmetric": LigandEnvironment,
@@ -117,6 +147,15 @@ class SimulationRunner:
             self.config.receptor_indices, dtype=torch.long, device=self.device
         )
 
+        # Resolve "auto" batch sizes now that receptor_indices is known.
+        if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
+            n_r = receptor_indices.shape[0]
+            b_train, b_eval = resolve_batch_sizes(n_r, self.config.entropy)
+            if self.config.batch_size == "auto":
+                self.config.batch_size = b_train
+            if self.config.test_batch_size == "auto":
+                self.config.test_batch_size = b_eval
+
         if prev_env is not None:
             extra_units = max(0, self.config.n_genes - prev_env.n_genes)
             env = prev_env.clone_with_extra_units(extra_units).to(self.device)
@@ -136,6 +175,7 @@ class SimulationRunner:
                 affinity_kernel=self.config.affinity_kernel,
                 kernel_params=self.config.kernel_params,
                 distribution_type=self.config.distribution_type,
+                use_interface_model=self.config.use_interface_model,
             ).to(self.device)
 
         physics = BinaryReceptor(
@@ -172,12 +212,14 @@ class SimulationRunner:
             and batch_size > chunk_size
         )
 
+        ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
             # --- First chunk: soft metrics + soft assignments ---
-            E, concs, masks = env.sample_batch(batch_size=chunk_size)
-            activity = physics(E, concs, receptor_indices)
+            E, concs, masks = env.sample_batch(batch_size=chunk_size, receptor_indices=ri_for_batch)
+            activity = physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model)
 
             stat = {}
+            family_labels_cache = None  # computed lazily if any fn requests it
             for fn_name in self.config.measurement_fns:
                 fn  = MEASUREMENT_REGISTRY[fn_name]
                 sig = inspect.signature(fn)
@@ -190,6 +232,14 @@ class SimulationRunner:
                 if "epoch"            in sig.parameters: kwargs["epoch"]            = epoch
                 if "concs"            in sig.parameters: kwargs["concs"]            = concs
                 if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks
+                if "family_labels"    in sig.parameters:
+                    if family_labels_cache is None:
+                        import torch.nn.functional as _F
+                        one_hot_fam = _F.one_hot(
+                            env.ligand_family_assignments.long(), env.n_families
+                        ).float()                                         # (L, n_families)
+                        family_labels_cache = (masks.float() @ one_hot_fam).bool()  # (B, n_families)
+                    kwargs["family_labels"] = family_labels_cache
                 result = fn(**kwargs)
                 if isinstance(result, dict):
                     stat.update(result)
@@ -203,8 +253,8 @@ class SimulationRunner:
                 n_so_far = chunk_size
                 while n_so_far < batch_size:
                     this_chunk = min(chunk_size, batch_size - n_so_far)
-                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk)
-                    act_c = physics(E_c, concs_c, receptor_indices)
+                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk, receptor_indices=ri_for_batch)
+                    act_c = physics(E_c, concs_c, receptor_indices, pre_gathered=env.use_interface_model)
                     all_codes.append((act_c > 0.5).cpu())
                     n_so_far += this_chunk
 
@@ -240,8 +290,9 @@ class SimulationRunner:
             if hasattr(physics, "temperature"):
                 physics.temperature = current_temp
 
-            energies, concs, masks = env.sample_batch(self.config.batch_size)
-            activity = physics(energies, concs, receptor_indices)
+            ri_for_batch = receptor_indices if env.use_interface_model else None
+            energies, concs, masks = env.sample_batch(self.config.batch_size, receptor_indices=ri_for_batch)
+            activity = physics(energies, concs, receptor_indices, pre_gathered=env.use_interface_model)
 
             if isinstance(loss_fn, MaximizeMutualInformationLigandLoss):
                 loss = loss_fn(activity, mixture_masks=masks)

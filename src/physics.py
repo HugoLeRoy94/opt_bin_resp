@@ -45,37 +45,51 @@ class BaseReceptor(nn.Module, ABC):
         """
         pass
 
-    def forward(self, 
-                energies: torch.Tensor, 
-                concentrations: torch.Tensor, 
-                receptor_indices: torch.Tensor) -> torch.Tensor:
+    def forward(self,
+                energies: torch.Tensor,
+                concentrations: torch.Tensor,
+                receptor_indices: torch.Tensor,
+                pre_gathered: bool = False) -> torch.Tensor:
         """
         Args:
-            energies: Sampled interaction energies. 
-                      Can be (Batch, L, n_genes, 2) for MWC or (Batch, L, n_genes) for Threshold.
+            energies: Sampled interaction energies.
+                      Classic model: (Batch, L, n_genes) for BinaryReceptor or
+                                     (Batch, L, n_genes, 2) for MWC.
+                      Interface model: (Batch, L, N_Receptors, k_sub) — already
+                                       gathered per receptor (pass pre_gathered=True).
             concentrations: (Batch, L) - Sampled concentrations for the mixture
-            receptor_indices: (N_Receptors, k_sub) - Stoichiometry definitions
+            receptor_indices: (N_Receptors, k_sub) - Receptor layout (needed for
+                              n_receptors count even when pre_gathered=True).
+            pre_gathered: When True, skip the index-gather step.  The energies
+                          tensor is assumed to already have shape
+                          (Batch, L, N_Receptors, k_sub).
         """
-        batch_size = energies.shape[0]
-        n_ligands = energies.shape[1]
+        batch_size  = energies.shape[0]
+        n_ligands   = energies.shape[1]
         n_receptors = receptor_indices.shape[0]
-        
-        # 1. Gather energies for specific receptors
-        flat_indices = receptor_indices.view(-1)
-        gathered_flat = energies[:, :, flat_indices]
-        
-        # 2. Reshape dynamically based on the input energy dimensions
-        if energies.dim() == 4:
-            # Shape: (Batch, L, R, k_sub, 2)
-            energies_k = gathered_flat.view(batch_size, n_ligands, n_receptors, self.k_sub, energies.shape[-1])
+
+        if pre_gathered:
+            # Interface model: energies are (B, L, R, k_sub) — no gather needed.
+            energies_k = energies
         else:
-            # Shape: (Batch, L, R, k_sub)
-            energies_k = gathered_flat.view(batch_size, n_ligands, n_receptors, self.k_sub)
-        
+            # Classic model: gather per-receptor energies from the unit pool.
+            flat_indices = receptor_indices.view(-1)
+            gathered_flat = energies[:, :, flat_indices]
+
+            # Reshape dynamically based on the input energy dimensions.
+            if energies.dim() == 4:
+                # MWC: (Batch, L, R, k_sub, 2)
+                energies_k = gathered_flat.view(
+                    batch_size, n_ligands, n_receptors, self.k_sub, energies.shape[-1]
+                )
+            else:
+                # BinaryReceptor: (Batch, L, R, k_sub)
+                energies_k = gathered_flat.view(batch_size, n_ligands, n_receptors, self.k_sub)
+
         # 3. Compute Activity
         c_reshaped = concentrations.view(batch_size, n_ligands, 1)
-        p_o = self.p_open(c_reshaped, energies_k)        
-        
+        p_o = self.p_open(c_reshaped, energies_k)
+
         return torch.clamp(p_o, 0.0, 1.0)
 
     @torch.no_grad()
@@ -87,7 +101,13 @@ class BaseReceptor(nn.Module, ABC):
         observation noise for a more accurate response.
         Otherwise, it uses the mean interaction energy.
         """
-        if env.distribution_type != 'gaussian' or not isinstance(self, BinaryReceptor) or (quadrature_degree ** env.latent_dim > 100000):
+        # Quadrature over pocket embeddings would require integrating over the
+        # averaged pocket position — too complex for the interface model.  Always
+        # fall back to the mean-energy approximation in that case.
+        if (env.distribution_type != 'gaussian'
+                or not isinstance(self, BinaryReceptor)
+                or quadrature_degree ** env.latent_dim > 100000
+                or getattr(env, 'use_interface_model', False)):
             c_sweep, _ = env.get_concentration_sweep(ligand_id, n_points)
             # Format for a single ligand mixture
             c_reshaped = c_sweep.view(n_points, 1, 1)
@@ -173,20 +193,24 @@ def compute_initial_temperature(env, receptor_indices: torch.Tensor, calibration
     Returns:
         Scalar float T_init >= 1e-3.
     """
-    E_open, concs, _ = env.sample_batch(calibration_batch_size)
-    batch_size  = E_open.shape[0]
-    n_ligands   = E_open.shape[1]
-    n_receptors = receptor_indices.shape[0]
-    k_sub       = receptor_indices.shape[1]
+    if getattr(env, 'use_interface_model', False):
+        # Interface model: sample_batch returns (B, L, R, k_sub) — already gathered.
+        E_open, concs, _ = env.sample_batch(calibration_batch_size, receptor_indices=receptor_indices)
+        energies_k = E_open  # (B, L, R, k_sub)
+    else:
+        E_open, concs, _ = env.sample_batch(calibration_batch_size)
+        batch_size  = E_open.shape[0]
+        n_ligands   = E_open.shape[1]
+        n_receptors = receptor_indices.shape[0]
+        k_sub       = receptor_indices.shape[1]
+        flat_indices = receptor_indices.view(-1)
+        gathered     = E_open[:, :, flat_indices]                          # (B, L, R*k_sub)
+        energies_k   = gathered.view(batch_size, n_ligands, n_receptors, k_sub)
 
-    flat_indices = receptor_indices.view(-1)
-    gathered     = E_open[:, :, flat_indices]                              # (B, L, R*k_sub)
-    energies_k   = gathered.view(batch_size, n_ligands, n_receptors, k_sub)
-
-    log_ec50      = energies_k.mean(dim=-1)                                # (B, L, R)
-    ln_c          = torch.log(concs.unsqueeze(-1) + 1e-12)                 # (B, L, 1)
-    log_terms     = ln_c - log_ec50                                        # (B, L, R)
-    ln_sum_terms  = torch.logsumexp(log_terms, dim=1)                      # (B, R)
+    log_ec50     = energies_k.mean(dim=-1)                                 # (B, L, R)
+    ln_c         = torch.log(concs.unsqueeze(-1) + 1e-12)                  # (B, L, 1)
+    log_terms    = ln_c - log_ec50                                         # (B, L, R)
+    ln_sum_terms = torch.logsumexp(log_terms, dim=1)                       # (B, R)
 
     T_init = ln_sum_terms.std().item()
     return max(T_init, 1e-3)
@@ -252,11 +276,17 @@ class BinaryReceptor(BaseReceptor):
 
     def _extract_mean_energies(self, env, receptor_indices, ligand_id, n_points):
         N_Receptors = receptor_indices.shape[0]
-        
+
+        if getattr(env, 'use_interface_model', False):
+            # Interface model: (R, k_sub, n_ligands) → select one ligand → (R, k_sub)
+            mu_interface = env.interaction_mu_interface(receptor_indices)  # (R, k_sub, L)
+            mu_receptor  = mu_interface[:, :, ligand_id]                   # (R, k_sub)
+            return mu_receptor.unsqueeze(0).unsqueeze(0).expand(n_points, 1, N_Receptors, self.k_sub)
+
         mu_ligand = env.interaction_mu[:, ligand_id]
-        
+
         if mu_ligand.dim() > 1 and mu_ligand.shape[-1] == 2:
-            mu_ligand = mu_ligand[..., 0] 
-            
+            mu_ligand = mu_ligand[..., 0]
+
         mu_receptor = mu_ligand[receptor_indices]
         return mu_receptor.unsqueeze(0).unsqueeze(0).expand(n_points, 1, N_Receptors, self.k_sub)

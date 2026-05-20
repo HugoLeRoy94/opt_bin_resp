@@ -14,6 +14,7 @@ from math import comb as math_comb
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+import json
 
 from src.IO import SweepLoader, find_latest_sweep
 
@@ -47,14 +48,14 @@ else:
     print(f"Loaded {len(df)} logged steps across "
           f"{df.groupby(['latent_dim', 'n_genes', 'sample_id']).ngroups} runs")
 
-# %% 2. Load and print configuration
-config_path = sweep_root + "/sweep_config.json"
-with open(config_path) as f:
-    config_dict = json.load(f)
-print("\n=== Configuration ===")
-for k, v in config_dict.items():
-    print(f"  {k}: {v}")
-print("=====================\n")
+    config_path = sweep_root + "/sweep_config.json"
+    with open(config_path) as f:
+        config_dict = json.load(f)
+    print("\n=== Configuration ===")
+    for k, v in config_dict.items():
+        print(f"  {k}: {v}")
+    print("=====================\n")
+
 # %%
 if df is not None and not df.empty and "full_array_entropy" in df.columns:
 
@@ -69,7 +70,7 @@ if df is not None and not df.empty and "full_array_entropy" in df.columns:
     n_genes_vals = sorted(final["n_genes"].unique())
     colors_ng    = plt.cm.viridis(np.linspace(0, 1, len(n_genes_vals)))
 
-    # %% Plot 1: final entropy vs latent_dim per n_genes + theoretical bounds
+    #  Plot 1: final entropy vs latent_dim per n_genes + theoretical bounds
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for ng, color in zip(n_genes_vals, colors_ng):
@@ -104,7 +105,7 @@ if df is not None and not df.empty and "full_array_entropy" in df.columns:
     plt.savefig(output_dir / "final_entropy_vs_latent_dim.png", dpi=150, bbox_inches="tight")
     plt.show()
 
-    # %% Plot 2: entropy vs epoch — one subplot per latent_dim, curves per n_genes
+    # Plot 2: entropy vs epoch — one subplot per latent_dim, curves per n_genes
     fig, axes = plt.subplots(len(latent_dims), 1, figsize=(12, 4 * len(latent_dims)))
     if len(latent_dims) == 1:
         axes = [axes]
@@ -129,6 +130,7 @@ if df is not None and not df.empty and "full_array_entropy" in df.columns:
         ax.set_title(f"Entropy vs Epoch  (D={ld})")
         ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", fontsize="small")
         ax.grid(True, alpha=0.3)
+        #ax.set_xscale('log')
 
     plt.tight_layout()
     plt.savefig(output_dir / "entropy_vs_epoch_per_latent_dim.png", dpi=150, bbox_inches="tight")

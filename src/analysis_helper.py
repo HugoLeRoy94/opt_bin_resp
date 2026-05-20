@@ -5,7 +5,7 @@ analysis_helper.py — Evaluation metrics and visualisation utilities.
 
 All metric functions are registered in run.py::MEASUREMENT_REGISTRY and called
 via signature introspection, accepting whichever of (env, physics, receptor_indices,
-loss_fn, activity, concs, mixture_masks, epoch) they need.
+loss_fn, activity, concs, mixture_masks, family_labels, epoch) they need.
 
 Key metrics:
   full_array_entropy      — Rényi H2 + blocked Shannon of soft joint activity
@@ -36,10 +36,10 @@ def plot_ligand_summary(env, physics, receptor_indices, n_points=200, axes=None)
     2. Concentration Distribution (Bottom Frame)
     3. Discrete Binary Assignment / Marginal Probabilities (Right Frame)
     """
-    device = env.unit_latent.device
+    device = next(env.parameters()).device
     N_Receptors = receptor_indices.shape[0]
     n_ligands = env.n_ligands
-    
+
     # Generate a color palette for the receptors
     colors = plt.cm.viridis(np.linspace(0, 0.9, N_Receptors))
 
@@ -129,10 +129,10 @@ def plot_summary(env, physics, receptor_indices, loss_fn=None, n_points=200, axe
     """
     Creates a SINGLE comprehensive summary plot for all ligands.
     """
-    device = env.unit_latent.device
+    device = next(env.parameters()).device
     N_Receptors = receptor_indices.shape[0]
     n_ligands = env.n_ligands
-    
+
     colors = plt.cm.viridis(np.linspace(0, 0.9, N_Receptors))
     
     if axes is None:
@@ -455,21 +455,29 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
 def receptor_distances(env, receptor_indices):
     """
     Computes the pairwise Euclidean distance between receptors in the latent space.
-    The position of an assembled receptor is determined by the centroid of its sub-units.
-    
+
+    Classic model: centroid of unit_latent embeddings.
+    Interface model: centroid of pocket embeddings (average of adjacent +/- faces).
+
     Args:
         env: Instantiated LigandEnvironment.
         receptor_indices: Tensor of shape (N_Receptors, k_sub) mapping units to receptors.
-        
+
     Returns:
-        dist_matrix: A (N_Receptors, N_Receptors) tensor containing the pairwise distances.
+        dist_matrix: A (N_Receptors, N_Receptors) numpy array of pairwise distances.
     """
-    # Calculate the centroid of each assembled receptor: (N_Receptors, latent_dim)
-    v_receptors = env.unit_latent[receptor_indices].mean(dim=1)
-    
-    # Compute the pairwise Euclidean distance matrix
+    if getattr(env, 'use_interface_model', False):
+        # Pocket centroid: mean over k_sub interfaces, each averaged from +/- faces.
+        idx_i = receptor_indices
+        idx_j = receptor_indices.roll(-1, dims=1)
+        v_plus_r  = env.unit_latent_plus[idx_i]   # (R, k, D)
+        v_minus_r = env.unit_latent_minus[idx_j]  # (R, k, D)
+        v_pocket  = 0.5 * (v_plus_r + v_minus_r)  # (R, k, D)
+        v_receptors = v_pocket.mean(dim=1)          # (R, D)
+    else:
+        v_receptors = env.unit_latent[receptor_indices].mean(dim=1)  # (R, D)
+
     dist_matrix = torch.cdist(v_receptors, v_receptors, p=2.0)
-    
     return dist_matrix.cpu().numpy()
 
 @torch.no_grad()
@@ -672,6 +680,68 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
     h_a_given_c = conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=n_c_bins)
     return h_a_val - h_a_given_c
 
+
+# ---------------------------------------------------------------------------
+# Family-level mutual information
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def conditional_entropy_family(activity, family_labels, loss_fn):
+    """Computes H(A | F) where F is the family presence mask (B, n_families) bool.
+
+    family_labels is derived in _eval_stats from env.ligand_family_assignments and
+    mixture_masks: family_labels[b, f] = True iff at least one ligand from family f
+    is present in sample b.  Two samples share the same conditioning group iff they
+    have identical family_labels rows.
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+
+    n_fam = family_labels.shape[1]
+    powers = (2 ** torch.arange(n_fam, device=family_labels.device, dtype=torch.float))
+    family_ids = (family_labels.float() * powers).sum(dim=-1).long()
+
+    unique_families = torch.unique(family_ids)
+    if len(unique_families) == 0:
+        return 0.0
+
+    total_cond_h = 0.0
+    for f_idx in unique_families:
+        mask = (family_ids == f_idx)
+        soft_assign_f = soft_assign[mask]
+        if soft_assign_f.shape[0] <= 1:
+            fam_h = 0.0
+        else:
+            fam_h = entropy_fn(soft_assign_f)
+        total_cond_h += fam_h.item() if isinstance(fam_h, torch.Tensor) else fam_h
+
+    return total_cond_h / len(unique_families)
+
+
+@torch.no_grad()
+def mutual_information_family(activity, family_labels, loss_fn):
+    """Computes I(A ; F) where F is the family presence mask (B, n_families) bool.
+
+    Formula: I(A ; F) = H(A) - H(A | F).
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+    h_a = entropy_fn(soft_assign)
+    h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
+    h_a_given_f = conditional_entropy_family(activity, family_labels, loss_fn)
+    return h_a_val - h_a_given_f
+
+
 @torch.no_grad()
 def rank_ordered_distances(env, receptor_indices):
     """
@@ -681,13 +751,13 @@ def rank_ordered_distances(env, receptor_indices):
     This bypasses the label-switching problem to measure functional tuning.
     (Note: the dictionary keys are kept as 'dist_rank_i' for backward compatibility with plotting scripts)
     """
-    # 1. Fetch exact Unit-Ligand Interaction Energies (includes base energy and sensitivity weights)
-    # Shape: (n_genes, n_ligands)
-    unit_energies = env.interaction_mu
-    
-    # 2. Calculate the assembled receptor energies (mean of subunits)
-    # Shape: (N_Receptors, n_ligands)
-    receptor_energies = unit_energies[receptor_indices].mean(dim=1)
+    if getattr(env, 'use_interface_model', False):
+        # Interface model: (R, k_sub, n_ligands) → mean over k_sub → (R, n_ligands)
+        receptor_energies = env.interaction_mu_interface(receptor_indices).mean(dim=1)
+    else:
+        # Classic model: (n_genes, n_ligands) → gather → (R, k_sub, n_ligands) → mean → (R, n_ligands)
+        unit_energies = env.interaction_mu          # (n_genes, n_ligands)
+        receptor_energies = unit_energies[receptor_indices].mean(dim=1)
     
     # 3. Normalize energies per receptor: compute the energy gap relative to the preferred ligand
     min_energies = receptor_energies.min(dim=1, keepdim=True)[0]

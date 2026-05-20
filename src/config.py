@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict, field, fields as dc_fields
 from typing import Union, List, Dict, Any, Generator, Tuple, Optional
 import itertools
 import numpy as np
+import warnings
 
 
 # Fields that belong to RunConfig only and are never forwarded to SingleRunConfig.
@@ -60,7 +61,8 @@ class SingleRunConfig:
     kernel_params:         List[float]  # [lambda] for gaussian, [] for quadratic
 
     # --- Mixture ---
-    batch_size: int
+    # Accepts int or the sentinel "auto" — resolved to an int by SimulationRunner._initialize().
+    batch_size: Union[int, str]
 
     # --- Loss ---
     entropy:      str
@@ -72,15 +74,30 @@ class SingleRunConfig:
     epochs:          int
     lr:              float
     use_scheduler:   bool
-    test_batch_size:  int
+    test_batch_size:  Union[int, str]        # "auto" resolved at init time
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
     receptor_indices: Optional[List[List[int]]] = None
+    # When set, receptor_indices is auto-generated via build_heteromer_array.
+    n_receptors:               Optional[int] = None
+    receptor_sampling_strategy: str          = "cascading"
+    receptor_sampling_seed:    Optional[int] = None
+    # When True, use the per-interface biophysics model (dual-face units, ordered ring).
+    use_interface_model: bool = False
 
     def __post_init__(self):
         if self.receptor_indices is None:
-            self.receptor_indices = [[i] * self.k_sub for i in range(self.n_genes)]
+            if self.n_receptors is not None:
+                from src.geometry import build_heteromer_array  # local import — avoids circular dep
+                tensor = build_heteromer_array(
+                    self.n_genes, self.k_sub, self.n_receptors,
+                    strategy=self.receptor_sampling_strategy,
+                    seed=self.receptor_sampling_seed,
+                )
+                self.receptor_indices = tensor.tolist()
+            else:
+                self.receptor_indices = [[i] * self.k_sub for i in range(self.n_genes)]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -140,7 +157,7 @@ class RunConfig:
     kernel_params:         List[float]               # always a list — not a sweep axis
 
     # --- Mixture ---
-    batch_size: Union[int, List[int]]
+    batch_size: Union[int, str, List[Union[int, str]]]
 
     # --- Loss ---
     entropy:      Union[str,             List[str]]
@@ -152,18 +169,28 @@ class RunConfig:
     epochs:          Union[int,   List[int]]
     lr:              Union[float, List[float]]
     use_scheduler:   Union[bool,  List[bool]]
-    test_batch_size: Union[int,   List[int]]
+    test_batch_size: Union[int,   str,          List[Union[int, str]]]
     measurement_fns: List[str]   # always a list — not a sweep axis
 
     # --- Evaluation chunking ---
     eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None  # per-forward-pass budget; None → use batch_size
 
+    # --- Interface model ---
+    use_interface_model: Union[bool, List[bool]] = False
+
+    # --- Receptor sampling (generates receptor_indices in SingleRunConfig.__post_init__) ---
+    n_receptors:               Union[Optional[int], List[Optional[int]]] = None
+    receptor_sampling_strategy: Union[str,          List[str]]          = "cascading"
+    receptor_sampling_seed:    Union[Optional[int], List[Optional[int]]] = None
+
     # --- Sweep control ---
-    n_samples:       int           = 1
-    sweep_name:      str           = "run"
-    base_folder:     str           = "/app/data"
-    warm_start_axis: Optional[str] = "n_genes"
-    seed:            int           = 0
+    n_samples:       int                                   = 1
+    sweep_name:      str                                   = "run"
+    base_folder:     str                                   = "/app/data"
+    # Single string: one warm-start axis.
+    # List of strings: joint axes zipped together (sorted by the first listed axis).
+    warm_start_axis: Optional[Union[str, List[str]]]       = "n_genes"
+    seed:            int                                   = 0
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -193,18 +220,50 @@ class RunConfig:
         trajectory: list of SingleRunConfig ordered ascending along
                     warm_start_axis (a single element when warm_start_axis is
                     scalar or None).
+
+        warm_start_axis may be:
+          - None            : no warm-starting; trajectory has one element.
+          - str             : single axis swept sequentially (existing behaviour).
+          - List[str]       : joint axes zipped together, sorted by the first;
+                              all listed axes must be list-valued with equal length.
         """
         rng = np.random.default_rng(self.seed)
 
         # Work on a mutable copy so pop() doesn't mutate self
         sweep = self._sweep_axes()
 
-        # Extract warm-start axis from independent axes
-        warm_axis = self.warm_start_axis
-        if warm_axis and warm_axis in sweep:
-            warm_values = sorted(sweep.pop(warm_axis))
+        # --- Resolve warm-start axes ---
+        warm_spec = self.warm_start_axis
+        if isinstance(warm_spec, list):
+            warm_axes = warm_spec
+        elif warm_spec is not None:
+            warm_axes = [warm_spec]
         else:
-            warm_values = None
+            warm_axes = []
+
+        # Pop all warm axes from sweep; collect their value lists.
+        warm_axis_values: Dict[str, list] = {}
+        for ax in warm_axes:
+            if ax in sweep:
+                warm_axis_values[ax] = sweep.pop(ax)
+
+        # Build the sequence of per-step injection dicts, sorted by the first axis.
+        if warm_axis_values:
+            first_ax = warm_axes[0]
+            if first_ax in warm_axis_values:
+                order = sorted(
+                    range(len(warm_axis_values[first_ax])),
+                    key=lambda i: warm_axis_values[first_ax][i],
+                )
+                warm_steps: List[Dict] = [
+                    {ax: warm_axis_values[ax][i]
+                     for ax in warm_axes if ax in warm_axis_values}
+                    for i in order
+                ]
+            else:
+                warm_steps = [{}]
+        else:
+            warm_steps = [{}]  # single step; warm axis (if any) is scalar in fixed params
 
         # Build the dict of fixed scalar params forwarded to SingleRunConfig
         fixed = {
@@ -234,24 +293,15 @@ class RunConfig:
 
                 meta = {**combo_dict, "sample_id": sample_id}
 
-                # Determine the sequence of values along the warm-start axis
-                if warm_values is not None:
-                    steps = warm_values          # swept list, run sequentially
-                elif warm_axis is not None:
-                    steps = [params[warm_axis]]  # scalar — single step
-                else:
-                    steps = [None]               # no warm axis — single step
-
                 trajectory = []
-                for val in steps:
+                for step_dict in warm_steps:
                     run_params = {
                         **params,
+                        **step_dict,   # inject warm-axis values for this step
                         "conc_mean":  conc_mean,
                         "conc_std":   conc_std,
                         "p_presence": p_presence,
                     }
-                    if warm_values is not None:  # only inject when it's a real sweep axis
-                        run_params[warm_axis] = val
                     trajectory.append(SingleRunConfig(**run_params))
 
                 yield meta, trajectory

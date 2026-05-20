@@ -86,10 +86,7 @@ if df_test is not None and not df_test.empty and "full_array_entropy" in df_test
     ax.axhline(N, color="green", linestyle=":", linewidth=1.5,
                label=f"Coding ceiling  N = {N} bits")
 
-    # Vocabulary bound: log2(M*(N+1))
-    vb = np.log2(M * (N + 1))
-    ax.axhline(vb, color="orange", linestyle="-.", linewidth=1.5,
-               label=rf"Vocabulary bound  $\log_2({M}\times{N+1})$ $\approx$ {vb:.1f} bits")
+    ax.plot([16*2**(N/2),16*2**(N/2)],[6,20],label='estimated needed batch size')
 
     ax.set_xscale("log", base=2)
     ax.set_xlabel("Batch size (log₂ scale)")

@@ -4,8 +4,7 @@
 # Warm-starts over n_receptors from 5 to 15; n_genes fixed.
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner \
-#   python3 /app/run/script/first_shot_heteromers_casc_ng5.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_heteromers_casc_ng5.py
 
 import time
 import sys

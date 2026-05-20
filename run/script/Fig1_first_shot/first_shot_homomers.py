@@ -4,8 +4,7 @@
 # Sweeps n_genes from 3 to 15 with warm-starting; R = n_genes (one homomer per gene).
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner \
-#   python3 /app/run/script/first_shot_homomers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_homomers.py
 
 import time
 import sys

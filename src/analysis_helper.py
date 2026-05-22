@@ -22,7 +22,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import seaborn as sns
-import umap
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
 from src.bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy, compute_blocked_entropy
@@ -316,12 +315,13 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     Visualizes the families as density gradients (regions), the family centers as circles,
     the ligands as small dots,
     and the assembled receptors as numeric indices.
-    
+
     Args:
         env: Instantiated LigandEnvironment.
         receptor_indices: Tensor of shape (N_Receptors, k_sub) mapping units to receptors.
         n_samples_per_family: How many points to sample per family to generate the gradient.
     """
+    import umap  # lazy: only needed here, keeps src importable without umap-learn
     device = env.unit_latent.device
     n_families = env.n_families
     n_ligands = env.n_ligands
@@ -596,86 +596,113 @@ def total_correlation(activity, loss_fn):
 
 @torch.no_grad()
 def conditional_entropy_ligand(activity, mixture_masks, loss_fn):
-    """Computes H(A | M) on the existing evaluation batch."""
-    if hasattr(loss_fn, 'compute_soft_assignment'):
-        soft_assign = loss_fn.compute_soft_assignment(activity)
-        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
-    else:
+    """Mean over ligands of H(A | L_l), where L_l ∈ {0,1} is the binary
+    presence indicator for ligand l (independent marginal conditioning).
+
+    For each ligand l:
+      H(A | L_l) = P(l=1)·H(A | l present) + P(l=0)·H(A | l absent)
+
+    Returns (1/N_l) Σ_l H(A | L_l).  The corresponding MI is the mean
+    pairwise I(A ; L_l) over ligands — see mutual_information_ligand.
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
-        
-    powers = 2 ** torch.arange(mixture_masks.shape[1], device=mixture_masks.device, dtype=mixture_masks.dtype)
-    mixture_ids = (mixture_masks * powers).sum(dim=-1).long()
-        
-    unique_mixtures = torch.unique(mixture_ids)
-    if len(unique_mixtures) == 0:
-        return 0.0
-        
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+
+    B, n_ligands = mixture_masks.shape[0], mixture_masks.shape[1]
     total_cond_h = 0.0
-    for m_idx in unique_mixtures:
-        mask = (mixture_ids == m_idx)
-        soft_assign_m = soft_assign[mask]
-        if soft_assign_m.shape[0] <= 1:
-            mixture_h = 0.0
-        else:
-            mixture_h = entropy_fn(soft_assign_m)
-        total_cond_h += mixture_h.item() if isinstance(mixture_h, torch.Tensor) else mixture_h
-        
-    return total_cond_h / len(unique_mixtures)
+
+    for l in range(n_ligands):
+        present = mixture_masks[:, l].bool()
+        absent  = ~present
+        cond_h_l = 0.0
+        for mask in (present, absent):
+            n = mask.sum().item()
+            if n > 1:
+                h = entropy_fn(soft_assign[mask])
+                cond_h_l += (n / B) * (h.item() if isinstance(h, torch.Tensor) else h)
+        total_cond_h += cond_h_l
+
+    return total_cond_h / n_ligands
 
 @torch.no_grad()
 def mutual_information_ligand(activity, mixture_masks, loss_fn):
-    """Computes I(A ; M) on the existing evaluation batch."""
-    if hasattr(loss_fn, 'compute_soft_assignment'):
-        soft_assign = loss_fn.compute_soft_assignment(activity)
-        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
-        h_a = entropy_fn(soft_assign)
-    else:
+    """Mean over ligands of I(A ; L_l), where L_l is the binary presence
+    indicator for ligand l.
+
+    Formula: (1/N_l) Σ_l I(A ; L_l) = H(A) - conditional_entropy_ligand(...)
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
-        
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+    h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_m = conditional_entropy_ligand(activity, mixture_masks, loss_fn)
     return h_a_val - h_a_given_m
 
 @torch.no_grad()
 def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
-    """Computes H(A | C) on the existing evaluation batch."""
-    if hasattr(loss_fn, 'compute_soft_assignment'):
-        soft_assign = loss_fn.compute_soft_assignment(activity)
-        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
-    else:
+    """Mean over ligands of H(A | C_l), where C_l is the concentration of
+    ligand l (independent marginal conditioning via equal-quantile binning).
+
+    For each ligand l:
+      - Sort samples by c_l and split into n_c_bins equal-quantile bins.
+      - H(A | C_l) ≈ Σ_k (n_k/B) · H(A | C_l ∈ bin_k)
+
+    Returns (1/N_l) Σ_l H(A | C_l).  The corresponding MI is the mean
+    pairwise I(A ; C_l) over ligands — see mutual_information_concentration.
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
-        
-    total_concs = concs.sum(dim=-1)
-    sorted_concs, indices = torch.sort(total_concs)
-    sorted_assign = soft_assign[indices]
-    
-    B = activity.shape[0]
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+
+    B, n_ligands = activity.shape[0], concs.shape[1]
     bin_size = max(1, B // n_c_bins)
     total_cond_h = 0.0
-    
-    for b in range(n_c_bins):
-        start_idx = b * bin_size
-        end_idx = start_idx + bin_size if b < n_c_bins - 1 else B
-        
-        soft_assign_c = sorted_assign[start_idx:end_idx]
-        if soft_assign_c.shape[0] <= 1:
-            bin_h = 0.0
-        else:
-            bin_h = entropy_fn(soft_assign_c)
-        total_cond_h += bin_h.item() if isinstance(bin_h, torch.Tensor) else bin_h
-        
-    return total_cond_h / n_c_bins
+
+    for l in range(n_ligands):
+        _, indices = torch.sort(concs[:, l])
+        sorted_assign = soft_assign[indices]
+        cond_h_l = 0.0
+        for b in range(n_c_bins):
+            start = b * bin_size
+            end   = start + bin_size if b < n_c_bins - 1 else B
+            chunk = sorted_assign[start:end]
+            n_k   = chunk.shape[0]
+            if n_k > 1:
+                h = entropy_fn(chunk)
+                cond_h_l += (n_k / B) * (h.item() if isinstance(h, torch.Tensor) else h)
+        total_cond_h += cond_h_l
+
+    return total_cond_h / n_ligands
 
 @torch.no_grad()
 def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
-    """Computes I(A ; C) on the existing evaluation batch."""
-    if hasattr(loss_fn, 'compute_soft_assignment'):
-        soft_assign = loss_fn.compute_soft_assignment(activity)
-        entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
-        h_a = entropy_fn(soft_assign)
-    else:
+    """Mean over ligands of I(A ; C_l), where C_l is the concentration of
+    ligand l.
+
+    Formula: (1/N_l) Σ_l I(A ; C_l) = H(A) - conditional_entropy_concentration(...)
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
-        
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+    h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_c = conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=n_c_bins)
     return h_a_val - h_a_given_c
@@ -687,12 +714,14 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
 
 @torch.no_grad()
 def conditional_entropy_family(activity, family_labels, loss_fn):
-    """Computes H(A | F) where F is the family presence mask (B, n_families) bool.
+    """Mean over families of H(A | F_f), where F_f ∈ {0,1} is the binary
+    presence indicator for family f (independent marginal conditioning).
 
-    family_labels is derived in _eval_stats from env.ligand_family_assignments and
-    mixture_masks: family_labels[b, f] = True iff at least one ligand from family f
-    is present in sample b.  Two samples share the same conditioning group iff they
-    have identical family_labels rows.
+    For each family f:
+      H(A | F_f) = P(f=1)·H(A | f present) + P(f=0)·H(A | f absent)
+
+    Returns (1/N_f) Σ_f H(A | F_f).  The corresponding MI is the mean
+    pairwise I(A ; F_f) over families — see mutual_information_family.
     """
     if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
@@ -702,32 +731,29 @@ def conditional_entropy_family(activity, family_labels, loss_fn):
                   if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
                   else compute_shannon_joint_entropy)
 
-    n_fam = family_labels.shape[1]
-    powers = (2 ** torch.arange(n_fam, device=family_labels.device, dtype=torch.float))
-    family_ids = (family_labels.float() * powers).sum(dim=-1).long()
-
-    unique_families = torch.unique(family_ids)
-    if len(unique_families) == 0:
-        return 0.0
-
+    B, n_fam = family_labels.shape
     total_cond_h = 0.0
-    for f_idx in unique_families:
-        mask = (family_ids == f_idx)
-        soft_assign_f = soft_assign[mask]
-        if soft_assign_f.shape[0] <= 1:
-            fam_h = 0.0
-        else:
-            fam_h = entropy_fn(soft_assign_f)
-        total_cond_h += fam_h.item() if isinstance(fam_h, torch.Tensor) else fam_h
 
-    return total_cond_h / len(unique_families)
+    for f in range(n_fam):
+        present = family_labels[:, f]   # (B,) bool
+        absent  = ~present
+        cond_h_f = 0.0
+        for mask in (present, absent):
+            n = mask.sum().item()
+            if n > 1:
+                h = entropy_fn(soft_assign[mask])
+                cond_h_f += (n / B) * (h.item() if isinstance(h, torch.Tensor) else h)
+        total_cond_h += cond_h_f
+
+    return total_cond_h / n_fam
 
 
 @torch.no_grad()
 def mutual_information_family(activity, family_labels, loss_fn):
-    """Computes I(A ; F) where F is the family presence mask (B, n_families) bool.
+    """Mean over families of I(A ; F_f), where F_f is the binary presence
+    indicator for family f.
 
-    Formula: I(A ; F) = H(A) - H(A | F).
+    Formula: (1/N_f) Σ_f I(A ; F_f) = H(A) - conditional_entropy_family(...)
     """
     if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0

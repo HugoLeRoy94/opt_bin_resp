@@ -4,8 +4,7 @@
 # Warm-starts over n_receptors from 8 to 15; n_genes fixed.
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner \
-#   python3 /app/run/script/first_shot_heteromers_rand_ng8.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_heteromers_rand_ng8.py
 
 import time
 import sys
@@ -24,6 +23,8 @@ config = RunConfig(
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.0,
+    # --- Interface model ---
+    use_interface_model = False,
 
     # --- Concentration ---
     conc_model_type  = "lognormal",
@@ -38,7 +39,7 @@ config = RunConfig(
     entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=500, lr=0.05, use_scheduler=False,
+    epochs=5000, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=[
         "full_array_entropy",
@@ -58,7 +59,7 @@ config = RunConfig(
     n_samples                  = 1,
     sweep_name                 = "rand_ng8",
     base_folder                = "/app/data/first_shot",
-    warm_start_axis            = "n_receptors",
+    warm_start_axis            = None,
     seed                       = 3,
 )
 

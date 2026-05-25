@@ -117,7 +117,7 @@ ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(output_dir / "panelA_entropy_vs_R.png", dpi=150, bbox_inches="tight")
+#plt.savefig(output_dir / "panelA_entropy_vs_R.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 
@@ -182,7 +182,7 @@ fig.suptitle("Panel A2 — Heteromer / Homomer MI ratio at matched R\n"
              "solid = cascading  |  dashed = uniform random  |  band = 10–90 pct of heteromers / homomer median",
              fontsize=11)
 plt.tight_layout()
-plt.savefig(output_dir / "panelA2_ratio_hetero_homo.png", dpi=150, bbox_inches="tight")
+#plt.savefig(output_dir / "panelA2_ratio_hetero_homo.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 
@@ -219,7 +219,7 @@ fig.suptitle("Panel C — MI decomposition per channel\n"
              "solid = cascading / homomers  |  dashed = uniform random  |  band = 10–90 pct",
              fontsize=11)
 plt.tight_layout()
-plt.savefig(output_dir / "panelC_mi_decomposition.png", dpi=150, bbox_inches="tight")
+#plt.savefig(output_dir / "panelC_mi_decomposition.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 
@@ -304,7 +304,7 @@ if "homomers" in dfs and "family_spread" in dfs["homomers"].columns:
                  "rows = family spread  |  cols = avg family distance",
                  fontsize=11)
     plt.tight_layout()
-    plt.savefig(output_dir / "panelG2_homomers_family_dist_spread.png", dpi=150, bbox_inches="tight")
+    #plt.savefig(output_dir / "panelG2_homomers_family_dist_spread.png", dpi=150, bbox_inches="tight")
     plt.show()
 
 
@@ -386,7 +386,7 @@ for ax, (prefix, r_col, n_genes_fixed, label, color, ls) in zip(
 
 plt.suptitle("Panel E — Training convergence per arm and R", fontsize=12)
 plt.tight_layout()
-plt.savefig(output_dir / "panelE_training_curves.png", dpi=150, bbox_inches="tight")
+#plt.savefig(output_dir / "panelE_training_curves.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 

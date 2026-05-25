@@ -73,6 +73,17 @@ MEASUREMENT_REGISTRY = {
     "receptor_conditioned_entropy":      receptor_conditioned_entropy,
 }
 
+# Measurements evaluated on single-odour batches (one ligand per sample).
+# All other measurements use the standard mixture batch.
+_SINGLE_ODOR_FNS = frozenset({
+    'conditional_entropy_ligand',
+    'mutual_information_ligand',
+    'conditional_entropy_concentration',
+    'mutual_information_concentration',
+    'conditional_entropy_family',
+    'mutual_information_family',
+})
+
 
 # ---------------------------------------------------------------------------
 # Batch-size auto-scaling
@@ -194,35 +205,64 @@ class SimulationRunner:
     def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch):
         """Evaluation over batch_size total samples, with bounded per-pass memory.
 
-        chunk_size = min(eval_chunk_size or batch_size, batch_size)
-          defaults to self.config.batch_size (training batch size), so memory
-          per forward pass matches training without any explicit config.
+        Two batches are drawn before the measurement loop:
+          mixture batch     — natural Bernoulli-sampled mixtures; used for entropy,
+                              codeword, distance, and specialisation metrics.
+          single-odour batch — exactly one ligand per sample (uniform over ligands);
+                              used for all conditional-entropy / mutual-information
+                              measurements (_SINGLE_ODOR_FNS) so that the conditioning
+                              variable is unambiguous.
 
-        Soft metrics (Rényi, blocked Shannon, distances …) run on a single
-        chunk_size forward pass.
+        chunk_size = min(eval_chunk_size or batch_size, batch_size).
 
-        Hard-codeword metrics (plug-in, Miller-Madow, K_hat, K_frac) are
-        accumulated over ceil(batch_size / chunk_size) forward passes so the
-        full batch_size budget drives bias estimation.  When batch_size ==
-        chunk_size the single-pass path in full_array_entropy covers both.
+        Hard-codeword metrics (Miller-Madow) accumulate over the full batch_size
+        budget using the mixture batch, as before.
         """
         chunk_size = min(self.config.eval_chunk_size or self.config.batch_size, batch_size)
         do_mm_accumulation = (
             'codeword_entropy' in self.config.measurement_fns
             and batch_size > chunk_size
         )
+        needs_single = any(fn in _SINGLE_ODOR_FNS for fn in self.config.measurement_fns)
 
         ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
-            # --- First chunk: soft metrics + soft assignments ---
-            E, concs, masks = env.sample_batch(batch_size=chunk_size, receptor_indices=ri_for_batch)
-            activity = physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model)
+            # ------------------------------------------------------------------
+            # Mixture batch
+            # ------------------------------------------------------------------
+            E_mix, concs_mix, masks_mix = env.sample_batch(
+                batch_size=chunk_size, receptor_indices=ri_for_batch
+            )
+            activity_mix = physics(E_mix, concs_mix, receptor_indices,
+                                   pre_gathered=env.use_interface_model)
 
+            # ------------------------------------------------------------------
+            # Single-odour batch (one random ligand per sample, uniform)
+            # ------------------------------------------------------------------
+            if needs_single:
+                E_single, concs_single, masks_single = env.sample_batch(
+                    batch_size=chunk_size, receptor_indices=ri_for_batch,
+                    single_ligand=True,
+                )
+                activity_single = physics(E_single, concs_single, receptor_indices,
+                                          pre_gathered=env.use_interface_model)
+
+            # ------------------------------------------------------------------
+            # Measurement loop
+            # ------------------------------------------------------------------
             stat = {}
-            family_labels_cache = None  # computed lazily if any fn requests it
+            family_labels_mix_cache    = None  # lazily computed from masks_mix
+            family_labels_single_cache = None  # lazily computed from masks_single
+
             for fn_name in self.config.measurement_fns:
                 fn  = MEASUREMENT_REGISTRY[fn_name]
                 sig = inspect.signature(fn)
+
+                use_single = fn_name in _SINGLE_ODOR_FNS
+                activity   = activity_single if use_single else activity_mix
+                concs_     = concs_single    if use_single else concs_mix
+                masks_     = masks_single    if use_single else masks_mix
+
                 kwargs = {}
                 if "env"              in sig.parameters: kwargs["env"]              = env
                 if "physics"          in sig.parameters: kwargs["physics"]          = physics
@@ -230,35 +270,49 @@ class SimulationRunner:
                 if "loss_fn"          in sig.parameters: kwargs["loss_fn"]          = loss_fn
                 if "activity"         in sig.parameters: kwargs["activity"]         = activity
                 if "epoch"            in sig.parameters: kwargs["epoch"]            = epoch
-                if "concs"            in sig.parameters: kwargs["concs"]            = concs
-                if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks
+                if "concs"            in sig.parameters: kwargs["concs"]            = concs_
+                if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks_
                 if "family_labels"    in sig.parameters:
-                    if family_labels_cache is None:
-                        import torch.nn.functional as _F
-                        one_hot_fam = _F.one_hot(
-                            env.ligand_family_assignments.long(), env.n_families
-                        ).float()                                         # (L, n_families)
-                        family_labels_cache = (masks.float() @ one_hot_fam).bool()  # (B, n_families)
-                    kwargs["family_labels"] = family_labels_cache
+                    import torch.nn.functional as _F
+                    one_hot_fam = _F.one_hot(
+                        env.ligand_family_assignments.long(), env.n_families
+                    ).float()                                                    # (L, n_fam)
+                    if use_single:
+                        if family_labels_single_cache is None:
+                            family_labels_single_cache = (
+                                masks_single.float() @ one_hot_fam
+                            ).bool()                                             # (B, n_fam)
+                        kwargs["family_labels"] = family_labels_single_cache
+                    else:
+                        if family_labels_mix_cache is None:
+                            family_labels_mix_cache = (
+                                masks_mix.float() @ one_hot_fam
+                            ).bool()                                             # (B, n_fam)
+                        kwargs["family_labels"] = family_labels_mix_cache
+
                 result = fn(**kwargs)
                 if isinstance(result, dict):
                     stat.update(result)
                 else:
                     stat[fn_name] = result
 
+            # ------------------------------------------------------------------
+            # Hard-codeword accumulation over the full budget (mixture batch)
+            # ------------------------------------------------------------------
             if do_mm_accumulation:
-                # Accumulate hard codewords on CPU over the full budget.
-                # (B_eval, R) bool tensor — 2.5 MB for B=2^20, R=20.
-                all_codes = [(activity > 0.5).cpu()]
-                n_so_far = chunk_size
+                all_codes = [(activity_mix > 0.5).cpu()]
+                n_so_far  = chunk_size
                 while n_so_far < batch_size:
                     this_chunk = min(chunk_size, batch_size - n_so_far)
-                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk, receptor_indices=ri_for_batch)
-                    act_c = physics(E_c, concs_c, receptor_indices, pre_gathered=env.use_interface_model)
+                    E_c, concs_c, _ = env.sample_batch(
+                        batch_size=this_chunk, receptor_indices=ri_for_batch
+                    )
+                    act_c = physics(E_c, concs_c, receptor_indices,
+                                    pre_gathered=env.use_interface_model)
                     all_codes.append((act_c > 0.5).cpu())
                     n_so_far += this_chunk
 
-                all_codes_cat = torch.cat(all_codes, dim=0)  # (batch_size, R) on CPU
+                all_codes_cat = torch.cat(all_codes, dim=0)
                 H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(all_codes_cat)
                 stat.update({
                     'codeword_entropy_plugin': H_plugin,

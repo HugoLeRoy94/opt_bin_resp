@@ -462,80 +462,88 @@ class LigandEnvironment(nn.Module):
             )  # (R, k_sub)
             return E_base_pocket.unsqueeze(-1) + E_slope_pocket.unsqueeze(-1) * dist_sq
 
-    def sample_batch(self, batch_size: int, receptor_indices: Optional[torch.Tensor] = None):
+    def _sample_masks(self, batch_size: int, single_ligand: bool) -> torch.Tensor:
+        """(B, L) float presence mask.
+
+        single_ligand=False: Bernoulli draw from p_presence_tensor (natural mixtures).
+        single_ligand=True:  one-hot, ligand index drawn uniformly over [0, n_ligands).
         """
-        Generate one training batch.
+        device = self.ligand_latent.device
+        if single_ligand:
+            ligand_ids = torch.randint(0, self.n_ligands, (batch_size,), device=device)
+            masks = torch.zeros(batch_size, self.n_ligands, device=device)
+            masks.scatter_(1, ligand_ids.unsqueeze(1), 1.0)
+        else:
+            masks = torch.bernoulli(
+                self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
+            )
+        return masks
 
-        Args:
-            batch_size: Number of sensory environments to sample.
-            receptor_indices: (R, k_sub) ordered ring arrangements.  Required
-                              when use_interface_model=True; ignored otherwise.
+    def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
+        """(B, L, D) ligand coordinates with i.i.d. observation noise."""
+        device = self.ligand_latent.device
+        noise = (torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device)
+                 * self.observation_noise_sigma)
+        return self.ligand_latent.unsqueeze(0) + noise  # (B, L, D)
 
-        Returns (classic model):
-            E_open:        (B, L, U) — open-state energy per unit per ligand.
-            concs:         (B, L)    — sampled concentrations (masked).
-            mixture_masks: (B, L)    — Bernoulli presence mask.
+    def _compute_energies(
+        self,
+        v_ligands: torch.Tensor,
+        receptor_indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Open-state energies from noisy ligand coordinates.
 
-        Returns (interface model):
-            E_open:        (B, L, R, k_sub) — pocket energy per interface.
-            concs:         (B, L)
-            mixture_masks: (B, L)
+        Classic model   → (B, L, U)
+        Interface model → (B, L, R, k_sub)
+
+        ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B, L, U, D) broadcast.
+        For the interface model, pockets are flattened to (R*k, D) then reshaped.
         """
-        device = self.ligand_latent.device  # always a registered buffer
-
-        # 1. Sample mixture masks: 1 if ligand is present, 0 if absent
-        mixture_masks = torch.bernoulli(self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1))
-
-        # 2. Sample physical concentrations and mask out absent ligands
-        concs = self.concentration_model.sample(batch_size) * mixture_masks
-
-        # 3. Add observation noise to the ligand latent coordinates
-        noise = torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device) * self.observation_noise_sigma
-        v_ligands = self.ligand_latent.unsqueeze(0) + noise  # (B, L, D)
-
         if not self.use_interface_model:
             # ------------------------------------------------------------------
-            # Classic path: (B, L, U) unit energies
+            # Classic path: (B, L, U)
             # ------------------------------------------------------------------
-            # ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B, L, U, D) broadcast.
-            a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)                   # (B, L, 1)
-            b_sq    = (self.unit_latent ** 2).sum(dim=-1)                          # (U,)
-            ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent)     # (B, L, U)
-            dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)     # (B, L, U)
+            a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)               # (B, L, 1)
+            b_sq    = (self.unit_latent ** 2).sum(dim=-1)                      # (U,)
+            ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent) # (B, L, U)
+            dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)  # (B, L, U)
             if self.affinity_kernel == "gaussian":
-                max_e     = F.softplus(self.max_energy_u_raw)                      # (U,)
+                max_e     = F.softplus(self.max_energy_u_raw)                  # (U,)
                 lambda_sq = self.kernel_params[0] ** 2
-                E_open = (self.base_energy_u[None, None, :]
-                          + max_e[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+                return (self.base_energy_u[None, None, :]
+                        + max_e[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
             else:  # "quadratic"
-                dE     = F.softplus(self.energy_slope_raw)                         # (U,)
-                E_open = self.base_energy_u[None, None, :] + dE[None, None, :] * dist_sq
-            return E_open, concs, mixture_masks
+                dE = F.softplus(self.energy_slope_raw)                         # (U,)
+                return self.base_energy_u[None, None, :] + dE[None, None, :] * dist_sq
 
         # ----------------------------------------------------------------------
-        # Interface path: (B, L, R, k_sub) pocket energies
+        # Interface path: (B, L, R, k_sub)
         # ----------------------------------------------------------------------
-        # receptor_indices must be provided so we know the ring layout.
         if receptor_indices is None:
             raise ValueError(
-                "receptor_indices must be supplied to sample_batch() "
+                "receptor_indices must be supplied to _compute_energies() "
                 "when use_interface_model=True."
             )
-        R, k = receptor_indices.shape
-        B, L, D = batch_size, self.n_ligands, self.latent_dim
+        B, L, D = v_ligands.shape
+        R, k    = receptor_indices.shape
 
-        idx_i = receptor_indices                          # (R, k_sub)
-        idx_j = receptor_indices.roll(-1, dims=1)         # (R, k_sub) — next unit (cyclic)
+        idx_i = receptor_indices                      # (R, k)
+        idx_j = receptor_indices.roll(-1, dims=1)     # (R, k) — next unit (cyclic)
 
-        # Pocket embeddings (fixed for this batch; no noise on the pocket itself —
-        # observation noise is applied to the ligand side only, matching the classic model).
-        v_plus_r  = self.unit_latent_plus[idx_i]          # (R, k, D)
-        v_minus_r = self.unit_latent_minus[idx_j]         # (R, k, D)
-        v_pocket  = 0.5 * (v_plus_r + v_minus_r)          # (R, k, D)
+        # Pocket embedding: average of adjacent +/− faces
+        # (observation noise is on the ligand side only, matching the classic model)
+        v_pocket      = 0.5 * (self.unit_latent_plus[idx_i]
+                                + self.unit_latent_minus[idx_j])              # (R, k, D)
+        E_base_pocket = 0.5 * (self.base_energy_u_plus[idx_i]
+                                + self.base_energy_u_minus[idx_j])            # (R, k)
 
-        E_base_pocket = 0.5 * (
-            self.base_energy_u_plus[idx_i] + self.base_energy_u_minus[idx_j]
-        )  # (R, k)
+        # Flatten pockets to (R*k, D), compute (B, L, R*k), then reshape
+        b       = v_pocket.reshape(R * k, D)                                   # (R*k, D)
+        a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)                   # (B, L, 1)
+        b_sq    = (b ** 2).sum(dim=-1)                                         # (R*k,)
+        ab      = torch.einsum('bld,kd->blk', v_ligands, b)                   # (B, L, R*k)
+        dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)     # (B, L, R*k)
+        dist_sq = dist_sq.view(B, L, R, k)                                    # (B, L, R, k)
 
         if self.affinity_kernel == "gaussian":
             E_max_pocket = 0.5 * (
@@ -543,32 +551,49 @@ class LigandEnvironment(nn.Module):
                 + F.softplus(self.max_energy_u_raw_minus[idx_j])
             )  # (R, k)
             lambda_sq = self.kernel_params[0] ** 2
-
+            return (E_base_pocket[None, None, :, :]
+                    + E_max_pocket[None, None, :, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
         else:  # "quadratic"
             E_slope_pocket = 0.5 * (
                 F.softplus(self.energy_slope_raw_plus[idx_i])
                 + F.softplus(self.energy_slope_raw_minus[idx_j])
             )  # (R, k)
+            return (E_base_pocket[None, None, :, :]
+                    + E_slope_pocket[None, None, :, :] * dist_sq)
 
-        # Distance between each (noisy) ligand observation and each pocket.
-        # v_ligands: (B, L, D),  v_pocket: (R, k, D)
-        # Flatten pockets to (R*k, D), compute (B, L, R*k) via the identity trick,
-        # then reshape to (B, L, R, k).
-        b     = v_pocket.reshape(R * k, D)                                      # (R*k, D)
-        a_sq  = (v_ligands ** 2).sum(dim=-1, keepdim=True)                     # (B, L, 1)
-        b_sq  = (b ** 2).sum(dim=-1)                                            # (R*k,)
-        ab    = torch.einsum('bld,kd->blk', v_ligands, b)                      # (B, L, R*k)
-        dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)      # (B, L, R*k)
-        dist_sq = dist_sq.view(B, L, R, k)                                     # (B, L, R, k)
+    def sample_batch(
+        self,
+        batch_size: int,
+        receptor_indices: Optional[torch.Tensor] = None,
+        single_ligand: bool = False,
+    ):
+        """Generate one batch of sensory environments.
 
-        if self.affinity_kernel == "gaussian":
-            E_open = (E_base_pocket[None, None, :, :]
-                      + E_max_pocket[None, None, :, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
-        else:
-            E_open = (E_base_pocket[None, None, :, :]
-                      + E_slope_pocket[None, None, :, :] * dist_sq)
+        Args:
+            batch_size:       Number of samples B.
+            receptor_indices: (R, k_sub) ring layout; required when
+                              use_interface_model=True.
+            single_ligand:    When False (default) each sample is a Bernoulli
+                              mixture drawn from p_presence_tensor.
+                              When True each sample presents exactly one ligand
+                              chosen uniformly over [0, n_ligands); used for
+                              single-odour evaluation of conditional MI metrics.
 
-        return E_open, concs, mixture_masks  # E_open: (B, L, R, k_sub)
+        Returns (classic model):
+            E_open:        (B, L, U) — open-state energy per unit per ligand.
+            concs:         (B, L)    — sampled concentrations (masked).
+            mixture_masks: (B, L)    — presence mask.
+
+        Returns (interface model):
+            E_open:        (B, L, R, k_sub) — pocket energy per interface.
+            concs:         (B, L)
+            mixture_masks: (B, L)
+        """
+        masks     = self._sample_masks(batch_size, single_ligand)
+        concs     = self.concentration_model.sample(batch_size) * masks
+        v_ligands = self._sample_noisy_ligands(batch_size)
+        E_open    = self._compute_energies(v_ligands, receptor_indices)
+        return E_open, concs, masks
 
     @torch.no_grad()
     def get_concentration_sweep(self, ligand_id: int, n_points: int = 200):

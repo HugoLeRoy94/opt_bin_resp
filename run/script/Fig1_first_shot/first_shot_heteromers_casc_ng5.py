@@ -23,6 +23,12 @@ config = RunConfig(
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.0,
+
+    # --- Presence correlation (Gaussian copula) ---
+    n_presence_blocks      = 1,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block              = 0.0,
+    block_shared_conc_mean = False,
+
     # --- Interface model ---
     use_interface_model = False,
 
@@ -59,7 +65,7 @@ config = RunConfig(
     n_samples                  = 1,
     sweep_name                 = "casc_ng5",
     base_folder                = "/app/data/first_shot",
-    warm_start_axis            = None,
+    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=5, n_receptors=5) baseline
     seed                       = 0,
 )
 

@@ -17,8 +17,7 @@
 #
 # Produces the (D, n_receptors) MI surface for each (n_ligands, avg_family_distance) slice.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner \
-#     python3 /app/run/script/latent_dim_mi_heteromers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/latent_dim_mi_heteromers.py
 
 import time
 import sys

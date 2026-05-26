@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # First-shot heteromer arm: uniform_random strategy, n_genes = 8 (§6, narrative_and_next_steps.md).
-# Warm-starts over n_receptors from 8 to 15; n_genes fixed.
+# Receptor fan-out warm-start: each n_receptors > 8 branches from the (n_genes=8, n_receptors=8) baseline.
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_heteromers_rand_ng8.py
@@ -23,6 +23,12 @@ config = RunConfig(
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.0,
+
+    # --- Presence correlation (Gaussian copula) ---
+    n_presence_blocks      = 1,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block              = 0.0,
+    block_shared_conc_mean = False,
+
     # --- Interface model ---
     use_interface_model = False,
 
@@ -59,7 +65,7 @@ config = RunConfig(
     n_samples                  = 1,
     sweep_name                 = "rand_ng8",
     base_folder                = "/app/data/first_shot",
-    warm_start_axis            = None,
+    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=8, n_receptors=8) baseline
     seed                       = 3,
 )
 

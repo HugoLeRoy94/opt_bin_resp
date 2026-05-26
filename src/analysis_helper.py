@@ -768,6 +768,74 @@ def mutual_information_family(activity, family_labels, loss_fn):
     return h_a_val - h_a_given_f
 
 
+# ---------------------------------------------------------------------------
+# Block-level mutual information (presence / source blocks)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def conditional_entropy_block(activity, block_labels, loss_fn):
+    """Mean over presence blocks of H(A | B_b), where B_b ∈ {0,1} is the
+    binary indicator that ≥1 ligand from presence block b is present in a
+    sample (independent marginal conditioning, one block at a time).
+
+    Mirrors conditional_entropy_family but conditions on the copula source
+    blocks (env.presence_block_id) rather than the latent-space families.
+    The two partitions are orthogonal by construction, so this captures a
+    genuinely different structure.
+
+    For each block b:
+      H(A | B_b) = P(b=1)·H(A | b present) + P(b=0)·H(A | b absent)
+
+    Returns (1/N_b) Σ_b H(A | B_b).
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+
+    B, n_blocks = block_labels.shape
+    total_cond_h = 0.0
+
+    for b in range(n_blocks):
+        present = block_labels[:, b]   # (B,) bool
+        absent  = ~present
+        cond_h_b = 0.0
+        for mask in (present, absent):
+            n = mask.sum().item()
+            if n > 1:
+                h = entropy_fn(soft_assign[mask])
+                cond_h_b += (n / B) * (h.item() if isinstance(h, torch.Tensor) else h)
+        total_cond_h += cond_h_b
+
+    return total_cond_h / n_blocks
+
+
+@torch.no_grad()
+def mutual_information_block(activity, block_labels, loss_fn):
+    """Mean over presence blocks of I(A ; B_b), where B_b ∈ {0,1} is the
+    binary indicator that ≥1 ligand from presence block b is present.
+
+    Formula: (1/N_b) Σ_b I(A ; B_b) = H(A) − conditional_entropy_block(...)
+
+    Use alongside mutual_information_family to disentangle the contribution
+    of source co-occurrence (blocks) from chemical similarity (families).
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_renyi_joint_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+                  else compute_shannon_joint_entropy)
+    h_a = entropy_fn(soft_assign)
+    h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
+    h_a_given_b = conditional_entropy_block(activity, block_labels, loss_fn)
+    return h_a_val - h_a_given_b
+
+
 @torch.no_grad()
 def rank_ordered_distances(env, receptor_indices):
     """

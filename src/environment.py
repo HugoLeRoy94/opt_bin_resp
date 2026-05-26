@@ -6,7 +6,7 @@ environment.py — Chemical latent space and batch sampling.
 
 Implements LigandEnvironment (and SymmetricLigandEnvironment) which holds all
 learnable parameters and fixed buffers (family_latent, ligand_latent).
-sample_batch() generates one training batch: Bernoulli mixture masks → sampled
+sample_batch() generates one training batch: presence masks → sampled
 concentrations → noisy ligand coordinates → open-state energies via the affinity
 kernel.
 
@@ -20,6 +20,14 @@ Interface model (use_interface_model=True):
   Interface i: pocket embedding = 0.5*(v_plus[u_i] + v_minus[u_{i+1 mod k}]).
   sample_batch(batch_size, receptor_indices) returns E_open: (B, L, R, k_sub),
   already gathered per receptor interface — no further indexing needed in physics.
+
+Presence sampling — two modes (selected at construction):
+  Independent Bernoulli (default, rho_block=0): M_ℓ ~ Bernoulli(p_ℓ).
+  Gaussian-copula (rho_block > 0, del Castillo et al. PNAS 2026 §1.1):
+    Block-correlated binary mask drawn via a block-diagonal Gaussian copula.
+    Marginals are preserved exactly; within-block Gaussian correlation rho_block
+    produces positive co-occurrence within each source block. The Cholesky factor
+    (copula_chol) and quantile thresholds (copula_tau) are computed once at init.
 
 Key numerical tricks:
   - Distance computation: ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B,L,U,D) broadcast.
@@ -211,8 +219,9 @@ class LigandEnvironment(nn.Module):
     def __init__(self, n_genes: int, n_families: int, conc_model: ConcentrationModel,
                  n_ligands: int, p_presence: list, observation_noise_sigma: float,
                  latent_dim: int, family_spread: float, distribution_type: str,
-                 avg_family_distance: float, affinity_kernel: str = "gaussian",
-                 kernel_params: list = None, use_interface_model: bool = False):
+                 avg_family_distance: float, n_presence_blocks: int, rho_block: float,
+                 affinity_kernel: str = "gaussian", kernel_params: list = None,
+                 use_interface_model: bool = False, block_shared_conc_mean: bool = False):
         """
         Args:
             n_genes: Number of gene units
@@ -225,6 +234,10 @@ class LigandEnvironment(nn.Module):
             family_spread: Fixed spatial spread (fuzziness) of the ligand families
             distribution_type: 'gaussian' or 'uniform'
             avg_family_distance: Target average Euclidean distance between ligand families
+            n_presence_blocks: Number of source blocks for the Gaussian-copula presence
+                               model.  Ignored when rho_block == 0.
+            rho_block: Within-block Gaussian correlation for the copula.  Set to 0
+                       to use the standard independent Bernoulli path.
             affinity_kernel: "gaussian" (E_base + E_max*(1−exp(−d²/λ²))) or
                              "quadratic" (E_base + d²)
             kernel_params: hyperparameters for the chosen kernel:
@@ -234,6 +247,10 @@ class LigandEnvironment(nn.Module):
                                  subunits in the ring (see doc/theory/02_biophysics_mwc.md).
                                  sample_batch() then requires receptor_indices and returns
                                  (B, L, R, k_sub) pre-gathered pocket energies.
+            block_shared_conc_mean: When True and rho_block > 0, all ligands in the same
+                                    presence block share one concentration mean (the average
+                                    of their individually configured means). Per-sniff
+                                    concentrations still draw independently around that mean.
         """
         super().__init__()
         self.n_genes = n_genes
@@ -247,9 +264,54 @@ class LigandEnvironment(nn.Module):
         self.affinity_kernel = affinity_kernel
         self.kernel_params = kernel_params if kernel_params is not None else []
         self.use_interface_model = use_interface_model
+        self.n_presence_blocks = n_presence_blocks
+        self.rho_block = rho_block
+        self.block_shared_conc_mean = block_shared_conc_mean
 
         p_tensor = torch.tensor(p_presence, dtype=torch.float32)
         self.register_buffer('p_presence_tensor', p_tensor)
+
+        # ----------------------------------------------------------------------
+        # PRESENCE BLOCK PARTITION (independent of ligand families)
+        # Block assignment seeded deterministically from (n_ligands, n_presence_blocks)
+        # so the partition is reproducible without an external RNG argument.
+        # Reference: del Castillo et al., PNAS 2026, §1.1.
+        # ----------------------------------------------------------------------
+        _g = torch.Generator()
+        _g.manual_seed(n_ligands * 131071 + n_presence_blocks)  # 131071 is Mersenne prime
+        _perm = torch.randperm(n_ligands, generator=_g)
+
+        # Distribute remainder among the first `_rem` blocks (block_size+1 ligands each).
+        _block_size = n_ligands // n_presence_blocks
+        _rem = n_ligands % n_presence_blocks
+        _sizes = torch.full((n_presence_blocks,), _block_size, dtype=torch.long)
+        _sizes[:_rem] += 1  # first _rem blocks get one extra ligand
+        # _block_ids_sorted[i] = block index for the i-th ligand in permuted order
+        _block_ids_sorted = torch.repeat_interleave(
+            torch.arange(n_presence_blocks, dtype=torch.long), _sizes
+        )
+        _block_ids = torch.empty(n_ligands, dtype=torch.long)
+        _block_ids[_perm] = _block_ids_sorted
+        self.register_buffer('presence_block_id', _block_ids)
+
+        # Gaussian-copula buffers — built only when correlation is requested.
+        if rho_block > 0.0:
+            # Block-diagonal correlation matrix: Σ[i,j] = rho_block if same block, else 0;
+            # diagonal = 1.  This is PD for rho ∈ (−1/(m−1), 1) with m = block size.
+            _same_block = (_block_ids.unsqueeze(0) == _block_ids.unsqueeze(1)).float()  # (L,L)
+            _Sigma = _same_block * rho_block
+            _Sigma.fill_diagonal_(1.0)
+            _Sigma = _Sigma + 1e-6 * torch.eye(n_ligands)  # numerical jitter
+            # torch.linalg.cholesky returns lower-triangular L with Σ = L @ L.T
+            _chol = torch.linalg.cholesky(_Sigma)
+            self.register_buffer('copula_chol', _chol)   # (L, L) lower-triangular
+
+            # Precompute standard-normal quantiles: τ_ℓ = Φ⁻¹(p_ℓ)
+            # Threshold rule: M[b,ℓ]=1 iff z[b,ℓ] < τ_ℓ  →  P(M=1) = Φ(τ_ℓ) = p_ℓ exactly.
+            _tau = torch.distributions.Normal(0.0, 1.0).icdf(
+                p_tensor.clamp(1e-6, 1.0 - 1e-6)
+            )
+            self.register_buffer('copula_tau', _tau)     # (L,)
 
         if distribution_type not in ['gaussian', 'uniform', 'shell']:
             raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
@@ -257,6 +319,21 @@ class LigandEnvironment(nn.Module):
 
         # 1. Inject the Concentration Strategy
         self.concentration_model = conc_model
+
+        # 1.5 Optional block-shared concentration mean (Change 4 — del Castillo §1.1).
+        # Turbulent transport scrambles concentration ratios even when source co-occurrence
+        # is preserved — so only the *mean* is shared per block; per-sniff concentrations
+        # still draw independently around it.
+        if block_shared_conc_mean and rho_block > 0.0:
+            with torch.no_grad():
+                _mu = conc_model.mu.clone()           # (L,) current per-ligand means
+                _ids = _block_ids.long()               # (L,) presence block ids
+                _block_sum = torch.zeros(n_presence_blocks, dtype=_mu.dtype).scatter_add(
+                    0, _ids, _mu
+                )
+                _block_cnt = torch.bincount(_ids, minlength=n_presence_blocks).float()
+                _block_mean = _block_sum / _block_cnt  # (n_presence_blocks,)
+                conc_model.mu.copy_(_block_mean[_ids])  # broadcast back to each ligand
 
         # ----------------------------------------------------------------------
         # MECHANISTIC LATENT SPACE INITIALIZATION
@@ -349,9 +426,12 @@ class LigandEnvironment(nn.Module):
             family_spread=self.family_spread,
             distribution_type=self.distribution_type,
             avg_family_distance=self.avg_family_distance,
+            n_presence_blocks=self.n_presence_blocks,
+            rho_block=self.rho_block,
             affinity_kernel=self.affinity_kernel,
             kernel_params=self.kernel_params,
             use_interface_model=self.use_interface_model,
+            block_shared_conc_mean=self.block_shared_conc_mean,
         ).to(device)
 
         with torch.no_grad():
@@ -463,10 +543,29 @@ class LigandEnvironment(nn.Module):
             return E_base_pocket.unsqueeze(-1) + E_slope_pocket.unsqueeze(-1) * dist_sq
 
     def _sample_masks(self, batch_size: int) -> torch.Tensor:
-        """(B, L) float Bernoulli presence mask drawn from p_presence_tensor."""
-        return torch.bernoulli(
-            self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
-        )
+        """(B, L) float presence mask.
+
+        Independent Bernoulli path (default, rho_block == 0):
+            M[b,ℓ] ~ Bernoulli(p_ℓ) independently.
+
+        Gaussian-copula path (rho_block > 0):
+            Draw eps (B, L) ~ N(0, I), correlate as z = eps @ L.T where L is
+            the lower-triangular Cholesky factor stored in copula_chol
+            (torch.linalg.cholesky convention: Σ = L @ L.T → cov(z) = L L.T = Σ).
+            Threshold: M[b,ℓ] = 1 iff z[b,ℓ] < τ_ℓ  →  P(M=1) = Φ(τ_ℓ) = p_ℓ.
+            Marginals are preserved exactly; correlation is absorbed into Σ.
+            Reference: del Castillo et al., PNAS 2026, §1.1.
+        """
+        if not hasattr(self, 'copula_chol'):
+            # Independent Bernoulli — unchanged from the original code path.
+            return torch.bernoulli(
+                self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
+            )
+        # Copula path: eps (B,L) iid N(0,1)  →  z = eps @ L.T  →  cov(z_row) = L L.T = Σ
+        device = self.copula_chol.device
+        eps = torch.randn(batch_size, self.n_ligands, device=device)
+        z   = eps @ self.copula_chol.T                        # (B, L); each row ~ N(0, Σ)
+        return (z < self.copula_tau.unsqueeze(0)).float()     # (B, L) multi-hot mask
 
     def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
         """(B, L, D) ligand coordinates with i.i.d. observation noise."""

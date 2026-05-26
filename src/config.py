@@ -47,6 +47,14 @@ class SingleRunConfig:
     distribution_type:       str
     observation_noise_sigma: float
 
+    # --- Presence correlation (Gaussian copula) ---
+    # n_presence_blocks: number of source blocks; ligands within a block co-occur.
+    # rho_block: within-block Gaussian correlation; 0 → independent Bernoulli.
+    # block_shared_conc_mean: share one concentration mean per block (ignored when rho_block=0).
+    n_presence_blocks:     int
+    rho_block:             float
+    block_shared_conc_mean: bool
+
     # --- Concentration ---
     conc_model_type: str
     conc_mean:       List[float]
@@ -121,10 +129,22 @@ class RunConfig:
     Any parameter field accepts Union[T, list[T]] to declare it as a sweep axis.
     All-scalar fields → single run. Any list-valued field → sweep.
 
-    warm_start_axis: when that field is a list, its values are iterated in
-    ascending order within each sample and the environment state is passed
-    forward between steps (warm-starting). Defaults to "n_genes". Set to None
-    to disable warm-starting entirely.
+    warm_start_axis: controls which sweep axis forms the sequential "trajectory"
+    within each sample, and determines the warm-start strategy used by
+    SweepRunner.execute().  Defaults to "n_genes". Set to None to disable
+    warm-starting entirely.
+
+    Warm-start heuristic (applied at every step after the first):
+      1. n_genes grew  → chain warm-start: the environment from the immediately
+         preceding step is passed forward (existing gene-growth behaviour).
+      2. n_genes unchanged → receptor fan-out: branch from the cached "square"
+         baseline, i.e. the step in this trajectory where n_genes == n_receptors.
+         Every n_receptors > n_genes therefore starts from the same root, NOT
+         from the previous n_receptors result.
+      3. Neither applies → cold start with a UserWarning.
+
+    "n_genes" and "n_receptors" are mutually exclusive in warm_start_axis;
+    SweepRunner.execute() raises ValueError if both are requested together.
 
     seed: controls the RNG used to draw conc_mean / conc_std / p_presence per
     trajectory. generate_trajectories() is fully deterministic given this seed,
@@ -140,6 +160,11 @@ class RunConfig:
     environment_geometry:    Union[str,   List[str]]
     distribution_type:       Union[str,   List[str]]
     observation_noise_sigma: Union[float, List[float]]
+
+    # --- Presence correlation (Gaussian copula) ---
+    n_presence_blocks:      Union[int,   List[int]]    # sweep axis: number of source blocks
+    rho_block:              Union[float, List[float]]  # sweep axis: within-block correlation
+    block_shared_conc_mean: Union[bool,  List[bool]]   # sweep axis: block-shared conc mean
 
     # --- Concentration model ---
     conc_model_type: Union[str, List[str]]

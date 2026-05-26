@@ -43,6 +43,8 @@ from src.analysis_helper import (
     mutual_information_concentration,
     conditional_entropy_family,
     mutual_information_family,
+    conditional_entropy_block,
+    mutual_information_block,
     receptor_distances,
     rank_ordered_distances,
     mean_specialization_index,
@@ -67,6 +69,8 @@ MEASUREMENT_REGISTRY = {
     "mutual_information_concentration":  mutual_information_concentration,
     "conditional_entropy_family":        conditional_entropy_family,
     "mutual_information_family":         mutual_information_family,
+    "conditional_entropy_block":         conditional_entropy_block,
+    "mutual_information_block":          mutual_information_block,
     "receptor_distances":                receptor_distances,
     "rank_ordered_distances":            rank_ordered_distances,
     "mean_specialization_index":         mean_specialization_index,
@@ -171,10 +175,13 @@ class SimulationRunner:
                 latent_dim=self.config.latent_dim,
                 family_spread=self.config.family_spread,
                 avg_family_distance=self.config.average_family_distance,
+                n_presence_blocks=self.config.n_presence_blocks,
+                rho_block=self.config.rho_block,
                 affinity_kernel=self.config.affinity_kernel,
                 kernel_params=self.config.kernel_params,
                 distribution_type=self.config.distribution_type,
                 use_interface_model=self.config.use_interface_model,
+                block_shared_conc_mean=self.config.block_shared_conc_mean,
             ).to(self.device)
 
         physics = BinaryReceptor(
@@ -219,6 +226,7 @@ class SimulationRunner:
 
             stat = {}
             family_labels_cache = None  # computed lazily if any fn requests it
+            block_labels_cache  = None  # computed lazily if any fn requests it
             for fn_name in self.config.measurement_fns:
                 fn  = MEASUREMENT_REGISTRY[fn_name]
                 sig = inspect.signature(fn)
@@ -239,6 +247,14 @@ class SimulationRunner:
                         ).float()                                         # (L, n_families)
                         family_labels_cache = (masks.float() @ one_hot_fam).bool()  # (B, n_families)
                     kwargs["family_labels"] = family_labels_cache
+                if "block_labels"     in sig.parameters:
+                    if block_labels_cache is None:
+                        import torch.nn.functional as _F
+                        one_hot_blk = _F.one_hot(
+                            env.presence_block_id.long(), env.n_presence_blocks
+                        ).float()                                          # (L, n_presence_blocks)
+                        block_labels_cache = (masks.float() @ one_hot_blk).bool()  # (B, n_presence_blocks)
+                    kwargs["block_labels"] = block_labels_cache
                 result = fn(**kwargs)
                 if isinstance(result, dict):
                     stat.update(result)

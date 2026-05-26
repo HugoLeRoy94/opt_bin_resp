@@ -324,16 +324,24 @@ class LigandEnvironment(nn.Module):
         # Turbulent transport scrambles concentration ratios even when source co-occurrence
         # is preserved — so only the *mean* is shared per block; per-sniff concentrations
         # still draw independently around it.
+        # NOTE: conc_model.mu may already be on CUDA (e.g. when called from
+        # clone_with_extra_units on a model that was moved to GPU). _block_ids is
+        # always built on CPU here, so we resolve the target device from conc_model.mu
+        # and move everything there before doing any arithmetic.
         if block_shared_conc_mean and rho_block > 0.0:
             with torch.no_grad():
-                _mu = conc_model.mu.clone()           # (L,) current per-ligand means
-                _ids = _block_ids.long()               # (L,) presence block ids
-                _block_sum = torch.zeros(n_presence_blocks, dtype=_mu.dtype).scatter_add(
-                    0, _ids, _mu
-                )
-                _block_cnt = torch.bincount(_ids, minlength=n_presence_blocks).float()
-                _block_mean = _block_sum / _block_cnt  # (n_presence_blocks,)
-                conc_model.mu.copy_(_block_mean[_ids])  # broadcast back to each ligand
+                _mu  = conc_model.mu.clone()                       # (L,) on conc_model device
+                _dev = _mu.device
+                _ids = _block_ids.long().to(_dev)                  # (L,) — match device
+                # bincount is CPU-only in all PyTorch versions; compute there, then move.
+                _block_cnt = torch.bincount(
+                    _block_ids.long(), minlength=n_presence_blocks
+                ).float().to(_dev)                                  # (n_presence_blocks,)
+                _block_sum = torch.zeros(
+                    n_presence_blocks, dtype=_mu.dtype, device=_dev
+                ).scatter_add(0, _ids, _mu)                        # (n_presence_blocks,)
+                _block_mean = _block_sum / _block_cnt              # (n_presence_blocks,)
+                conc_model.mu.copy_(_block_mean[_ids])             # broadcast back to each ligand
 
         # ----------------------------------------------------------------------
         # MECHANISTIC LATENT SPACE INITIALIZATION

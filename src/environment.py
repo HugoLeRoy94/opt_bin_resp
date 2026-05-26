@@ -462,22 +462,11 @@ class LigandEnvironment(nn.Module):
             )  # (R, k_sub)
             return E_base_pocket.unsqueeze(-1) + E_slope_pocket.unsqueeze(-1) * dist_sq
 
-    def _sample_masks(self, batch_size: int, single_ligand: bool) -> torch.Tensor:
-        """(B, L) float presence mask.
-
-        single_ligand=False: Bernoulli draw from p_presence_tensor (natural mixtures).
-        single_ligand=True:  one-hot, ligand index drawn uniformly over [0, n_ligands).
-        """
-        device = self.ligand_latent.device
-        if single_ligand:
-            ligand_ids = torch.randint(0, self.n_ligands, (batch_size,), device=device)
-            masks = torch.zeros(batch_size, self.n_ligands, device=device)
-            masks.scatter_(1, ligand_ids.unsqueeze(1), 1.0)
-        else:
-            masks = torch.bernoulli(
-                self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
-            )
-        return masks
+    def _sample_masks(self, batch_size: int) -> torch.Tensor:
+        """(B, L) float Bernoulli presence mask drawn from p_presence_tensor."""
+        return torch.bernoulli(
+            self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
+        )
 
     def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
         """(B, L, D) ligand coordinates with i.i.d. observation noise."""
@@ -565,7 +554,6 @@ class LigandEnvironment(nn.Module):
         self,
         batch_size: int,
         receptor_indices: Optional[torch.Tensor] = None,
-        single_ligand: bool = False,
     ):
         """Generate one batch of sensory environments.
 
@@ -573,23 +561,18 @@ class LigandEnvironment(nn.Module):
             batch_size:       Number of samples B.
             receptor_indices: (R, k_sub) ring layout; required when
                               use_interface_model=True.
-            single_ligand:    When False (default) each sample is a Bernoulli
-                              mixture drawn from p_presence_tensor.
-                              When True each sample presents exactly one ligand
-                              chosen uniformly over [0, n_ligands); used for
-                              single-odour evaluation of conditional MI metrics.
 
         Returns (classic model):
             E_open:        (B, L, U) — open-state energy per unit per ligand.
             concs:         (B, L)    — sampled concentrations (masked).
-            mixture_masks: (B, L)    — presence mask.
+            mixture_masks: (B, L)    — Bernoulli presence mask.
 
         Returns (interface model):
             E_open:        (B, L, R, k_sub) — pocket energy per interface.
             concs:         (B, L)
             mixture_masks: (B, L)
         """
-        masks     = self._sample_masks(batch_size, single_ligand)
+        masks     = self._sample_masks(batch_size)
         concs     = self.concentration_model.sample(batch_size) * masks
         v_ligands = self._sample_noisy_ligands(batch_size)
         E_open    = self._compute_energies(v_ligands, receptor_indices)

@@ -8,8 +8,8 @@ Key behaviours:
   - Temperature annealing: linear from T_init (calibrated) to T_final.
   - Warm-starting: environment state passed forward along the warm_start_axis sweep,
     with LR damped 10× to preserve learned representations.
-  - Chunked evaluation: soft metrics (Rényi, distances) on one chunk; hard codeword
-    metrics accumulated across all chunks for the full test_batch_size budget.
+  - Chunked evaluation: soft metrics (Rényi, distances) on a single chunk; hard
+    codeword metrics accumulated across all chunks for the full test_batch_size budget.
   - Measurement dispatch: functions selected by name from MEASUREMENT_REGISTRY,
     called via inspect.signature to inject only the arguments they accept.
 """
@@ -72,18 +72,6 @@ MEASUREMENT_REGISTRY = {
     "mean_specialization_index":         mean_specialization_index,
     "receptor_conditioned_entropy":      receptor_conditioned_entropy,
 }
-
-# Measurements evaluated on single-odour batches (one ligand per sample).
-# All other measurements use the standard mixture batch.
-_SINGLE_ODOR_FNS = frozenset({
-    'conditional_entropy_ligand',
-    'mutual_information_ligand',
-    'conditional_entropy_concentration',
-    'mutual_information_concentration',
-    'conditional_entropy_family',
-    'mutual_information_family',
-})
-
 
 # ---------------------------------------------------------------------------
 # Batch-size auto-scaling
@@ -205,64 +193,35 @@ class SimulationRunner:
     def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch):
         """Evaluation over batch_size total samples, with bounded per-pass memory.
 
-        Two batches are drawn before the measurement loop:
-          mixture batch     — natural Bernoulli-sampled mixtures; used for entropy,
-                              codeword, distance, and specialisation metrics.
-          single-odour batch — exactly one ligand per sample (uniform over ligands);
-                              used for all conditional-entropy / mutual-information
-                              measurements (_SINGLE_ODOR_FNS) so that the conditioning
-                              variable is unambiguous.
+        chunk_size = min(eval_chunk_size or batch_size, batch_size)
+          defaults to self.config.batch_size (training batch size), so memory
+          per forward pass matches training without any explicit config.
 
-        chunk_size = min(eval_chunk_size or batch_size, batch_size).
+        Soft metrics (Rényi, blocked Shannon, distances …) run on a single
+        chunk_size forward pass.
 
-        Hard-codeword metrics (Miller-Madow) accumulate over the full batch_size
-        budget using the mixture batch, as before.
+        Hard-codeword metrics (plug-in, Miller-Madow, K_hat, K_frac) are
+        accumulated over ceil(batch_size / chunk_size) forward passes so the
+        full batch_size budget drives bias estimation.  When batch_size ==
+        chunk_size the single-pass path in full_array_entropy covers both.
         """
         chunk_size = min(self.config.eval_chunk_size or self.config.batch_size, batch_size)
         do_mm_accumulation = (
             'codeword_entropy' in self.config.measurement_fns
             and batch_size > chunk_size
         )
-        needs_single = any(fn in _SINGLE_ODOR_FNS for fn in self.config.measurement_fns)
 
         ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
-            # ------------------------------------------------------------------
-            # Mixture batch
-            # ------------------------------------------------------------------
-            E_mix, concs_mix, masks_mix = env.sample_batch(
-                batch_size=chunk_size, receptor_indices=ri_for_batch
-            )
-            activity_mix = physics(E_mix, concs_mix, receptor_indices,
-                                   pre_gathered=env.use_interface_model)
+            # --- First chunk: soft metrics + soft assignments ---
+            E, concs, masks = env.sample_batch(batch_size=chunk_size, receptor_indices=ri_for_batch)
+            activity = physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model)
 
-            # ------------------------------------------------------------------
-            # Single-odour batch (one random ligand per sample, uniform)
-            # ------------------------------------------------------------------
-            if needs_single:
-                E_single, concs_single, masks_single = env.sample_batch(
-                    batch_size=chunk_size, receptor_indices=ri_for_batch,
-                    single_ligand=True,
-                )
-                activity_single = physics(E_single, concs_single, receptor_indices,
-                                          pre_gathered=env.use_interface_model)
-
-            # ------------------------------------------------------------------
-            # Measurement loop
-            # ------------------------------------------------------------------
             stat = {}
-            family_labels_mix_cache    = None  # lazily computed from masks_mix
-            family_labels_single_cache = None  # lazily computed from masks_single
-
+            family_labels_cache = None  # computed lazily if any fn requests it
             for fn_name in self.config.measurement_fns:
                 fn  = MEASUREMENT_REGISTRY[fn_name]
                 sig = inspect.signature(fn)
-
-                use_single = fn_name in _SINGLE_ODOR_FNS
-                activity   = activity_single if use_single else activity_mix
-                concs_     = concs_single    if use_single else concs_mix
-                masks_     = masks_single    if use_single else masks_mix
-
                 kwargs = {}
                 if "env"              in sig.parameters: kwargs["env"]              = env
                 if "physics"          in sig.parameters: kwargs["physics"]          = physics
@@ -270,49 +229,35 @@ class SimulationRunner:
                 if "loss_fn"          in sig.parameters: kwargs["loss_fn"]          = loss_fn
                 if "activity"         in sig.parameters: kwargs["activity"]         = activity
                 if "epoch"            in sig.parameters: kwargs["epoch"]            = epoch
-                if "concs"            in sig.parameters: kwargs["concs"]            = concs_
-                if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks_
+                if "concs"            in sig.parameters: kwargs["concs"]            = concs
+                if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks
                 if "family_labels"    in sig.parameters:
-                    import torch.nn.functional as _F
-                    one_hot_fam = _F.one_hot(
-                        env.ligand_family_assignments.long(), env.n_families
-                    ).float()                                                    # (L, n_fam)
-                    if use_single:
-                        if family_labels_single_cache is None:
-                            family_labels_single_cache = (
-                                masks_single.float() @ one_hot_fam
-                            ).bool()                                             # (B, n_fam)
-                        kwargs["family_labels"] = family_labels_single_cache
-                    else:
-                        if family_labels_mix_cache is None:
-                            family_labels_mix_cache = (
-                                masks_mix.float() @ one_hot_fam
-                            ).bool()                                             # (B, n_fam)
-                        kwargs["family_labels"] = family_labels_mix_cache
-
+                    if family_labels_cache is None:
+                        import torch.nn.functional as _F
+                        one_hot_fam = _F.one_hot(
+                            env.ligand_family_assignments.long(), env.n_families
+                        ).float()                                         # (L, n_families)
+                        family_labels_cache = (masks.float() @ one_hot_fam).bool()  # (B, n_families)
+                    kwargs["family_labels"] = family_labels_cache
                 result = fn(**kwargs)
                 if isinstance(result, dict):
                     stat.update(result)
                 else:
                     stat[fn_name] = result
 
-            # ------------------------------------------------------------------
-            # Hard-codeword accumulation over the full budget (mixture batch)
-            # ------------------------------------------------------------------
             if do_mm_accumulation:
-                all_codes = [(activity_mix > 0.5).cpu()]
-                n_so_far  = chunk_size
+                # Accumulate hard codewords on CPU over the full budget.
+                # (B_eval, R) bool tensor — 2.5 MB for B=2^20, R=20.
+                all_codes = [(activity > 0.5).cpu()]
+                n_so_far = chunk_size
                 while n_so_far < batch_size:
                     this_chunk = min(chunk_size, batch_size - n_so_far)
-                    E_c, concs_c, _ = env.sample_batch(
-                        batch_size=this_chunk, receptor_indices=ri_for_batch
-                    )
-                    act_c = physics(E_c, concs_c, receptor_indices,
-                                    pre_gathered=env.use_interface_model)
+                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk, receptor_indices=ri_for_batch)
+                    act_c = physics(E_c, concs_c, receptor_indices, pre_gathered=env.use_interface_model)
                     all_codes.append((act_c > 0.5).cpu())
                     n_so_far += this_chunk
 
-                all_codes_cat = torch.cat(all_codes, dim=0)
+                all_codes_cat = torch.cat(all_codes, dim=0)  # (batch_size, R) on CPU
                 H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(all_codes_cat)
                 stat.update({
                     'codeword_entropy_plugin': H_plugin,
@@ -434,20 +379,70 @@ class SweepRunner:
         print(f"\nInitiating sweep: {self.master_logger.sweep_root}")
         print(f"Total runs: {total}\n")
 
+        # Guard: gene-growth and receptor fan-out warm-starts are mutually exclusive.
+        _warm_spec = self.config.warm_start_axis
+        _warm_axes = (
+            [_warm_spec] if isinstance(_warm_spec, str)
+            else (_warm_spec or [])
+        )
+        if 'n_genes' in _warm_axes and 'n_receptors' in _warm_axes:
+            raise ValueError(
+                "warm_start_axis cannot include both 'n_genes' and 'n_receptors'. "
+                "Gene-growth warm-starting and receptor fan-out warm-starting are "
+                "mutually exclusive — use one or the other."
+            )
+
         with tqdm(total=total, desc="Sweep Progress", dynamic_ncols=True) as pbar:
             for meta, trajectory in self.config.generate_trajectories():
-                prev_env = None
+                prev_env   = None  # trained env from the immediately preceding step
+                prev_cfg   = None  # SingleRunConfig of the preceding step
+                square_env = None  # cached env from the step where n_genes == n_receptors
+
                 for run_cfg in trajectory:
-                    # Build a human-readable label for the progress bar
-                    meta_str = " | ".join(f"{k}: {v}" for k, v in sorted(meta.items()))
+                    # --- Build human-readable tqdm label ---
+                    meta_str  = " | ".join(f"{k}: {v}" for k, v in sorted(meta.items()))
                     warm_axis = self.config.warm_start_axis
-                    if warm_axis and isinstance(getattr(self.config, warm_axis, None), list):
+                    if isinstance(warm_axis, str) and isinstance(getattr(self.config, warm_axis, None), list):
                         warm_str = f" | {warm_axis}: {getattr(run_cfg, warm_axis)}"
                     else:
                         warm_str = ""
                     tqdm.write(f"--- {meta_str}{warm_str} ---")
 
+                    # --- 3-way warm-start heuristic ---
+                    if prev_cfg is None:
+                        # First step in the trajectory: always cold start.
+                        warm_env = None
+                    elif prev_cfg.n_genes != run_cfg.n_genes:
+                        # Case 1: n_genes grew → chain warm-start from the previous step.
+                        warm_env = prev_env
+                    elif square_env is not None:
+                        # Case 2: n_genes unchanged, receptors expanded → fan-out from
+                        # the cached "square" baseline (the step where n_genes == n_receptors).
+                        warm_env = square_env
+                    else:
+                        # Case 3: no applicable warm start → cold start.
+                        import warnings as _warnings
+                        _warnings.warn(
+                            f"No warm-start env available for "
+                            f"(n_genes={run_cfg.n_genes}, n_receptors={run_cfg.n_receptors}): "
+                            f"n_genes did not change and no square baseline "
+                            f"(n_genes == n_receptors) has been run yet in this trajectory. "
+                            f"Starting cold.",
+                            UserWarning, stacklevel=2,
+                        )
+                        warm_env = None
+
                     node_logger = self.master_logger.get_run_logger(meta, run_cfg)
                     runner      = SimulationRunner(config=run_cfg, logger=node_logger)
-                    prev_env    = runner.run(prev_env=prev_env)
+                    prev_env    = runner.run(prev_env=warm_env)
+
+                    # Cache env as the square baseline when n_genes == effective n_receptors.
+                    _effective_nr = (
+                        run_cfg.n_receptors if run_cfg.n_receptors is not None
+                        else run_cfg.n_genes  # homomer default: one receptor per gene
+                    )
+                    if _effective_nr == run_cfg.n_genes:
+                        square_env = prev_env
+
+                    prev_cfg = run_cfg
                     pbar.update(1)

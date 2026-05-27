@@ -47,9 +47,9 @@ METRIC = "full_array_entropy_blocked"
 ARMS = [
     ("homomers", "n_genes",     None, "Homomers",             "#222222", "-" ),
     ("casc_ng5", "n_receptors", 5,    "Cascading  $n_g=5$",   "#1f77b4", "-" ),
-    ("casc_ng8", "n_receptors", 8,    "Cascading  $n_g=8$",   "#d62728", "-" ),
     ("rand_ng5", "n_receptors", 5,    "Unif. rand $n_g=5$",   "#1f77b4", "--"),
-    ("rand_ng8", "n_receptors", 8,    "Unif. rand $n_g=8$",   "#d62728", "--"),
+    ("casc_ng3", "n_receptors", 3,    "Cascading  $n_g=3$",   "#d62728", "-" ),    
+    ("rand_ng3", "n_receptors", 3,    "Unif. rand $n_g=3$",   "#d62728", "--"),
 ]
 
 # One tuple per MI channel — each gets its own subplot in Panel C.
@@ -57,6 +57,7 @@ MI_CHANNELS = [
     ("mutual_information_ligand",        "I(A ; identity)"),
     ("mutual_information_concentration", "I(A ; concentration)"),
     ("mutual_information_family",        "I(A ; family)"),
+    ("mutual_information_block",         "I(A ; block)"),
 ]
 
 EST_COLS = [
@@ -80,7 +81,7 @@ for prefix, r_col, n_genes_fixed, label, color, ls in ARMS:
         if n_genes_fixed is not None:
             df["n_genes"] = n_genes_fixed
         dfs[prefix] = df
-        print(f"  {prefix:12s}  {len(df):3d} runs  "
+        print(f"  {prefix:12s} {sweep_dir} {len(df):3d} runs  "
               f"R ∈ {sorted(df['R'].unique())}  "
               f"n_lig ∈ {sorted(df['n_ligands'].unique())}")
     except FileNotFoundError as e:
@@ -138,7 +139,7 @@ homo_df = dfs.get("homomers")
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
 
-for ax, ng_target in zip(axes, [5, 8]):
+for ax, ng_target in zip(axes, [3,5]):
     for metric_col, metric_label, metric_color in RATIO_METRICS:
         if homo_df is None or metric_col not in homo_df.columns:
             continue
@@ -222,90 +223,6 @@ plt.tight_layout()
 #plt.savefig(output_dir / "panelC_mi_decomposition.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-
-# %% Panel G — I(A; family) per family distance  (1×3 grid)
-# Heteromer sweeps have family_spread fixed at 0.15 (not swept), so the common
-# axis across all arms is average_family_distance. Each subplot shows one distance
-# value; homomers are aggregated over their three spreads (0.10, 0.15, 0.20).
-#
-# Bonus: Panel G2 (homomers only) shows the spread effect in a 3×3 grid.
-
-MI_FAM_COL = "mutual_information_family"
-DIST_VALUES = [0.5, 1.0, 1.5]
-
-fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=False)
-
-for ax, avg_d in zip(axes, DIST_VALUES):
-    for prefix, r_col, n_genes_fixed, label, color, ls in ARMS:
-        if prefix not in dfs:
-            continue
-        df = dfs[prefix]
-        if MI_FAM_COL not in df.columns:
-            continue
-        mask = np.isclose(df["average_family_distance"], avg_d)
-        sub = df[mask]
-        if sub.empty:
-            continue
-        grp = sub.groupby("R")[MI_FAM_COL]
-        r_vals = sorted(sub["R"].unique())
-        med = np.array([grp.get_group(r).median() for r in r_vals])
-        p10 = np.array([grp.get_group(r).quantile(0.25) for r in r_vals])
-        p90 = np.array([grp.get_group(r).quantile(0.75) for r in r_vals])
-        ax.plot(r_vals, med, color=color, ls=ls, lw=2, label=label)
-        ax.fill_between(r_vals, p10, p90, color=color, alpha=0.5)
-
-    ax.set_title(f"avg family distance = {avg_d}", fontsize=11)
-    ax.set_xlabel("R  (number of receptors)", fontsize=10)
-    ax.set_ylabel("I(A ; family)  [bits]", fontsize=10)
-    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    ax.legend(fontsize=8, framealpha=0.9)
-    ax.grid(True, alpha=0.3)
-
-fig.suptitle("Panel G — I(A ; family) by family distance\n"
-             "homomers aggregated over spread ∈ {0.10, 0.15, 0.20}  |  heteromers at fixed spread=0.15",
-             fontsize=11)
-plt.tight_layout()
-plt.savefig(output_dir / "panelG_mi_family_per_dist.png", dpi=150, bbox_inches="tight")
-plt.show()
-
-
-# %% Panel G2 — I(A; family): homomers only, distance × spread grid
-# Shows the spread effect for homomers where it was swept.
-
-if "homomers" in dfs and "family_spread" in dfs["homomers"].columns:
-    df_hom = dfs["homomers"]
-    spread_vals = sorted(df_hom["family_spread"].unique())
-
-    fig, axes = plt.subplots(len(spread_vals), len(DIST_VALUES),
-                             figsize=(5 * len(DIST_VALUES), 4 * len(spread_vals)),
-                             sharey=False)
-
-    for row, spread in enumerate(spread_vals):
-        for col, avg_d in enumerate(DIST_VALUES):
-            ax = axes[row, col]
-            mask = (np.isclose(df_hom["average_family_distance"], avg_d) &
-                    np.isclose(df_hom["family_spread"], spread))
-            sub = df_hom[mask]
-            if not sub.empty and MI_FAM_COL in sub.columns:
-                grp = sub.groupby("R")[MI_FAM_COL]
-                r_vals = sorted(sub["R"].unique())
-                med = np.array([grp.get_group(r).median() for r in r_vals])
-                p10 = np.array([grp.get_group(r).quantile(0.10) for r in r_vals])
-                p90 = np.array([grp.get_group(r).quantile(0.90) for r in r_vals])
-                ax.plot(r_vals, med, color="#222222", lw=2)
-                ax.fill_between(r_vals, p10, p90, color="#222222", alpha=0.2)
-            ax.set_title(f"d={avg_d}  σ={spread}", fontsize=10)
-            ax.set_xlabel("R", fontsize=9)
-            ax.set_ylabel("I(A ; family)  [bits]", fontsize=9)
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-            ax.grid(True, alpha=0.3)
-
-    fig.suptitle("Panel G2 — Homomers: I(A ; family) across distance × spread\n"
-                 "rows = family spread  |  cols = avg family distance",
-                 fontsize=11)
-    plt.tight_layout()
-    #plt.savefig(output_dir / "panelG2_homomers_family_dist_spread.png", dpi=150, bbox_inches="tight")
-    plt.show()
 
 
 # %% Panel D — Estimator cross-check  (Rényi vs blocked Shannon vs Miller-Madow)
@@ -447,6 +364,9 @@ if homomers_sweep:
                 latent_dim=config.latent_dim,
                 family_spread=config.family_spread,
                 avg_family_distance=config.average_family_distance,
+                n_presence_blocks=config.n_presence_blocks,
+                rho_block=config.rho_block,
+                block_shared_conc_mean=config.block_shared_conc_mean,
                 affinity_kernel=config.affinity_kernel,
                 kernel_params=config.kernel_params,
                 distribution_type=config.distribution_type,

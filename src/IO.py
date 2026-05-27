@@ -1,6 +1,7 @@
 import os
 import json
 import csv
+from dataclasses import asdict as _dc_asdict
 import pandas as pd
 import torch
 import numpy as np
@@ -138,7 +139,14 @@ class SingleRunLoader:
         with open(self.config_path) as f:
             data = json.load(f)
         valid_keys = set(SingleRunConfig.__dataclass_fields__)
-        return SingleRunConfig(**{k: v for k, v in data.items() if k in valid_keys})
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        # Backward compat: Gaussian-copula fields added after initial release.
+        # Old per-run config.json files won't have these; default to independent
+        # Bernoulli (rho_block=0) so existing results remain loadable.
+        filtered.setdefault("n_presence_blocks", 1)
+        filtered.setdefault("rho_block", 0.0)
+        filtered.setdefault("block_shared_conc_mean", False)
+        return SingleRunConfig(**filtered)
 
     def load_history(self) -> pd.DataFrame:
         return pd.read_csv(self.stats_path)
@@ -169,8 +177,16 @@ class SweepLoader:
         """
         Crawls the sweep grid, loads all test_results.json files, and returns a
         DataFrame with one row per run.  Each metric column holds the mean over
-        the test-sample array stored in the JSON.  Metadata columns (independent
-        axes + sample_id + warm axis) are injected for downstream analysis.
+        the test-sample array stored in the JSON.
+
+        Column priority (highest wins):
+          4. warm-axis value  (from single_cfg via warm_start_axis)
+          3. swept-axis values (from meta dict)
+          2. metric values    (from test_results.json)
+          1. scalar config fields (from single_cfg — lowest priority, provides
+             context for axes that happen to be fixed in a given sweep, e.g.
+             n_ligands when not swept).  List-valued fields (conc_mean, p_presence,
+             receptor_indices, …) are skipped.
         """
         rows = []
         for meta, single_cfg, run_dir in self.iter_run_dirs():
@@ -179,19 +195,31 @@ class SweepLoader:
                 continue
             with open(json_path) as f:
                 data = json.load(f)
-            row = {k: float(np.mean(v)) for k, v in data.items() if isinstance(v, list)}
-            for k, v in meta.items():
-                row[k] = v
+
+            # Priority 1 — scalar config fields (background context)
+            row = {k: v for k, v in _dc_asdict(single_cfg).items()
+                   if not isinstance(v, list)}
+            # Priority 2 — metric values
+            row.update({k: float(np.mean(v)) for k, v in data.items()
+                        if isinstance(v, list)})
+            # Priority 3 — swept axes + sample_id
+            row.update(meta)
+            # Priority 4 — warm axis
             warm_axis = self.config.warm_start_axis
             if warm_axis and isinstance(getattr(self.config, warm_axis, None), list):
                 row[warm_axis] = getattr(single_cfg, warm_axis)
+
             rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
     def load_all_histories(self) -> pd.DataFrame:
         """
         Crawls the sweep grid, loads all stats.csv files, and injects metadata
-        columns (independent axes + sample_id + warm axis) for downstream analysis.
+        columns for downstream analysis.
+
+        All scalar (non-list) fields from SingleRunConfig are added to every row
+        so that fixed axes (e.g. n_ligands when not swept) are always queryable.
+        Swept axes from meta and the warm axis take precedence.
         """
         all_dfs = []
         for meta, single_cfg, run_dir in self.iter_run_dirs():
@@ -199,8 +227,14 @@ class SweepLoader:
             if not os.path.exists(stats_file):
                 continue
             df = pd.read_csv(stats_file)
+            # Scalar config fields as background context
+            for k, v in _dc_asdict(single_cfg).items():
+                if not isinstance(v, list):
+                    df[k] = v
+            # Swept axes + sample_id override
             for k, v in meta.items():
                 df[k] = v
+            # Warm axis override
             warm_axis = self.config.warm_start_axis
             if warm_axis and isinstance(getattr(self.config, warm_axis, None), list):
                 df[warm_axis] = getattr(single_cfg, warm_axis)

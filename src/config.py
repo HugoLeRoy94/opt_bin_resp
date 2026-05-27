@@ -354,6 +354,12 @@ class RunConfig:
         if "affinity_length_scale" in d and "affinity_kernel" not in d:
             d["affinity_kernel"] = "gaussian"
             d["kernel_params"] = [d.pop("affinity_length_scale")]
+        # Backward compat: Gaussian-copula fields added after initial release.
+        # Old sweep_config.json files won't have these; default to independent
+        # Bernoulli (rho_block=0) so existing sweep results remain loadable.
+        d.setdefault("n_presence_blocks", 1)
+        d.setdefault("rho_block", 0.0)
+        d.setdefault("block_shared_conc_mean", False)
         return cls(**d)
 
     def __str__(self) -> str:

@@ -18,36 +18,57 @@ config = RunConfig(
     average_family_distance=1.0,
     environment_geometry="asymmetric",
     distribution_type="gaussian",
-    
+    observation_noise_sigma=0.0,
+
+    # --- Presence correlation (Gaussian copula) ---
+    n_presence_blocks=1,       # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block=0.0,
+    block_shared_conc_mean=False,
+
+    # --- Interface model ---
+    use_interface_model=False,
 
     # --- Concentration ---
     conc_model_type="lognormal",
-    conc_mean_range=(-6.0, -6.0),
+    conc_mean_range=(-7.0, -5.0),
     conc_std_range=(1.0, 1.0),
-    p_presence_range=(.2, .2),
+    p_presence_range=(0.1, 0.5),
+
     # --- Physics ---
-    n_genes=30,
+    n_genes=5,
     k_sub=5,
     temperature=0.1,
-    observation_noise_sigma=0.,
-    affinity_kernel="gaussian",# "gaussian" for a saturation/ "quadratic"
-    kernel_params=[1.],# needs an entry if gaussian is used
+    affinity_kernel="gaussian",
+    kernel_params=[1.],
 
     # --- Mixture ---
-    batch_size=2**16,
+    batch_size="auto",
 
     # --- Loss ---
-    entropy="renyi", # shannon | renyi | blocked | proxy
-    cov_weight=None,
-    penalty_type=None,
+    entropy="shannon",
+    cov_weight=1.0,
+    penalty_type="repulsion",
     n_c_bins=10,
 
     # --- Training ---
     epochs=5000,
     lr=0.05,
     use_scheduler=False,
-    test_batch_size=2**16,
-    measurement_fns=["full_array_entropy"],
+    test_batch_size="auto",
+    measurement_fns=[
+        "full_array_entropy",
+        "codeword_entropy",
+        "mean_receptor_distance",
+        "mean_specialization_index",
+        "mutual_information_ligand",
+        "mutual_information_concentration",
+        "mutual_information_family",
+    ],
+
+    # --- Heteromer sampling ---
+    n_receptors=10,
+    receptor_sampling_strategy="uniform_random",
+    receptor_sampling_seed=0,
 
     # --- Sweep control ---
     n_samples=1,

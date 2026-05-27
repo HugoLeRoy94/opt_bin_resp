@@ -66,7 +66,7 @@ config = RunConfig(
     ],
 
     # --- Heteromer sampling ---
-    n_receptors=10,
+    n_receptors=5,
     receptor_sampling_strategy="uniform_random",
     receptor_sampling_seed=0,
 

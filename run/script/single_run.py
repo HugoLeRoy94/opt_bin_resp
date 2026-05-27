@@ -51,7 +51,7 @@ config = RunConfig(
     n_c_bins=10,
 
     # --- Training ---
-    epochs=500,
+    epochs=5000,
     lr=0.05,
     use_scheduler=False,
     test_batch_size="auto",

@@ -20,6 +20,7 @@ import inspect
 from functools import reduce
 from operator import mul
 from tqdm import tqdm
+from typing import Optional
 
 # --- Local Imports ---
 from src.config import SingleRunConfig, RunConfig

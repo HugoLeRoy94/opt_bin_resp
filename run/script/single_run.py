@@ -45,7 +45,7 @@ config = RunConfig(
     batch_size="auto",
 
     # --- Loss ---
-    entropy="shannon",
+    entropy="renyi",
     cov_weight=1.0,
     penalty_type="repulsion",
     n_c_bins=10,
@@ -57,12 +57,12 @@ config = RunConfig(
     test_batch_size="auto",
     measurement_fns=[
         "full_array_entropy",
-        "codeword_entropy",
-        "mean_receptor_distance",
-        "mean_specialization_index",
-        "mutual_information_ligand",
-        "mutual_information_concentration",
-        "mutual_information_family",
+        #"codeword_entropy",
+        #"mean_receptor_distance",
+        #"mean_specialization_index",
+        #"mutual_information_ligand",
+        #"mutual_information_concentration",
+        #"mutual_information_family",
     ],
 
     # --- Heteromer sampling ---

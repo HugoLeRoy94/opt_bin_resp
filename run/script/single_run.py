@@ -11,7 +11,7 @@ from src.run import SweepRunner
 
 config = RunConfig(
     # --- Environment ---
-    n_families=1,
+    n_families=5,
     n_ligands=100,
     latent_dim=10,
     family_spread=.1,
@@ -30,7 +30,7 @@ config = RunConfig(
 
     # --- Concentration ---
     conc_model_type="lognormal",
-    conc_mean_range=(-7.0, -5.0),
+    conc_mean_range=(-7.0, -4.0),
     conc_std_range=(1.0, 1.0),
     p_presence_range=(0.1, 0.5),
 
@@ -51,7 +51,7 @@ config = RunConfig(
     n_c_bins=10,
 
     # --- Training ---
-    epochs=50000,
+    epochs=5000,
     lr=0.05,
     use_scheduler=False,
     test_batch_size="auto",
@@ -66,7 +66,7 @@ config = RunConfig(
     ],
 
     # --- Heteromer sampling ---
-    n_receptors=10,
+    n_receptors=50,
     receptor_sampling_strategy="cascading",
     receptor_sampling_seed=0,
 

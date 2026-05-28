@@ -29,10 +29,10 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = [50, 100, 200],          # odour-world size axis
+    n_ligands               = 50,          # odour-world size axis
     latent_dim              = [2, 3, 5, 7, 10, 15, 20],  # SWEEP AXIS (D)
     family_spread           = 0.15,
-    average_family_distance = [0.5, 1.0, 1.5],         # family separation axis
+    average_family_distance = 1.0,         # family separation axis
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.0,
@@ -52,8 +52,8 @@ config = RunConfig(
     temperature = 0.1,
 
     # --- Heteromers ---
-    n_receptors                = list(range(5, 16)),   # [5, 6, …, 15] warm-start axis
-    receptor_sampling_strategy = "uniform_random",
+    n_receptors                = 20,
+    receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
 
     # --- Mixture ---
@@ -72,12 +72,12 @@ config = RunConfig(
     use_scheduler = False,
     measurement_fns = [
         "full_array_entropy",
-        "codeword_entropy",
-        "mean_receptor_distance",
-        "mean_specialization_index",
-        "mutual_information_ligand",
-        "mutual_information_concentration",
-        "mutual_information_family",
+        #"codeword_entropy",
+        #"mean_receptor_distance",
+        #"mean_specialization_index",
+        #"mutual_information_ligand",
+        #"mutual_information_concentration",
+        #"mutual_information_family",
     ],
 
     # --- Sweep control ---

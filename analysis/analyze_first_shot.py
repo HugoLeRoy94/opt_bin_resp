@@ -107,7 +107,7 @@ for prefix, r_col, n_genes_fixed, label, color, ls in ARMS:
     ax.plot(r_vals, med, color=color, ls=ls, lw=2, label=label)
     ax.fill_between(r_vals, p10, p90, color=color, alpha=0.5)
 
-ax.plot(np.arange(1, 16, 1), np.arange(1, 16, 1),
+ax.plot(np.arange(1, 50, 1), np.arange(1, 50, 1),
         color='black', linestyle='--', label='perfect array', linewidth=1)
 
 ax.set_xlabel("R  (number of receptors)", fontsize=11)

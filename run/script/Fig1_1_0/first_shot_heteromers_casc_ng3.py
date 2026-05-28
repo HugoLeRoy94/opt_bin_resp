@@ -16,10 +16,10 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = [50, 100, 200],
-    latent_dim              = 7,
+    n_ligands               = 100,
+    latent_dim              = 10,
     family_spread           = 0.15,
-    average_family_distance = [0.5, 1.0, 1.5],
+    average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.0,
@@ -30,7 +30,7 @@ config = RunConfig(
     block_shared_conc_mean = True,
 
     # --- Interface model ---
-    use_interface_model = False,
+    use_interface_model = True,
 
     # --- Concentration ---
     conc_model_type  = "lognormal",
@@ -49,13 +49,13 @@ config = RunConfig(
     batch_size="auto", test_batch_size="auto",
     measurement_fns=[
         "full_array_entropy",
-        "codeword_entropy",
-        "mean_receptor_distance",
-        "mean_specialization_index",
-        "mutual_information_ligand",
-        "mutual_information_concentration",
-        "mutual_information_family",
-        "mutual_information_block"
+        #"codeword_entropy",
+        #"mean_receptor_distance",
+        #"mean_specialization_index",
+        #"mutual_information_ligand",
+        #"mutual_information_concentration",
+        #"mutual_information_family",
+        #"mutual_information_block"
     ],
 
     # --- Sweep ---

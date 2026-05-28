@@ -66,8 +66,8 @@ config = RunConfig(
     ],
 
     # --- Heteromer sampling ---
-    n_receptors=5,
-    receptor_sampling_strategy="uniform_random",
+    n_receptors=10,
+    receptor_sampling_strategy="cascading",
     receptor_sampling_seed=0,
 
     # --- Sweep control ---

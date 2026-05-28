@@ -81,7 +81,13 @@ MEASUREMENT_REGISTRY = {
 # Batch-size auto-scaling
 # ---------------------------------------------------------------------------
 
-def resolve_batch_sizes(n_receptors: int, entropy_type: str = "shannon") -> tuple:
+def resolve_batch_sizes(
+    n_receptors: int,
+    entropy_type: str = "shannon",
+    n_ligands: int = 1,
+    k_sub: int = 1,
+    mem_budget_bytes: Optional[int] = None,
+) -> tuple:
     """Returns (batch_size, test_batch_size) appropriate for the array size.
 
     Shannon / exact: B_train = 2^R — one sample per histogram bin for good coverage.
@@ -89,6 +95,12 @@ def resolve_batch_sizes(n_receptors: int, entropy_type: str = "shannon") -> tupl
     (~128 GiB), giving ~10^6 max samples at R=15 on an A100.
 
     Rényi-2: cost is O(B²·R) not O(B·2^R); keep B ~ 16·√(2^R) instead.
+
+    Physics bottleneck cap (both entropy types): the gathered_flat tensor in physics.py
+    has shape (B, n_ligands, R·k_sub) float32. A safety factor of 4× is applied to
+    account for gradients and intermediate tensors during the training forward pass.
+    mem_budget_bytes should be the free GPU memory at _initialize time; defaults to
+    8 GiB when CUDA is unavailable.
 
     test_batch_size = 4 × batch_size.
     """
@@ -100,6 +112,14 @@ def resolve_batch_sizes(n_receptors: int, entropy_type: str = "shannon") -> tupl
         b_train = min(b_train, mem_cap)
     else:
         b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
+
+    # Physics cap: gathered_flat is (B, n_ligands, R·k_sub) float32; safety factor 4×.
+    if mem_budget_bytes is None:
+        mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
+    bytes_per_sample = n_ligands * n_receptors * k_sub * 4
+    physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 4))
+    b_train = min(b_train, physics_cap)
+
     return b_train, 4 * b_train
 
 ENV_REGISTRY = {
@@ -153,11 +173,27 @@ class SimulationRunner:
         # Resolve "auto" batch sizes now that receptor_indices is known.
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
             n_r = receptor_indices.shape[0]
-            b_train, b_eval = resolve_batch_sizes(n_r, self.config.entropy)
+            if torch.cuda.is_available():
+                free_mem, _ = torch.cuda.mem_get_info()
+                mem_budget = int(free_mem * 0.8)
+            else:
+                mem_budget = None
+            b_train, b_eval = resolve_batch_sizes(
+                n_r, self.config.entropy,
+                n_ligands=self.config.n_ligands,
+                k_sub=self.config.k_sub,
+                mem_budget_bytes=mem_budget,
+            )
             if self.config.batch_size == "auto":
                 self.config.batch_size = b_train
             if self.config.test_batch_size == "auto":
                 self.config.test_batch_size = b_eval
+            print(
+                f"[auto batch] R={n_r}  "
+                f"batch_size={self.config.batch_size}  "
+                f"test_batch_size={self.config.test_batch_size}"
+                + (f"  gpu_free={mem_budget//(1<<20)} MiB" if mem_budget is not None else "")
+            )
 
         if prev_env is not None:
             extra_units = max(0, self.config.n_genes - prev_env.n_genes)

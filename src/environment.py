@@ -35,6 +35,7 @@ Key numerical tricks:
   - base_energy init = E[ln c]: EC50 ≈ typical concentration at iteration 0.
 """
 import math
+import warnings
 import torch
 import copy
 import torch.nn as nn
@@ -411,6 +412,10 @@ class LigandEnvironment(nn.Module):
         else:
             self.base_energy_u = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
 
+        # Diagnostics for empty-mixture rejection (updated by sample_batch).
+        self.last_empty_redraws: int = 0
+        self.empty_fraction_ema: float = 0.0
+
     def clone_with_extra_units(self, extra_units: int = 1):
         """
         Creates a copy of the environment with additional units.
@@ -678,8 +683,48 @@ class LigandEnvironment(nn.Module):
             E_open:        (B, L, R, k_sub) — pocket energy per interface.
             concs:         (B, L)
             mixture_masks: (B, L)
+
+        Empty-mixture rejection:
+            Rows with sum(M, dim=-1) == 0 are redrawn using the same sampling
+            path (independent Bernoulli or Gaussian copula) until all rows have
+            at least one present ligand, conditioning the batch on S >= 1.
+            This slightly inflates the realized per-ligand marginal above the
+            configured p_presence: empty mixtures that would have contributed
+            zeros to every ligand are removed, so the conditional mean presence
+            frequency is p_ℓ / (1 − P(S=0)) ≈ p_ℓ when P(S=0) is small.
+            Diagnostics: self.last_empty_redraws (total redraw operations this
+            call) and self.empty_fraction_ema (EMA of n_redraws / batch_size,
+            α=0.05).  A warning is emitted when the fraction exceeds 20%.
         """
-        masks     = self._sample_masks(batch_size)
+        _MAX_REDRAW_ATTEMPTS = 100
+        masks = self._sample_masks(batch_size)
+        n_redraws = 0
+        for _ in range(_MAX_REDRAW_ATTEMPTS):
+            empty = masks.sum(dim=-1) == 0
+            if not empty.any():
+                break
+            n_empty = int(empty.sum().item())
+            n_redraws += n_empty
+            masks[empty] = self._sample_masks(n_empty)
+        else:
+            raise RuntimeError(
+                f"sample_batch: could not eliminate empty mixtures after "
+                f"{_MAX_REDRAW_ATTEMPTS} redraw attempts. "
+                f"The configured p_presence and/or rho_block={self.rho_block} are "
+                f"pathological for n_ligands={self.n_ligands}. "
+                f"Raise p_presence or reduce rho_block."
+            )
+        self.last_empty_redraws = n_redraws
+        self.empty_fraction_ema = (
+            0.95 * self.empty_fraction_ema + 0.05 * (n_redraws / batch_size)
+        )
+        if n_redraws / batch_size > 0.2:
+            warnings.warn(
+                f"LigandEnvironment: {n_redraws / batch_size:.1%} of presence draws "
+                f"were empty and redrawn (threshold 20%). "
+                f"Consider raising p_presence or reducing rho_block={self.rho_block}.",
+                stacklevel=2,
+            )
         concs     = self.concentration_model.sample(batch_size) * masks
         v_ligands = self._sample_noisy_ligands(batch_size)
         E_open    = self._compute_energies(v_ligands, receptor_indices)

@@ -4,7 +4,7 @@
 # Sweeps n_genes from 3 to 15 with warm-starting; R = n_genes (one homomer per gene).
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_homomers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_1_0/first_shot_homomers.py
 
 import time
 import sys
@@ -17,7 +17,7 @@ config = RunConfig(
     # --- Environment ---
     n_families              = 5,
     n_ligands               = 100,
-    latent_dim              = 10,
+    latent_dim              = 5,
     family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
     average_family_distance = 1.0,
     environment_geometry    = "asymmetric",

@@ -66,7 +66,7 @@ config = RunConfig(
     n_samples                  = 1,
     sweep_name                 = "casc_ng3",
     base_folder                = "/app/data/first_shot",
-    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=3, n_receptors=3) baseline
+    warm_start_axis            = None,  # fan-out from (n_genes=3, n_receptors=3) baseline
     seed                       = 4,
 )
 

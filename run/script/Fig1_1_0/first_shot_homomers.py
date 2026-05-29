@@ -16,7 +16,7 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 50,
+    n_ligands               = 100,
     latent_dim              = 5,
     family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
     average_family_distance = 1.0,
@@ -25,8 +25,8 @@ config = RunConfig(
     observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 5,     # independent Bernoulli baseline (rho_block=0 disables copula)
-    rho_block              = 0.3,
+    n_presence_blocks      = 10,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block              = 0.5,
     block_shared_conc_mean = True,
 
     # --- Interface model ---
@@ -36,7 +36,7 @@ config = RunConfig(
     conc_model_type  = "lognormal",
     conc_mean_range  = (-7.0, -4.0),
     conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.1,  0.5),
+    p_presence_range = (0.02,  0.02),
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
@@ -52,10 +52,10 @@ config = RunConfig(
         #"codeword_entropy",
         #"mean_receptor_distance",
         #"mean_specialization_index",
-        #"mutual_information_ligand",
-        #"mutual_information_concentration",
-        #"mutual_information_family",
-        #"mutual_information_block"
+        "mutual_information_ligand",
+        "mutual_information_concentration",
+        "mutual_information_family",
+        "mutual_information_block"
     ],
 
     # --- Sweep ---

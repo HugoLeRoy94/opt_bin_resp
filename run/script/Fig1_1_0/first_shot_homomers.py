@@ -59,7 +59,7 @@ config = RunConfig(
     ],
 
     # --- Sweep ---
-    n_genes         = list(range(3, 10)),   # [3, 4, …, 15] — warm-start axis
+    n_genes         = list(range(3, 20)),   # [3, 4, …, 15] — warm-start axis
     n_samples       = 1,
     sweep_name      = "homomers",
     base_folder     = "/app/data/first_shot",

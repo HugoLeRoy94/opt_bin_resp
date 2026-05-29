@@ -9,8 +9,9 @@ from .environment import (
 )
 from .physics import BinaryReceptor, MWCReceptor, BaseReceptor, compute_initial_temperature
 from .geometry import (generate_receptor_indices, generate_cascading_receptors,
-                       generate_targeted_receptors, generate_exp_distributed_receptors, 
-                       generate_bernoulli_receptors)
+                       generate_targeted_receptors, generate_exp_distributed_receptors,
+                       generate_bernoulli_receptors, count_receptor_combinations,
+                       build_heteromer_array)
 from .analysis_helper import (plot_ligand_summary,
                                 plot_summary,evaluate_model,plot_latent_radar_chart,
                                 plot_latent_umap,
@@ -48,6 +49,8 @@ __all__ = [
     "generate_targeted_receptors",
     "generate_exp_distributed_receptors",
     "generate_bernoulli_receptors",
+    "count_receptor_combinations",
+    "build_heteromer_array",
     "plot_ligand_summary",
     "plot_summary",
     "plot_latent_umap",

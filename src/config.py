@@ -102,6 +102,7 @@ class SingleRunConfig:
                     self.n_genes, self.k_sub, self.n_receptors,
                     strategy=self.receptor_sampling_strategy,
                     seed=self.receptor_sampling_seed,
+                    use_interface_model=self.use_interface_model,
                 )
                 self.receptor_indices = tensor.tolist()
             else:

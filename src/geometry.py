@@ -16,10 +16,44 @@ import torch
 import itertools
 import random
 import numpy as np
+from math import comb, gcd
 from typing import Optional
 
 def exp_distrib(l,beta=0.371177):
     return beta*np.exp(-beta * l )
+
+# ---------------------------------------------------------------------------
+# Combinatorial pool size
+# ---------------------------------------------------------------------------
+
+def count_receptor_combinations(n_genes: int, k_sub: int, use_interface_model: bool = False) -> int:
+    """
+    Number of distinct receptor types for a given (n_genes, k_sub) pair.
+
+    Standard model (use_interface_model=False):
+        Receptors are unordered multisets (bags of subunits).
+        Pool size = C(n_genes + k_sub - 1, k_sub)   [stars and bars]
+
+    Interface model (use_interface_model=True):
+        Receptors are ordered cyclic arrangements: rotations are identified,
+        reflections are DISTINCT (the +/− face asymmetry breaks mirror symmetry).
+        Pool size via Burnside's lemma for the cyclic group C_{k_sub}:
+            (1 / k_sub) * Σ_{d | k_sub} φ(d) * n_genes^(k_sub // d)
+        where φ is Euler's totient function.
+    """
+    if not use_interface_model:
+        return comb(n_genes + k_sub - 1, k_sub)
+
+    def _totient(n: int) -> int:
+        return sum(1 for i in range(1, n + 1) if gcd(i, n) == 1)
+
+    total = sum(
+        _totient(d) * (n_genes ** (k_sub // d))
+        for d in range(1, k_sub + 1)
+        if k_sub % d == 0
+    )
+    return total // k_sub
+
 
 # ---------------------------------------------------------------------------
 # Interface-model helpers: ordered cyclic equivalence classes
@@ -39,7 +73,8 @@ def _canonical_rotation(seq: tuple) -> tuple:
     return min(seq[i:] + seq[:i] for i in range(k))
 
 
-def generate_ordered_receptor_indices(n_genes: int, k_sub: int, n_sensors: int) -> torch.Tensor:
+def generate_ordered_receptor_indices(n_genes: int, k_sub: int, n_sensors: int,
+                                      seed: Optional[int] = None) -> torch.Tensor:
     """
     Interface-model variant of generate_receptor_indices.
 
@@ -67,14 +102,16 @@ def generate_ordered_receptor_indices(n_genes: int, k_sub: int, n_sensors: int) 
             canonical_set.add(_canonical_rotation(perm))
     all_ordered = list(canonical_set)
 
+    rng = random.Random(seed)
     if n_sensors > len(all_ordered):
         selected = all_ordered
     else:
-        selected = random.sample(all_ordered, n_sensors)
+        selected = rng.sample(all_ordered, n_sensors)
     return torch.tensor(selected, dtype=torch.long)
 
 
-def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_targets: dict) -> torch.Tensor:
+def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_targets: dict,
+                                        seed: Optional[int] = None) -> torch.Tensor:
     """
     Interface-model variant of generate_targeted_receptors.
 
@@ -83,6 +120,7 @@ def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_ta
 
     Args:
         composition_targets: {num_unique_units: count | 'all'}
+        seed: RNG seed for reproducibility.
     """
     all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
 
@@ -94,6 +132,7 @@ def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_ta
             n_unique = len(set(canon))
             buckets.setdefault(n_unique, set()).add(canon)
 
+    rng = random.Random(seed)
     selected_combos = []
     for n_unique in sorted(composition_targets.keys()):
         target_k = composition_targets[n_unique]
@@ -103,17 +142,22 @@ def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_ta
         if target_k == 'all' or target_k >= len(available):
             selected_combos.extend(available)
         else:
-            selected_combos.extend(random.sample(available, target_k))
+            selected_combos.extend(rng.sample(available, target_k))
 
     return torch.tensor(selected_combos, dtype=torch.long)
 
 
-def generate_cascading_ordered_receptors(n_genes: int, k_sub: int, n_sensors: int) -> torch.Tensor:
+def generate_cascading_ordered_receptors(n_genes: int, k_sub: int, n_sensors: int,
+                                         seed: Optional[int] = None) -> torch.Tensor:
     """
     Interface-model variant of generate_cascading_receptors.
 
     Fills the quota ascending by complexity (homomers → 2-mers → …) using
     ordered cyclic arrangements.
+
+    Args:
+        seed: When provided, the intra-tier shuffle is deterministic.
+              Same (n_genes, k_sub, n_sensors, seed) → identical tensor.
     """
     all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
 
@@ -124,13 +168,14 @@ def generate_cascading_ordered_receptors(n_genes: int, k_sub: int, n_sensors: in
             n_unique = len(set(canon))
             buckets.setdefault(n_unique, set()).add(canon)
 
+    rng = random.Random(seed)
     selected_combos = []
     remaining = n_sensors
     for n_unique in sorted(buckets.keys()):
         if remaining <= 0:
             break
         available = list(buckets[n_unique])
-        random.shuffle(available)
+        rng.shuffle(available)
         take_n = min(remaining, len(available))
         selected_combos.extend(available[:take_n])
         remaining -= take_n
@@ -240,6 +285,7 @@ def build_heteromer_array(
     R_target: int,
     strategy: str = "uniform_random",
     seed: Optional[int] = None,
+    use_interface_model: bool = False,
 ) -> torch.Tensor:
     """
     Unified entry-point for building a heteromer receptor array.
@@ -248,16 +294,26 @@ def build_heteromer_array(
     exceeds the combinatorial pool the full pool is returned (with a warning).
 
     Args:
-        n_genes:   Number of available gene units.
-        k_sub:     Subunits per receptor.
-        R_target:  Desired number of receptors.
-        strategy:  "uniform_random" — reservoir-sample from the full
-                       combinations_with_replacement pool (O(R_target) memory).
-                   "cascading" — fill by complexity tier: homomers first,
-                       then 2-mers, etc. (delegates to generate_cascading_receptors).
-        seed:      RNG seed for reproducibility.
-                   Same arguments + seed → identical output tensor.
+        n_genes:             Number of available gene units.
+        k_sub:               Subunits per receptor.
+        R_target:            Desired number of receptors.
+        strategy:            "uniform_random" or "cascading".
+        seed:                RNG seed. Same arguments + seed → identical tensor.
+        use_interface_model: When True, receptors are ordered cyclic ring
+                             arrangements (rotations identified, reflections
+                             distinct). Routes to the *_ordered_* variants.
+                             When False, receptors are unordered multisets.
     """
+    if use_interface_model:
+        if strategy == "cascading":
+            return generate_cascading_ordered_receptors(n_genes, k_sub, R_target, seed=seed)
+        if strategy == "uniform_random":
+            return generate_ordered_receptor_indices(n_genes, k_sub, R_target, seed=seed)
+        raise ValueError(
+            f"Unknown strategy {strategy!r} for interface model. "
+            f"Choose 'uniform_random' or 'cascading'."
+        )
+
     if strategy == "cascading":
         return generate_cascading_receptors(n_genes, k_sub, R_target, seed=seed)
 

@@ -106,17 +106,18 @@ def resolve_batch_sizes(
     test_batch_size = 4 × batch_size.
     """
     B_min = 512
+    if mem_budget_bytes is None:
+        mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
+
     if entropy_type != "renyi":
         b_train = max(B_min, 1 << n_receptors)
-        # B × 2^R ≤ 2^35  →  B ≤ 2^(35-R)
-        mem_cap = max(B_min, 1 << max(0, 35 - n_receptors))
-        b_train = min(b_train, mem_cap)
+        # soft_assign is (B, 2^R) float32; 4× safety for backward graph copies.
+        entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
+        b_train = min(b_train, entropy_cap)
     else:
         b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
 
     # Physics cap: gathered_flat is (B, n_ligands, R·k_sub) float32; safety factor 4×.
-    if mem_budget_bytes is None:
-        mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
     bytes_per_sample = n_ligands * n_receptors * k_sub * 4
     physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 4))
     b_train = min(b_train, physics_cap)

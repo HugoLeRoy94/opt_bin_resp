@@ -101,30 +101,29 @@ class BaseReceptor(nn.Module, ABC):
         observation noise for a more accurate response.
         Otherwise, it uses the mean interaction energy.
         """
-        # Quadrature over pocket embeddings would require integrating over the
-        # averaged pocket position — too complex for the interface model.  Always
-        # fall back to the mean-energy approximation in that case.
         if (env.distribution_type != 'gaussian'
                 or not isinstance(self, BinaryReceptor)
-                or quadrature_degree ** env.latent_dim > 100000
-                or getattr(env, 'use_interface_model', False)):
+                or quadrature_degree ** env.latent_dim > 100000):
             c_sweep, _ = env.get_concentration_sweep(ligand_id, n_points)
             # Format for a single ligand mixture
             c_reshaped = c_sweep.view(n_points, 1, 1)
 
             gathered_energies = self._extract_mean_energies(env, receptor_indices, ligand_id, n_points)
-            
-            p_o = self.p_open(c_reshaped, gathered_energies) 
-            
+
+            p_o = self.p_open(c_reshaped, gathered_energies)
+
             if method == "self_normalized":
                 p_max = torch.max(p_o, dim=0, keepdim=True).values
                 p_o =  p_o / (p_max + 1e-8)
-            
+
             return c_sweep.cpu().numpy(), p_o.cpu().numpy()
 
         # --- Quadrature Method for Gaussian Distribution in a BinaryReceptor ---
-        
-        device = env.unit_latent.device
+        # Works for both classic and interface models: the quadrature integrates
+        # v_obs = v_ℓ + σ·node over observation noise.  Reference positions are
+        # unit_latent (classic) or pocket embeddings v_pocket (interface).
+
+        device = next(env.parameters()).device
         c_sweep, _ = env.get_concentration_sweep(ligand_id, n_points)
 
         # 1. Get Quadrature nodes and weights for N(0,1)
@@ -137,24 +136,43 @@ class BaseReceptor(nn.Module, ABC):
         weights_grid = torch.prod(torch.stack(torch.meshgrid([weights] * env.latent_dim, indexing='ij'), dim=-1).view(-1, env.latent_dim), dim=1)
         n_quad = nodes_grid.shape[0]
 
-        # 2. Get unit and ligand info
-        unit_latents = env.unit_latent[receptor_indices]
         ligand_latent = env.ligand_latent[ligand_id]
-        base_energies = env.base_energy_u[receptor_indices]
 
-        # 3. Transform nodes to sample from ligand observation noise v ~ N(ligand_latent, env.observation_noise_sigma)
-        v_samples = ligand_latent.unsqueeze(0) + nodes_grid * env.observation_noise_sigma
+        # 3. Transform nodes to sample from ligand observation noise v ~ N(ligand_latent, sigma)
+        v_samples = ligand_latent.unsqueeze(0) + nodes_grid * env.observation_noise_sigma  # (n_quad, D)
 
-        # 4. Calculate energies using the configured affinity kernel
-        diff = v_samples.view(n_quad, 1, 1, env.latent_dim) - unit_latents.view(1, *unit_latents.shape)
+        # 4. Reference positions and energy parameters (per receptor, per interface/subunit)
+        if getattr(env, 'use_interface_model', False):
+            idx_i = receptor_indices                          # (R, k_sub)
+            idx_j = receptor_indices.roll(-1, dims=1)         # (R, k_sub)
+            ref_latents  = 0.5 * (env.unit_latent_plus[idx_i] + env.unit_latent_minus[idx_j])   # (R, k, D)
+            base_energies = 0.5 * (env.base_energy_u_plus[idx_i] + env.base_energy_u_minus[idx_j])  # (R, k)
+            if env.affinity_kernel == "gaussian":
+                max_energies = 0.5 * (
+                    torch.nn.functional.softplus(env.max_energy_u_raw_plus[idx_i])
+                    + torch.nn.functional.softplus(env.max_energy_u_raw_minus[idx_j])
+                )  # (R, k)
+        else:
+            ref_latents   = env.unit_latent[receptor_indices]                               # (R, k, D)
+            base_energies = env.base_energy_u[receptor_indices]                             # (R, k)
+            if env.affinity_kernel == "gaussian":
+                max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]  # (R, k)
+
+        # 5. Calculate energies using the configured affinity kernel
+        diff = v_samples.view(n_quad, 1, 1, env.latent_dim) - ref_latents.view(1, *ref_latents.shape)
         dist_sq = (diff ** 2).sum(dim=-1)
         if env.affinity_kernel == "gaussian":
-            max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]
             lambda_sq = env.kernel_params[0] ** 2
             E_open_samples = (base_energies.unsqueeze(0)
                               + max_energies.unsqueeze(0) * (1.0 - torch.exp(-dist_sq / lambda_sq)))
         else:  # "quadratic"
-            dE = torch.nn.functional.softplus(env.energy_slope_raw)[receptor_indices]
+            if getattr(env, 'use_interface_model', False):
+                dE = 0.5 * (
+                    torch.nn.functional.softplus(env.energy_slope_raw_plus[receptor_indices])
+                    + torch.nn.functional.softplus(env.energy_slope_raw_minus[receptor_indices.roll(-1, dims=1)])
+                )
+            else:
+                dE = torch.nn.functional.softplus(env.energy_slope_raw)[receptor_indices]
             E_open_samples = base_energies.unsqueeze(0) + dE.unsqueeze(0) * dist_sq
 
         # 5. Compute p_open for each sample and concentration, then average

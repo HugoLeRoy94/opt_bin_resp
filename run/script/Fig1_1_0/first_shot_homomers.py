@@ -42,7 +42,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
 
     # --- Loss ---
-    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=500, lr=0.05, use_scheduler=False,

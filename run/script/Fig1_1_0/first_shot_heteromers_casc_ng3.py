@@ -16,7 +16,7 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 100,
+    n_ligands               = 50,
     latent_dim              = 5,
     family_spread           = 0.15,
     average_family_distance = 1.0,
@@ -60,7 +60,7 @@ config = RunConfig(
 
     # --- Sweep ---
     n_genes                    = 3,
-    n_receptors                = list(range(3, 16)),   # [3, 4, …, 15] — warm-start axis
+    n_receptors                = list(range(3, 30)),   # [3, 4, …, 15] — warm-start axis
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
     n_samples                  = 1,

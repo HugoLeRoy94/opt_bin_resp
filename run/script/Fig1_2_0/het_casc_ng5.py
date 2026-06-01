@@ -16,33 +16,33 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 100,
-    latent_dim              = 10,
-    family_spread           = 0.15,
-    average_family_distance = 1.0,
+    n_ligands               = 200,
+    latent_dim              = 5,
+    family_spread           = [0.1,0.15,0.2],
+    average_family_distance = [0.5, 1.0, 1.5],
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.0,
+    observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 5,     # independent Bernoulli baseline (rho_block=0 disables copula)
-    rho_block              = 0.3,
-    block_shared_conc_mean = False,
+    n_presence_blocks      = 20,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block              = 0.5,
+    block_shared_conc_mean = True,
 
     # --- Interface model ---
     use_interface_model = False,
 
     # --- Concentration ---
     conc_model_type  = "lognormal",
-    conc_mean_range  = (-7.0, -4.0),
+    conc_mean_range  = (-8.0, -3.0),
     conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.1,  0.5),
+    p_presence_range = (0.05,  0.25),
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
 
     # --- Loss ---
-    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=5000, lr=0.05, use_scheduler=False,
@@ -55,18 +55,19 @@ config = RunConfig(
         #"mutual_information_ligand",
         #"mutual_information_concentration",
         #"mutual_information_family",
+        #"mutual_information_block"
     ],
 
     # --- Sweep ---
     n_genes                    = 5,
-    n_receptors                = list(range(5, 16)),   # [5, 6, …, 15] — warm-start axis
+    n_receptors                = list(range(5, 50)),   # [3, 4, …, 15] — warm-start axis
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
-    n_samples                  = 1,
+    n_samples                  = 5,
     sweep_name                 = "ng5",
     base_folder                = "/app/data/fig1",
-    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=5, n_receptors=5) baseline
-    seed                       = 0,
+    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=3, n_receptors=3) baseline
+    seed                       = 4,
 )
 
 print(config)

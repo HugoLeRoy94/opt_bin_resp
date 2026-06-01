@@ -16,24 +16,24 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 100,
-    latent_dim              = 10,
-    family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
-    average_family_distance = 1.0,
+    n_ligands               = 200,
+    latent_dim              = 5,
+    family_spread           = [0.1,0.15,0.2],   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
+    average_family_distance = [0.5,1.0,1.5],
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 5,     # independent Bernoulli baseline (rho_block=0 disables copula)
-    rho_block              = 0.3,
+    n_presence_blocks      = 20,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    rho_block              = 0.5,
     block_shared_conc_mean = True,
 
     # --- Concentration ---
     conc_model_type  = "lognormal",
-    conc_mean_range  = (-7.0, -4.0),
+    conc_mean_range  = (-8.0, -3.0),
     conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.1,  0.5),
+    p_presence_range = (0.05,  0.25),
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
@@ -57,7 +57,7 @@ config = RunConfig(
 
     # --- Sweep ---
     n_genes         = list(range(3, 400)),   # [3, 4, …, 15] — warm-start axis
-    n_samples       = 1,
+    n_samples       = 5,
     sweep_name      = "homomers",
     base_folder     = "/app/data/fig1",
     warm_start_axis = "n_genes",

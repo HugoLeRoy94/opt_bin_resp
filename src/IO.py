@@ -260,4 +260,11 @@ def find_latest_sweep(base_dir: str, prefix: str = "") -> list[str]:
         raise FileNotFoundError(
             f"No directories matching '{prefix}*' found in {base_dir}"
         )
-    return [str(d) for d in sorted(dirs, key=lambda d: d.stat().st_mtime, reverse=True)]
+    import re
+    _ts_re = re.compile(r'(\d{8}_\d{6})')
+
+    def _sort_key(d: Path):
+        m = _ts_re.search(d.name)
+        return m.group(1) if m else d.stat().st_mtime
+
+    return [str(d) for d in sorted(dirs, key=_sort_key, reverse=True)]

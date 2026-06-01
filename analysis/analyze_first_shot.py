@@ -1,6 +1,6 @@
 # %%
 """
-Analysis of the first-shot simulation campaign (§6 of narrative_and_next_steps.md).
+Analysis of the first-shot simulation  campaign (§6 of narrative_and_next_steps.md).
 
 Directory layout (produced by first_shot_*.py + SweepRunner):
   ../../../data/first_shot/{arm}_{timestamp}/
@@ -14,7 +14,8 @@ Panels:
   C  — MI decomposition          (one subplot per channel: identity / concentration / family)
   D — Estimator cross-check     (Rényi H2 vs blocked Shannon vs Miller-Madow)
   E — Training convergence      (entropy vs epoch)
-  G — I(A; family) per distance  (1×3: all arms at d=0.5, 1.0, 1.5)
+  G — I(A; family) per distance  (1×3: all arm
+  s at d=0.5, 1.0, 1.5)
   G2— I(A; family) homomers     (3×3: distance × spread, homomers only)
   F — Latent space UMAP         (4 contrasting environments: 2 family distances × 2 spreads)
 """
@@ -76,6 +77,7 @@ for prefix, r_col, n_genes_fixed, label, color, ls in ARMS:
         break
     try:
         sweep_dir = find_latest_sweep(str(base_dir), prefix=prefix)[0]
+        print(sweep_dir)
         df = SweepLoader(sweep_dir).load_all_test_results()
         df["R"] = df[r_col]
         if n_genes_fixed is not None:
@@ -107,7 +109,7 @@ for prefix, r_col, n_genes_fixed, label, color, ls in ARMS:
     ax.plot(r_vals, med, color=color, ls=ls, lw=2, label=label)
     ax.fill_between(r_vals, p10, p90, color=color, alpha=0.5)
 
-ax.plot(np.arange(1, 50, 1), np.arange(1, 50, 1),
+ax.plot(np.arange(1, 20, 1), np.arange(1, 20, 1),
         color='black', linestyle='--', label='perfect array', linewidth=1)
 
 ax.set_xlabel("R  (number of receptors)", fontsize=11)
@@ -318,7 +320,7 @@ UMAP_CONDITIONS = [
     (0.5, 0.10, "d=0.5  σ=0.10  (close, tight)"),
     (0.5, 0.20, "d=0.5  σ=0.20  (close, spread)"),
     (1.5, 0.10, "d=1.5  σ=0.10  (far, tight)"),
-    (1.5, 0.20, "d=1.5  σ=0.20  (far, spread)"),
+    (1, 0.15, "d=1  σ=0.15 "),
 ]
 
 try:
@@ -334,7 +336,7 @@ if homomers_sweep:
                    / f"family_spread_{spread}"
                    / "n_ligands_100"
                    / "sample_0"
-                   / "n_genes_8")
+                   / "n_genes_3")
 
         if not run_dir.exists():
             print(f"  [skip] {title}: directory not found at {run_dir}")

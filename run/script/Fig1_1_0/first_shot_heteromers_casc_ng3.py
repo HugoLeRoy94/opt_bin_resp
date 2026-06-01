@@ -36,7 +36,7 @@ config = RunConfig(
     conc_model_type  = "lognormal",
     conc_mean_range  = (-7.0, -4.0),
     conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.1,  0.5),
+    p_presence_range = (0.05,  0.2),
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],

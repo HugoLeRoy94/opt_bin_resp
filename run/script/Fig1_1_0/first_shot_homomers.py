@@ -16,7 +16,7 @@ from src.run import SweepRunner
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 100,
+    n_ligands               = 200,
     latent_dim              = 5,
     family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
     average_family_distance = 1.0,
@@ -25,7 +25,7 @@ config = RunConfig(
     observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 10,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    n_presence_blocks      = 20,     # independent Bernoulli baseline (rho_block=0 disables copula)
     rho_block              = 0.5,
     block_shared_conc_mean = True,
 
@@ -59,7 +59,7 @@ config = RunConfig(
     ],
 
     # --- Sweep ---
-    n_genes         = list(range(3, 30)),   # [3, 4, …, 15] — warm-start axis
+    n_genes         = list(range(3, 20)),   # [3, 4, …, 15] — warm-start axis
     n_samples       = 1,
     sweep_name      = "homomers",
     base_folder     = "/app/data/first_shot",

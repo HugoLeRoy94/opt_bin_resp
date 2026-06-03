@@ -15,9 +15,9 @@ from src.run import SweepRunner
 import numpy as np
 
 N_LIG = 200
-CONC_MEAN  = np.random.randint(-8,-3,N_LIG)
-CONC_STD   = (1.0,)  * N_LIG
-P_PRESENCE = np.random.randint(0.05,0.2,N_LIG)
+CONC_MEAN  = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
+CONC_STD   = (1.0,) * N_LIG
+P_PRESENCE = tuple(np.random.uniform(0.05, 0.2, N_LIG))
 
 config = RunConfig(
     # --- Environment ---

@@ -37,7 +37,7 @@ from src.environment import (LigandEnvironment, SymmetricLigandEnvironment,
 
 # %% Configuration
 
-base_dir   = Path(exec_dir + "/data/first_shot")
+base_dir   = Path(exec_dir + "/data/test")
 output_dir = Path("output")
 output_dir.mkdir(exist_ok=True)
 

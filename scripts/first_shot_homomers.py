@@ -23,7 +23,7 @@ config = RunConfig(
     # --- Environment ---
     n_families              = 5,
     n_ligands               = N_LIG,
-    latent_dim              = 5,
+    latent_dim              = 10,
     family_spread           = 0.15,
     average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
@@ -51,21 +51,21 @@ config = RunConfig(
     entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=500, lr=0.05, use_scheduler=False,
+    epochs=5000, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=(
         "full_array_entropy",
-        "mutual_information_ligand",
-        "mutual_information_concentration",
-        "mutual_information_family",
-        "mutual_information_block",
+        #"mutual_information_ligand",
+        #"mutual_information_concentration",
+        #"mutual_information_family",
+        #"mutual_information_block",
     ),
 
     # --- Sweep ---
     n_genes     = list(range(3, 20)),
     sweep_name  = "homomers",
     base_folder = "/app/data/test",
-    warm_start  = True,
+    warm_start  = False,
 )
 
 print(config)

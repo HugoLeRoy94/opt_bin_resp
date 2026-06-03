@@ -27,12 +27,14 @@ from src.environment import LigandEnvironment, SymmetricLigandEnvironment, LogNo
 base_dir = Path("../data")
 
 sweep_root = find_latest_sweep(str(base_dir), prefix="single_run")[0]
-run_dir    = Path(sweep_root) / "sample_0"
+runs = list(SweepLoader(sweep_root).iter_run_dirs())
+if not runs:
+    print(f"Error: no run dirs found under {sweep_root}")
+    sys.exit(1)
+_, run_dir_str = runs[0]
+run_dir = Path(run_dir_str)
 
 print(f"Analysing run: {run_dir}")
-if not run_dir.exists():
-    print(f"Error: {run_dir} does not exist.")
-    sys.exit(1)
 
 # %% 2. Load and print configuration
 config_path = run_dir / "config.json"

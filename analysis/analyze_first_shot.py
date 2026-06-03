@@ -330,17 +330,19 @@ except FileNotFoundError:
     print("[skip] homomers sweep not found — skipping Panel F")
 
 if homomers_sweep:
+    _all_runs = list(SweepLoader(homomers_sweep).iter_run_dirs())
     for avg_d, spread, title in UMAP_CONDITIONS:
-        run_dir = (Path(homomers_sweep)
-                   / f"average_family_distance_{avg_d}"
-                   / f"family_spread_{spread}"
-                   / "n_ligands_100"
-                   / "sample_0"
-                   / "n_genes_3")
-
-        if not run_dir.exists():
-            print(f"  [skip] {title}: directory not found at {run_dir}")
+        match = next(
+            (rd for cfg, rd in _all_runs
+             if cfg.average_family_distance == avg_d
+             and cfg.family_spread == spread
+             and cfg.n_genes == 3),
+            None,
+        )
+        if match is None:
+            print(f"  [skip] {title}: no matching run found in {homomers_sweep}")
             continue
+        run_dir = Path(match)
 
         try:
             loader     = SingleRunLoader(str(run_dir))

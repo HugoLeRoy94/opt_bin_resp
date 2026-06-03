@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-# First-shot homomer arm (§6 of narrative_and_next_steps.md).
-# Sweeps n_genes from 3 to 15 with warm-starting; R = n_genes (one homomer per gene).
-# Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
+# First-shot homomer arm: sweeps n_genes from 3 to 19 with warm-start chain on n_genes.
+# R = n_genes (one homomer per gene).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_1_0/first_shot_homomers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/first_shot_homomers.py
 
 import time
 import sys
@@ -13,19 +12,24 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
+N_LIG = 200
+CONC_MEAN  = (-5.5,) * N_LIG
+CONC_STD   = (1.0,)  * N_LIG
+P_PRESENCE = (0.1,)  * N_LIG
+
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 200,
+    n_ligands               = N_LIG,
     latent_dim              = 5,
-    family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
+    family_spread           = 0.15,
     average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 20,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    n_presence_blocks      = 20,
     rho_block              = 0.5,
     block_shared_conc_mean = True,
 
@@ -33,13 +37,13 @@ config = RunConfig(
     use_interface_model = True,
 
     # --- Concentration ---
-    conc_model_type  = "lognormal",
-    conc_mean_range  = (-7.0, -4.0),
-    conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.05,  0.2),
+    conc_model_type = "lognormal",
+    conc_mean       = CONC_MEAN,
+    conc_std        = CONC_STD,
+    p_presence      = P_PRESENCE,
 
     # --- Physics ---
-    k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
+    k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
     entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
@@ -47,24 +51,19 @@ config = RunConfig(
     # --- Training ---
     epochs=500, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
-    measurement_fns=[
+    measurement_fns=(
         "full_array_entropy",
-        #"codeword_entropy",
-        #"mean_receptor_distance",
-        #"mean_specialization_index",
         "mutual_information_ligand",
         "mutual_information_concentration",
         "mutual_information_family",
-        "mutual_information_block"
-    ],
+        "mutual_information_block",
+    ),
 
     # --- Sweep ---
-    n_genes         = list(range(3, 20)),   # [3, 4, …, 15] — warm-start axis
-    n_samples       = 1,
-    sweep_name      = "homomers",
-    base_folder     = "/app/data/first_shot",
-    warm_start_axis = "n_genes",
-    seed            = 0,
+    n_genes     = list(range(3, 20)),
+    sweep_name  = "homomers",
+    base_folder = "/app/data/first_shot",
+    warm_start  = True,
 )
 
 print(config)

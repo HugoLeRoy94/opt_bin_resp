@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-# First-shot heteromer arm: cascading strategy, n_genes = 3 (§6, narrative_and_next_steps.md).
-# Receptor fan-out warm-start: each n_receptors > 3 branches from the (n_genes=3, n_receptors=3) baseline.
-# Environment axis: n_ligands × average_family_distance.  D = 7 fixed.
+# Heteromers cascading strategy, n_genes = 3.
+# Sweeps n_receptors from 3 to 49; n_genes fixed — no warm-start.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_2_0/het_casc_ng3.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/het_casc_ng3.py
 
 import time
 import sys
@@ -13,10 +12,15 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
+N_LIG = 200
+CONC_MEAN  = (-5.5,) * N_LIG
+CONC_STD   = (1.0,)  * N_LIG
+P_PRESENCE = (0.15,) * N_LIG
+
 config = RunConfig(
     # --- Environment ---
     n_families              = 5,
-    n_ligands               = 200,
+    n_ligands               = N_LIG,
     latent_dim              = 10,
     family_spread           = 0.15,
     average_family_distance = 1.0,
@@ -25,7 +29,7 @@ config = RunConfig(
     observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 20,     # independent Bernoulli baseline (rho_block=0 disables copula)
+    n_presence_blocks      = 20,
     rho_block              = 0.5,
     block_shared_conc_mean = True,
 
@@ -33,13 +37,13 @@ config = RunConfig(
     use_interface_model = True,
 
     # --- Concentration ---
-    conc_model_type  = "lognormal",
-    conc_mean_range  = (-8.0, -3.0),
-    conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.05,  0.25),
+    conc_model_type = "lognormal",
+    conc_mean       = CONC_MEAN,
+    conc_std        = CONC_STD,
+    p_presence      = P_PRESENCE,
 
     # --- Physics ---
-    k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
+    k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
     entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
@@ -47,27 +51,16 @@ config = RunConfig(
     # --- Training ---
     epochs=5000, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
-    measurement_fns=[
-        "full_array_entropy",
-        #"codeword_entropy",
-        #"mean_receptor_distance",
-        #"mean_specialization_index",
-        #"mutual_information_ligand",
-        #"mutual_information_concentration",
-        #"mutual_information_family",
-        #"mutual_information_block"
-    ],
+    measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
     n_genes                    = 3,
-    n_receptors                = list(range(3, 50)),   # [3, 4, …, 15] — warm-start axis
+    n_receptors                = list(range(3, 50)),
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
-    n_samples                  = 5,
     sweep_name                 = "ng3",
     base_folder                = "/app/data/fig1",
-    warm_start_axis            = None,  # fan-out from (n_genes=3, n_receptors=3) baseline
-    seed                       = 4,
+    warm_start                 = False,
 )
 
 print(config)

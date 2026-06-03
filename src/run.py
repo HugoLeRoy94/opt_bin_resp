@@ -455,4 +455,16 @@ class SweepRunner:
                     runner        = SimulationRunner(config=run_cfg, logger=node_logger)
                     prev_env      = runner.run(prev_env=warm_env)
                     prev_cfg      = run_cfg
+
+                    # Index the completed run — best-effort, never aborts sweep
+                    try:
+                        import os as _os
+                        from src.db import add_run as _db_add_run
+                        _db_add_run(
+                            node_logger.run_dir,
+                            _os.path.join(self.config.base_folder, "runs.db"),
+                        )
+                    except Exception:
+                        pass
+
                     pbar.update(1)

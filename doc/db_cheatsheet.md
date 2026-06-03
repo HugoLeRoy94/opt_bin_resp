@@ -9,7 +9,7 @@ All paths stored in the DB are **relative to that directory**.
 
 ```bash
 # Create the DB for the first time (also creates the directory if needed)
-python -m src.db init /app/data/fig1/runs.db
+python -m src.db init /mnt/hcleroy/Postdoc2/octopus_smelling/opt_bin_resp/data/[..]/runs.db
 
 # Index everything already on disk
 python -m src.db backfill /app/data/fig1/runs.db

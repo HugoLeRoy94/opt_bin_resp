@@ -247,7 +247,9 @@ def _upsert(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
 
 def init(db_path: str) -> None:
     """Create runs.db with the base schema.  No-op if the table already exists."""
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if not os.path.isdir(parent):
+        raise FileNotFoundError(f"Directory does not exist: {parent}")
     col_defs = ",\n    ".join(f"{name} {typ}" for name, typ in _ALL_BASE_COLS)
     ddl = f"CREATE TABLE IF NOT EXISTS runs (\n    {col_defs}\n)"
     def _do():

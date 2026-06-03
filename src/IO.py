@@ -170,6 +170,10 @@ class SweepLoader:
                     self.config = RunConfig.from_dict(json.load(f))
             except Exception as e:
                 warnings.warn(f"Could not parse sweep_config.json in {sweep_root}: {e}")
+        _candidate = os.path.join(
+            os.path.dirname(os.path.abspath(sweep_root)), "runs.db"
+        )
+        self._db_path = _candidate if os.path.exists(_candidate) else None
 
     def iter_run_dirs(self):
         """Yields (single_cfg, run_dir) for every run directory found on disk.
@@ -189,15 +193,33 @@ class SweepLoader:
 
     def load_all_test_results(self) -> pd.DataFrame:
         """
-        Crawls the sweep, loads all test_results.json files, and returns a
-        DataFrame with one row per run.  Each metric column holds the mean over
-        the test-sample array stored in the JSON.
-
-        Column priority (highest wins):
-          2. metric values    (from test_results.json)
-          1. scalar config fields (from single_cfg — skips list-valued fields
-             such as conc_mean, p_presence, receptor_indices).
+        Returns a DataFrame with one row per completed run.
+        Uses runs.db when available (fast); falls back to disk crawl otherwise.
+        Metric columns are named without the '_mean' suffix in both paths.
         """
+        if self._db_path is not None:
+            return self._load_test_results_from_db()
+        return self._load_test_results_from_disk()
+
+    def _load_test_results_from_db(self) -> pd.DataFrame:
+        import sqlite3 as _sqlite3
+        sweep_subdir = os.path.basename(os.path.abspath(self.sweep_root))
+        pattern = f"{sweep_subdir}/*"
+        with _sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = _sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE path GLOB ? AND status='complete'",
+                (pattern,),
+            ).fetchall()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame([dict(r) for r in rows])
+        df = df.rename(columns={c: c[:-5] for c in df.columns if c.endswith("_mean")})
+        drop = {"path", "sweep_name", "sweep_date", "status",
+                "run_mtime", "git_hash", "created", "modified"}
+        return df.drop(columns=[c for c in drop if c in df.columns])
+
+    def _load_test_results_from_disk(self) -> pd.DataFrame:
         rows = []
         for single_cfg, run_dir in self.iter_run_dirs():
             json_path = os.path.join(run_dir, "test_results.json")
@@ -205,15 +227,40 @@ class SweepLoader:
                 continue
             with open(json_path) as f:
                 data = json.load(f)
-
-            # Priority 1 — scalar config fields (background context)
             row = {k: v for k, v in _dc_asdict(single_cfg).items()
                    if not isinstance(v, list)}
-            # Priority 2 — metric means
             row.update({k: float(np.mean(v)) for k, v in data.items()
                         if isinstance(v, list)})
             rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    def find_run_dir(self, **filters) -> "str | None":
+        """Return the absolute path of the first run matching all filter kwargs.
+
+        Filter keys must be scalar SingleRunConfig field names
+        (e.g. n_genes=3, average_family_distance=1.0).
+        Uses runs.db when available; falls back to iter_run_dirs crawl.
+        """
+        if self._db_path is not None:
+            import sqlite3 as _sqlite3
+            sweep_subdir = os.path.basename(os.path.abspath(self.sweep_root))
+            conds = [f"path GLOB '{sweep_subdir}/*'"]
+            vals = []
+            for k, v in filters.items():
+                conds.append(f"{k} = ?")
+                vals.append(v)
+            sql = "SELECT path FROM runs WHERE " + " AND ".join(conds) + " LIMIT 1"
+            with _sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = _sqlite3.Row
+                row = conn.execute(sql, vals).fetchone()
+            if row is None:
+                return None
+            data_root = os.path.dirname(os.path.abspath(self._db_path))
+            return os.path.join(data_root, row["path"])
+        for cfg, run_dir in self.iter_run_dirs():
+            if all(getattr(cfg, k, None) == v for k, v in filters.items()):
+                return run_dir
+        return None
 
     def load_all_histories(self) -> pd.DataFrame:
         """

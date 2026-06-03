@@ -103,7 +103,7 @@ if homo_base.exists():
         except FileNotFoundError:
             continue
 
-        for meta, single_cfg, run_dir in sweep_loader.iter_run_dirs():
+        for single_cfg, run_dir in sweep_loader.iter_run_dirs():
             if not os.path.exists(run_dir):
                 continue
             try:

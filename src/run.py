@@ -17,8 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import inspect
-from functools import reduce
-from operator import mul
+from datetime import datetime
 from tqdm import tqdm
 from typing import Optional
 
@@ -411,14 +410,8 @@ class SimulationRunner:
 
 def _sweep_total_steps(config: RunConfig) -> int:
     """Counts total SimulationRunner.run() calls for the tqdm bar."""
-    sweep = dict(config._sweep_axes())
-    warm_axis = config.warm_start_axis
-    if warm_axis and warm_axis in sweep:
-        warm_steps = len(sweep.pop(warm_axis))
-    else:
-        warm_steps = 1
-    ind_size = reduce(mul, (len(v) for v in sweep.values()), 1)
-    return ind_size * config.n_samples * warm_steps
+    axes = config._axes()
+    return len(next(iter(axes.values()))) if axes else 1
 
 
 class SweepRunner:
@@ -433,70 +426,33 @@ class SweepRunner:
         print(f"\nInitiating sweep: {self.master_logger.sweep_root}")
         print(f"Total runs: {total}\n")
 
-        # Guard: gene-growth and receptor fan-out warm-starts are mutually exclusive.
-        _warm_spec = self.config.warm_start_axis
-        _warm_axes = (
-            [_warm_spec] if isinstance(_warm_spec, str)
-            else (_warm_spec or [])
-        )
-        if 'n_genes' in _warm_axes and 'n_receptors' in _warm_axes:
-            raise ValueError(
-                "warm_start_axis cannot include both 'n_genes' and 'n_receptors'. "
-                "Gene-growth warm-starting and receptor fan-out warm-starting are "
-                "mutually exclusive — use one or the other."
-            )
+        axes = self.config._axes()
 
         with tqdm(total=total, desc="Sweep Progress", dynamic_ncols=True) as pbar:
-            for meta, trajectory in self.config.generate_trajectories():
-                prev_env   = None  # trained env from the immediately preceding step
-                prev_cfg   = None  # SingleRunConfig of the preceding step
-                square_env = None  # cached env from the step where n_genes == n_receptors
+            for trajectory in self.config.generate_trajectories():
+                prev_env = None  # trained env from the immediately preceding step
+                prev_cfg = None  # SingleRunConfig of the preceding step
 
                 for run_cfg in trajectory:
-                    # --- Build human-readable tqdm label ---
-                    meta_str  = " | ".join(f"{k}: {v}" for k, v in sorted(meta.items()))
-                    warm_axis = self.config.warm_start_axis
-                    if isinstance(warm_axis, str) and isinstance(getattr(self.config, warm_axis, None), list):
-                        warm_str = f" | {warm_axis}: {getattr(run_cfg, warm_axis)}"
-                    else:
-                        warm_str = ""
-                    tqdm.write(f"--- {meta_str}{warm_str} ---")
+                    # --- Build human-readable tqdm label (scalar axes only) ---
+                    label_parts = [
+                        f"{k}: {getattr(run_cfg, k)}"
+                        for k in sorted(axes.keys())
+                        if axes[k] and not isinstance(axes[k][0], (list, tuple))
+                    ]
+                    tqdm.write(f"--- {' | '.join(label_parts)} ---")
 
-                    # --- 3-way warm-start heuristic ---
-                    if prev_cfg is None:
-                        # First step in the trajectory: always cold start.
+                    # --- 2-way warm-start: chain only when n_genes grows ---
+                    if prev_cfg is None or not self.config.warm_start:
                         warm_env = None
                     elif prev_cfg.n_genes != run_cfg.n_genes:
-                        # Case 1: n_genes grew → chain warm-start from the previous step.
                         warm_env = prev_env
-                    elif square_env is not None:
-                        # Case 2: n_genes unchanged, receptors expanded → fan-out from
-                        # the cached "square" baseline (the step where n_genes == n_receptors).
-                        warm_env = square_env
                     else:
-                        # Case 3: no applicable warm start → cold start.
-                        import warnings as _warnings
-                        _warnings.warn(
-                            f"No warm-start env available for "
-                            f"(n_genes={run_cfg.n_genes}, n_receptors={run_cfg.n_receptors}): "
-                            f"n_genes did not change and no square baseline "
-                            f"(n_genes == n_receptors) has been run yet in this trajectory. "
-                            f"Starting cold.",
-                            UserWarning, stacklevel=2,
-                        )
                         warm_env = None
 
-                    node_logger = self.master_logger.get_run_logger(meta, run_cfg)
-                    runner      = SimulationRunner(config=run_cfg, logger=node_logger)
-                    prev_env    = runner.run(prev_env=warm_env)
-
-                    # Cache env as the square baseline when n_genes == effective n_receptors.
-                    _effective_nr = (
-                        run_cfg.n_receptors if run_cfg.n_receptors is not None
-                        else run_cfg.n_genes  # homomer default: one receptor per gene
-                    )
-                    if _effective_nr == run_cfg.n_genes:
-                        square_env = prev_env
-
-                    prev_cfg = run_cfg
+                    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    node_logger   = self.master_logger.get_run_logger(run_cfg, run_timestamp)
+                    runner        = SimulationRunner(config=run_cfg, logger=node_logger)
+                    prev_env      = runner.run(prev_env=warm_env)
+                    prev_cfg      = run_cfg
                     pbar.update(1)

@@ -4,7 +4,7 @@
 # Warm-starts over n_receptors from 5 to 15; n_genes fixed.
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_heteromers_casc_ng5.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_2_0/het_casc_ng5.py
 
 import time
 import sys
@@ -17,9 +17,9 @@ config = RunConfig(
     # --- Environment ---
     n_families              = 5,
     n_ligands               = 200,
-    latent_dim              = 5,
-    family_spread           = [0.1,0.15,0.2],
-    average_family_distance = [0.5, 1.0, 1.5],
+    latent_dim              = 10,
+    family_spread           = 0.15,
+    average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
@@ -30,7 +30,7 @@ config = RunConfig(
     block_shared_conc_mean = True,
 
     # --- Interface model ---
-    use_interface_model = False,
+    use_interface_model = True,
 
     # --- Concentration ---
     conc_model_type  = "lognormal",
@@ -66,7 +66,7 @@ config = RunConfig(
     n_samples                  = 5,
     sweep_name                 = "ng5",
     base_folder                = "/app/data/fig1",
-    warm_start_axis            = "n_receptors",  # fan-out from (n_genes=3, n_receptors=3) baseline
+    warm_start_axis            = None,  # fan-out from (n_genes=3, n_receptors=3) baseline
     seed                       = 4,
 )
 

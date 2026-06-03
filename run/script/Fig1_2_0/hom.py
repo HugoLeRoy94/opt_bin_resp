@@ -4,7 +4,7 @@
 # Sweeps n_genes from 3 to 15 with warm-starting; R = n_genes (one homomer per gene).
 # Environment axis: n_ligands × average_family_distance.  D = 10 fixed.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_first_shot/first_shot_homomers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/Fig1_2_0/hom.py
 
 import time
 import sys
@@ -17,9 +17,9 @@ config = RunConfig(
     # --- Environment ---
     n_families              = 5,
     n_ligands               = 200,
-    latent_dim              = 5,
-    family_spread           = [0.1,0.15,0.2],   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
-    average_family_distance = [0.5,1.0,1.5],
+    latent_dim              = 10,
+    family_spread           = 0.15,   # ρ = 0.15·√10 ≈ 0.47 — gradient-rich regime
+    average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
@@ -33,7 +33,7 @@ config = RunConfig(
     conc_model_type  = "lognormal",
     conc_mean_range  = (-8.0, -3.0),
     conc_std_range   = (1.0,  1.0),
-    p_presence_range = (0.05,  0.25),
+    p_presence_range = (0.05,  0.2),
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=[1.0],
@@ -42,7 +42,7 @@ config = RunConfig(
     entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=500, lr=0.05, use_scheduler=False,
+    epochs=5000, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=[
         "full_array_entropy",
@@ -56,11 +56,11 @@ config = RunConfig(
     ],
 
     # --- Sweep ---
-    n_genes         = list(range(3, 400)),   # [3, 4, …, 15] — warm-start axis
+    n_genes         = list(range(3, 50)),   # [3, 4, …, 15] — warm-start axis
     n_samples       = 5,
     sweep_name      = "homomers",
     base_folder     = "/app/data/fig1",
-    warm_start_axis = "n_genes",
+    warm_start_axis = None,
     seed            = 0,
 )
 

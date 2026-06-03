@@ -58,7 +58,7 @@ if stats_path.exists():
     if "full_array_entropy" in df.columns:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(x_vals, df["full_array_entropy_blocked"], linewidth=2)
-        ax.plot(x_vals, df["full_array_entropy"], linewidth=2, color="tab:blue")
+        ax.plot(x_vals, df["full_array_entropy"], linewidth=2)
         ax.set_title("Full Array Entropy over Optimization", fontweight="bold")
         ax.set_xlabel("Epoch"); ax.set_ylabel("Full Array Entropy")
         ax.grid(True, alpha=0.3)

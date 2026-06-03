@@ -3,7 +3,7 @@
 # First-shot homomer arm: sweeps n_genes from 3 to 19 with warm-start chain on n_genes.
 # R = n_genes (one homomer per gene).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/first_shot_homomers.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/first_shot_homomers.py
 
 import time
 import sys
@@ -64,7 +64,7 @@ config = RunConfig(
     # --- Sweep ---
     n_genes     = list(range(3, 20)),
     sweep_name  = "homomers",
-    base_folder = "/app/data/first_shot",
+    base_folder = "/app/data/test",
     warm_start  = True,
 )
 

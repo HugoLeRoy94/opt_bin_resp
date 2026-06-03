@@ -3,3 +3,4 @@
 *.pyc
 *.png
 data/
+data_nested/

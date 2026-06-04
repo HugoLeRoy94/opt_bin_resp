@@ -281,6 +281,33 @@ class SweepLoader:
 
 
 # ==========================================
+# RUN FILE HELPERS
+# ==========================================
+
+def run_files(rel_path: str, data_root: str) -> dict:
+    """Return absolute paths to all standard files for a run.
+
+    Parameters
+    ----------
+    rel_path  : relative path as stored in the DB `path` column
+    data_root : directory that contains runs.db (parent of all sweep dirs)
+
+    Returns a dict with keys: run_dir, config, stats, test_results,
+    best_model, checkpoints.  Values are absolute path strings regardless
+    of whether the file currently exists on disk.
+    """
+    run_dir = os.path.join(data_root, rel_path)
+    return {
+        "run_dir":      run_dir,
+        "config":       os.path.join(run_dir, "config.json"),
+        "stats":        os.path.join(run_dir, "stats.csv"),
+        "test_results": os.path.join(run_dir, "test_results.json"),
+        "best_model":   os.path.join(run_dir, "best_model.pt"),
+        "checkpoints":  os.path.join(run_dir, "checkpoints"),
+    }
+
+
+# ==========================================
 # MODULE-LEVEL UTILITIES
 # ==========================================
 

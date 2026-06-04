@@ -57,14 +57,15 @@ _SKIP_CFG = _TUPLE_FIELDS | frozenset({"receptor_indices"})
 
 # Fixed metadata columns; path is the PRIMARY KEY
 _META_COLS: list[tuple[str, str]] = [
-    ("path",       "TEXT PRIMARY KEY"),
-    ("sweep_name", "TEXT"),
-    ("sweep_date", "TEXT"),
-    ("status",     "TEXT"),
-    ("run_mtime",  "REAL"),
-    ("git_hash",   "TEXT"),
-    ("created",    "TEXT"),
-    ("modified",   "TEXT"),
+    ("path",          "TEXT PRIMARY KEY"),
+    ("sweep_name",    "TEXT"),
+    ("sweep_date",    "TEXT"),
+    ("receptor_type", "TEXT"),   # "homomer" | "heteromer"
+    ("status",        "TEXT"),
+    ("run_mtime",     "REAL"),
+    ("git_hash",      "TEXT"),
+    ("created",       "TEXT"),
+    ("modified",      "TEXT"),
 ]
 
 # Scalar SingleRunConfig fields → schema columns
@@ -141,6 +142,15 @@ def _ensure_metric_cols(conn: sqlite3.Connection, metric_keys: list[str]) -> Non
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
 
 
+def _ensure_schema_cols(conn: sqlite3.Connection) -> None:
+    """Add any base schema columns missing from an older DB (e.g. receptor_type)."""
+    existing = _existing_cols(conn)
+    for name, typ in _ALL_BASE_COLS:
+        bare_typ = typ.split()[0]   # strip PRIMARY KEY / NOT NULL etc.
+        if name not in existing:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {bare_typ}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Metadata helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -203,14 +213,15 @@ def _build_row(run_dir: str, db_path: str) -> tuple[Optional[dict[str, Any]], Op
     now_iso              = datetime.utcnow().isoformat(timespec="seconds")
 
     row: dict[str, Any] = {
-        "path":       rel_path,
-        "sweep_name": sweep_name,
-        "sweep_date": sweep_date,
-        "status":     status,
-        "run_mtime":  os.path.getmtime(run_dir),
-        "git_hash":   _git_hash(),
-        "created":    now_iso,
-        "modified":   now_iso,
+        "path":          rel_path,
+        "sweep_name":    sweep_name,
+        "sweep_date":    sweep_date,
+        "receptor_type": "homomer" if cfg.n_receptors is None else "heteromer",
+        "status":        status,
+        "run_mtime":     os.path.getmtime(run_dir),
+        "git_hash":      _git_hash(),
+        "created":       now_iso,
+        "modified":      now_iso,
     }
     row.update(_cfg_values(cfg))
 
@@ -273,6 +284,7 @@ def add_run(run_dir: str, db_path: str) -> None:
     metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
     def _do():
         with _connect(db_path) as conn:
+            _ensure_schema_cols(conn)
             _ensure_metric_cols(conn, metric_keys)
             _upsert(conn, row)
     _retry(_do)
@@ -299,6 +311,7 @@ def backfill(db_path: str) -> None:
         metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
         def _do(r=row, mk=metric_keys):
             with _connect(db_path) as conn:
+                _ensure_schema_cols(conn)
                 _ensure_metric_cols(conn, mk)
                 _upsert(conn, r)
         _retry(_do)
@@ -330,6 +343,7 @@ def sync(db_path: str) -> None:
         metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
         def _do(r=row, mk=metric_keys):
             with _connect(db_path) as conn:
+                _ensure_schema_cols(conn)
                 _ensure_metric_cols(conn, mk)
                 _upsert(conn, r)
         _retry(_do)

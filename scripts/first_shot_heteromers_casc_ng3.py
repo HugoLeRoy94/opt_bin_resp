@@ -3,7 +3,8 @@
 # First-shot heteromers: cascading strategy, n_genes = 3.
 # Sweeps n_receptors from 3 to 29; n_genes fixed — no warm-start.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/first_shot_heteromers_casc_ng3.py
+
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/first_shot_heteromers_casc_ng3.py
 
 import time
 import sys
@@ -12,10 +13,10 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG = 50
-CONC_MEAN  = (-5.5,) * N_LIG
-CONC_STD   = (1.0,)  * N_LIG
-P_PRESENCE = (0.1,)  * N_LIG
+N_LIG = 200
+CONC_MEAN  = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
+CONC_STD   = (1.0,) * N_LIG
+P_PRESENCE = tuple(np.random.uniform(0.05, 0.3, N_LIG))
 
 config = RunConfig(
     # --- Environment ---
@@ -26,11 +27,11 @@ config = RunConfig(
     average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.0,
+    observation_noise_sigma = 0.01,
 
     # --- Presence correlation (Gaussian copula) ---
-    n_presence_blocks      = 5,
-    rho_block              = 0.3,
+    n_presence_blocks      = 20,
+    rho_block              = 0.5,
     block_shared_conc_mean = True,
 
     # --- Interface model ---
@@ -55,11 +56,11 @@ config = RunConfig(
 
     # --- Sweep ---
     n_genes                    = 3,
-    n_receptors                = list(range(3, 30)),
+    n_receptors                = list(range(3, 20)),
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
     sweep_name                 = "casc_ng3",
-    base_folder                = "/app/data/first_shot",
+    base_folder                = "/app/data/test",
     warm_start                 = False,
 )
 

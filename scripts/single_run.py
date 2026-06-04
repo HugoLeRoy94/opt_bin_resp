@@ -10,9 +10,8 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_LIG = 100
-CONC_MEAN  = (-5.5,) * N_LIG
-CONC_STD   = (1.0,)  * N_LIG
-P_PRESENCE = (0.2,)  * N_LIG
+CONC_MEAN = (-5.5,) * N_LIG
+CONC_STD  = (1.0,)  * N_LIG
 
 config = RunConfig(
     # --- Environment ---
@@ -25,9 +24,10 @@ config = RunConfig(
     distribution_type="gaussian",
     observation_noise_sigma=0.0,
 
-    # --- Presence correlation (Gaussian copula) ---
+    # --- Presence (hierarchical sampler) ---
     n_presence_blocks=1,
-    rho_block=0.0,
+    mu_sources=1.0,
+    mu_ligands_per_source=3.0,
     block_shared_conc_mean=False,
 
     # --- Interface model ---
@@ -37,7 +37,6 @@ config = RunConfig(
     conc_model_type="lognormal",
     conc_mean=CONC_MEAN,
     conc_std=CONC_STD,
-    p_presence=P_PRESENCE,
 
     # --- Physics ---
     n_genes=5,

@@ -7,11 +7,13 @@
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/first_shot_heteromers_casc_ng3.py
 
 import time
+import numpy as np
 import sys
 sys.path.append('/app')
 
 from src.config import RunConfig
 from src.run import SweepRunner
+
 
 N_LIG = 200
 CONC_MEAN  = tuple(np.random.uniform(-8.0, -3.0, N_LIG))

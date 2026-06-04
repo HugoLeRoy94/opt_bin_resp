@@ -37,7 +37,7 @@ def _run_rel_path(run_config: RunConfig, single_cfg: SingleRunConfig, run_timest
         run_{timestamp}/
 
     Only scalar-valued axes appear in directory names; tuple-typed axes
-    (conc_mean, conc_std, p_presence, kernel_params, measurement_fns) are
+    (conc_mean, conc_std, kernel_params, measurement_fns) are
     too large for path components and are identified from the saved config.json.
     The timestamp leaf guarantees uniqueness when identical parameters are run
     multiple times.
@@ -143,10 +143,12 @@ class SingleRunLoader:
         with open(self.config_path) as f:
             data = json.load(f)
         valid_keys = set(SingleRunConfig.__dataclass_fields__)
+        # Silently drop stale keys from old configs (p_presence, rho_block, etc.)
         filtered = {k: v for k, v in data.items() if k in valid_keys}
-        # Backward compat: Gaussian-copula fields added after initial release.
+        # Backward compat: presence-model fields
         filtered.setdefault("n_presence_blocks", 1)
-        filtered.setdefault("rho_block", 0.0)
+        filtered.setdefault("mu_sources", 1.0)
+        filtered.setdefault("mu_ligands_per_source", 1.0)
         filtered.setdefault("block_shared_conc_mean", False)
         return SingleRunConfig(**filtered)
 

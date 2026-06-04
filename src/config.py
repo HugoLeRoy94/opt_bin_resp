@@ -5,7 +5,7 @@ config.py — Run configuration and trajectory generation.
 
 SingleRunConfig: scalar-only config consumed by SimulationRunner.
 RunConfig: every parameter field accepts T (fixed) or List[T] (iteration axis).
-Fields whose values are semantically arrays (conc_mean, conc_std, p_presence,
+Fields whose values are semantically arrays (conc_mean, conc_std,
 kernel_params, measurement_fns) use Tuple when fixed and List[Tuple] when iterated,
 so isinstance(val, list) cleanly identifies all iteration axes with no special-casing.
 
@@ -20,7 +20,7 @@ _SWEEP_CONTROL_FIELDS = frozenset({"sweep_name", "base_folder", "warm_start"})
 
 # Fields whose values are arrays (tuple = fixed, list-of-tuples = axis).
 # Used when converting RunConfig values to lists for SingleRunConfig.
-_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "conc_std", "p_presence"})
+_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "conc_std"})
 
 
 @dataclass
@@ -44,19 +44,20 @@ class SingleRunConfig:
     distribution_type:       str
     observation_noise_sigma: float
 
-    # --- Presence correlation (Gaussian copula) ---
-    # n_presence_blocks: number of source blocks; ligands within a block co-occur.
-    # rho_block: within-block Gaussian correlation; 0 → independent Bernoulli.
-    # block_shared_conc_mean: share one concentration mean per block (ignored when rho_block=0).
-    n_presence_blocks:     int
-    rho_block:             float
-    block_shared_conc_mean: bool
+    # --- Presence (hierarchical source→ligand sampler) ---
+    # n_presence_blocks: K source blocks; partition is deterministic from (n_ligands, K).
+    # mu_sources: Poisson rate for the number of active sources per sniff.
+    # mu_ligands_per_source: Poisson rate for the number of active ligands per source.
+    # block_shared_conc_mean: share one concentration mean per block (gated on n_presence_blocks > 1).
+    n_presence_blocks:       int
+    mu_sources:              float
+    mu_ligands_per_source:   float
+    block_shared_conc_mean:  bool
 
     # --- Concentration ---
     conc_model_type: str
     conc_mean:       List[float]
     conc_std:        List[float]
-    p_presence:      List[float]
 
     # --- Physics ---
     n_genes:               int
@@ -128,7 +129,7 @@ class RunConfig:
     iteration axis: all axes are zipped (not crossed), so every axis list must
     share the same length L, producing exactly L steps.
 
-    Fields whose values are inherently arrays (conc_mean, conc_std, p_presence,
+    Fields whose values are inherently arrays (conc_mean, conc_std,
     kernel_params, measurement_fns) are typed as Tuple when fixed and
     List[Tuple] when iterated.  isinstance(val, list) therefore cleanly separates
     axes from fixed values with no special-case logic.
@@ -138,9 +139,9 @@ class RunConfig:
     When False, steps run in the order they appear in the lists (no sorting,
     always cold-start).
 
-    Concentration parameters (conc_mean, conc_std, p_presence) are supplied
-    directly as tuples (one vector per ligand).  No RNG-based range sampling
-    is performed; the caller is responsible for generating appropriate values.
+    Concentration parameters (conc_mean, conc_std) are supplied directly as
+    tuples (one vector per ligand).  No RNG-based range sampling is performed;
+    the caller is responsible for generating appropriate values.
     """
 
     # --- Environment ---
@@ -153,18 +154,18 @@ class RunConfig:
     distribution_type:       Union[str,   List[str]]
     observation_noise_sigma: Union[float, List[float]]
 
-    # --- Presence correlation (Gaussian copula) ---
+    # --- Presence (hierarchical source→ligand sampler) ---
     n_presence_blocks:      Union[int,   List[int]]
-    rho_block:              Union[float, List[float]]
+    mu_sources:             Union[float, List[float]]
+    mu_ligands_per_source:  Union[float, List[float]]
     block_shared_conc_mean: Union[bool,  List[bool]]
 
     # --- Concentration model ---
     conc_model_type: Union[str, List[str]]
 
     # --- Concentration (direct; tuple = fixed, List[Tuple] = axis) ---
-    conc_mean:  Union[Tuple[float, ...], List[Tuple[float, ...]]]
-    conc_std:   Union[Tuple[float, ...], List[Tuple[float, ...]]]
-    p_presence: Union[Tuple[float, ...], List[Tuple[float, ...]]]
+    conc_mean: Union[Tuple[float, ...], List[Tuple[float, ...]]]
+    conc_std:  Union[Tuple[float, ...], List[Tuple[float, ...]]]
 
     # --- Physics ---
     n_genes:               Union[int,   List[int]]
@@ -237,8 +238,8 @@ class RunConfig:
         building SingleRunConfig objects.  When warm_start=False they are emitted
         in natural (input) order.
 
-        Tuple-typed fields (conc_mean, conc_std, p_presence, kernel_params,
-        measurement_fns) are converted to lists when forwarded to SingleRunConfig.
+        Tuple-typed fields (conc_mean, conc_std, kernel_params, measurement_fns)
+        are converted to lists when forwarded to SingleRunConfig.
         """
         axes = self._axes()
 
@@ -316,9 +317,10 @@ class RunConfig:
             d["affinity_kernel"] = "gaussian"
             d["kernel_params"] = (d.pop("affinity_length_scale"),)
 
-        # Backward compat: Gaussian-copula fields added after initial release
+        # Backward compat: presence-model fields
         d.setdefault("n_presence_blocks", 1)
-        d.setdefault("rho_block", 0.0)
+        d.setdefault("mu_sources", 1.0)
+        d.setdefault("mu_ligands_per_source", 1.0)
         d.setdefault("block_shared_conc_mean", False)
 
         return cls(**d)

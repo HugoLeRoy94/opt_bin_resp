@@ -4,7 +4,7 @@ db.py — SQLite lookup-table index over sweep run directories.
 `runs.db` is a *derived* index — `config.json` is ground truth.
 Delete and rebuild any time with `backfill`.  The table holds one row per run
 directory; scalar config fields are columns; list-valued fields (conc_mean,
-p_presence, etc.) are skipped; metric means from test_results.json are added
+conc_mean, kernel_params, etc.) are skipped; metric means from test_results.json are added
 as dynamic columns when first seen.
 
 WAL mode + exponential-backoff retry make concurrent writes from parallel
@@ -78,8 +78,11 @@ _CFG_COLS: list[tuple[str, str]] = [
     ("environment_geometry",       "TEXT"),
     ("distribution_type",          "TEXT"),
     ("observation_noise_sigma",    "REAL"),
+    # Schema change: rho_block removed, mu_sources / mu_ligands_per_source added.
+    # Existing runs.db files require a fresh init or manual migration.
     ("n_presence_blocks",          "INTEGER"),
-    ("rho_block",                  "REAL"),
+    ("mu_sources",                 "REAL"),
+    ("mu_ligands_per_source",      "REAL"),
     ("block_shared_conc_mean",     "INTEGER"),
     ("conc_model_type",            "TEXT"),
     ("n_genes",                    "INTEGER"),

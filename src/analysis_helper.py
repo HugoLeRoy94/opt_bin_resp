@@ -778,7 +778,7 @@ def conditional_entropy_block(activity, block_labels, loss_fn):
     binary indicator that ≥1 ligand from presence block b is present in a
     sample (independent marginal conditioning, one block at a time).
 
-    Mirrors conditional_entropy_family but conditions on the copula source
+    Mirrors conditional_entropy_family but conditions on the source
     blocks (env.presence_block_id) rather than the latent-space families.
     The two partitions are orthogonal by construction, so this captures a
     genuinely different structure.

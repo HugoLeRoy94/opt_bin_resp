@@ -21,21 +21,23 @@ Interface model (use_interface_model=True):
   sample_batch(batch_size, receptor_indices) returns E_open: (B, L, R, k_sub),
   already gathered per receptor interface — no further indexing needed in physics.
 
-Presence sampling — two modes (selected at construction):
-  Independent Bernoulli (default, rho_block=0): M_ℓ ~ Bernoulli(p_ℓ).
-  Gaussian-copula (rho_block > 0, del Castillo et al. PNAS 2026 §1.1):
-    Block-correlated binary mask drawn via a block-diagonal Gaussian copula.
-    Marginals are preserved exactly; within-block Gaussian correlation rho_block
-    produces positive co-occurrence within each source block. The Cholesky factor
-    (copula_chol) and quantile thresholds (copula_tau) are computed once at init.
+Presence sampling — hierarchical source→ligand model:
+  Ligands are partitioned into K = n_presence_blocks source blocks (deterministic
+  seeded partition, block size ≈ n_ligands/K).  Per sniff:
+    1. Draw n_src ~ ZTP(mu_sources, max=K); select n_src distinct blocks uniformly.
+    2. For each active block k (size m_k): draw n_lig ~ ZTP(mu_ligands_per_source,
+       max=m_k); select n_lig distinct ligands within block k uniformly.
+    3. Set M[b, picked] = 1; all else 0.  Every row has S ≥ 1 by construction.
+  Knobs: mu_sources and mu_ligands_per_source (Poisson rates, zero-truncated).
+  ZTP = zero-truncated Poisson sampled on [1, n_max] via unnormalized PMF.
 
 Key numerical tricks:
   - Distance computation: ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B,L,U,D) broadcast.
   - UniformNBall: direction·radius^(1/D) gives uniform density in the N-ball.
   - base_energy init = E[ln c]: EC50 ≈ typical concentration at iteration 0.
+  - Gumbel-top-k selection: argsort of Gumbel noise gives uniform subset draws.
 """
 import math
-import warnings
 import torch
 import copy
 import torch.nn as nn
@@ -218,40 +220,38 @@ class NormalConcentration(ConcentrationModel):
 
 class LigandEnvironment(nn.Module):
     def __init__(self, n_genes: int, n_families: int, conc_model: ConcentrationModel,
-                 n_ligands: int, p_presence: list, observation_noise_sigma: float,
+                 n_ligands: int, observation_noise_sigma: float,
                  latent_dim: int, family_spread: float, distribution_type: str,
-                 avg_family_distance: float, n_presence_blocks: int, rho_block: float,
+                 avg_family_distance: float, n_presence_blocks: int,
+                 mu_sources: float, mu_ligands_per_source: float,
                  affinity_kernel: str = "gaussian", kernel_params: list = None,
                  use_interface_model: bool = False, block_shared_conc_mean: bool = False):
         """
         Args:
-            n_genes: Number of gene units
-            n_families: Number of ligand families
-            conc_model: An INSTANCE of a ConcentrationModel subclass
-            n_ligands: Size of the fixed ligand pool
-            p_presence: Probability of a ligand appearing in a mixture
-            observation_noise_sigma: Observation noise magnitude
-            latent_dim: Dimensionality of the chemical latent space
-            family_spread: Fixed spatial spread (fuzziness) of the ligand families
-            distribution_type: 'gaussian' or 'uniform'
-            avg_family_distance: Target average Euclidean distance between ligand families
-            n_presence_blocks: Number of source blocks for the Gaussian-copula presence
-                               model.  Ignored when rho_block == 0.
-            rho_block: Within-block Gaussian correlation for the copula.  Set to 0
-                       to use the standard independent Bernoulli path.
+            n_genes: Number of gene units.
+            n_families: Number of ligand families.
+            conc_model: Instance of a ConcentrationModel subclass.
+            n_ligands: Size of the fixed ligand pool.
+            observation_noise_sigma: Observation noise magnitude.
+            latent_dim: Dimensionality of the chemical latent space.
+            family_spread: Fixed spatial spread of ligand families.
+            distribution_type: 'gaussian' or 'uniform'.
+            avg_family_distance: Target average Euclidean distance between families.
+            n_presence_blocks: K source blocks (deterministic partition from
+                               (n_ligands, K)).  K=1 means one source, K=n_ligands
+                               means each ligand is its own source.
+            mu_sources: Poisson rate for the zero-truncated draw of active sources
+                        per sniff (capped at K).
+            mu_ligands_per_source: Poisson rate for the zero-truncated draw of
+                                   active ligands per source (capped at block size).
             affinity_kernel: "gaussian" (E_base + E_max*(1−exp(−d²/λ²))) or
-                             "quadratic" (E_base + d²)
-            kernel_params: hyperparameters for the chosen kernel:
-                           [lambda] for "gaussian", [] for "quadratic"
-            use_interface_model: When True, each unit has two faces (+/−) and binding
-                                 energy is computed at the interface between adjacent
-                                 subunits in the ring (see doc/theory/02_biophysics_mwc.md).
-                                 sample_batch() then requires receptor_indices and returns
-                                 (B, L, R, k_sub) pre-gathered pocket energies.
-            block_shared_conc_mean: When True and rho_block > 0, all ligands in the same
-                                    presence block share one concentration mean (the average
-                                    of their individually configured means). Per-sniff
-                                    concentrations still draw independently around that mean.
+                             "quadratic" (E_base + d²).
+            kernel_params: [lambda] for "gaussian", [] for "quadratic".
+            use_interface_model: When True, each unit has two faces (+/−) and
+                                 binding energy is computed at the interface between
+                                 adjacent subunits in the ring.
+            block_shared_conc_mean: When True and n_presence_blocks > 1, all ligands
+                                    in the same block share one concentration mean.
         """
         super().__init__()
         self.n_genes = n_genes
@@ -260,34 +260,27 @@ class LigandEnvironment(nn.Module):
         self.latent_dim = latent_dim
         self.family_spread = family_spread
         self.avg_family_distance = avg_family_distance
-        self.p_presence = p_presence
+        self.mu_sources = mu_sources
+        self.mu_ligands_per_source = mu_ligands_per_source
         self.observation_noise_sigma = observation_noise_sigma
         self.affinity_kernel = affinity_kernel
         self.kernel_params = kernel_params if kernel_params is not None else []
         self.use_interface_model = use_interface_model
         self.n_presence_blocks = n_presence_blocks
-        self.rho_block = rho_block
         self.block_shared_conc_mean = block_shared_conc_mean
-
-        p_tensor = torch.tensor(p_presence, dtype=torch.float32)
-        self.register_buffer('p_presence_tensor', p_tensor)
 
         # ----------------------------------------------------------------------
         # PRESENCE BLOCK PARTITION (independent of ligand families)
-        # Block assignment seeded deterministically from (n_ligands, n_presence_blocks)
-        # so the partition is reproducible without an external RNG argument.
-        # Reference: del Castillo et al., PNAS 2026, §1.1.
+        # Seeded deterministically from (n_ligands, n_presence_blocks).
         # ----------------------------------------------------------------------
         _g = torch.Generator()
         _g.manual_seed(n_ligands * 131071 + n_presence_blocks)  # 131071 is Mersenne prime
         _perm = torch.randperm(n_ligands, generator=_g)
 
-        # Distribute remainder among the first `_rem` blocks (block_size+1 ligands each).
         _block_size = n_ligands // n_presence_blocks
         _rem = n_ligands % n_presence_blocks
         _sizes = torch.full((n_presence_blocks,), _block_size, dtype=torch.long)
         _sizes[:_rem] += 1  # first _rem blocks get one extra ligand
-        # _block_ids_sorted[i] = block index for the i-th ligand in permuted order
         _block_ids_sorted = torch.repeat_interleave(
             torch.arange(n_presence_blocks, dtype=torch.long), _sizes
         )
@@ -295,24 +288,18 @@ class LigandEnvironment(nn.Module):
         _block_ids[_perm] = _block_ids_sorted
         self.register_buffer('presence_block_id', _block_ids)
 
-        # Gaussian-copula buffers — built only when correlation is requested.
-        if rho_block > 0.0:
-            # Block-diagonal correlation matrix: Σ[i,j] = rho_block if same block, else 0;
-            # diagonal = 1.  This is PD for rho ∈ (−1/(m−1), 1) with m = block size.
-            _same_block = (_block_ids.unsqueeze(0) == _block_ids.unsqueeze(1)).float()  # (L,L)
-            _Sigma = _same_block * rho_block
-            _Sigma.fill_diagonal_(1.0)
-            _Sigma = _Sigma + 1e-6 * torch.eye(n_ligands)  # numerical jitter
-            # torch.linalg.cholesky returns lower-triangular L with Σ = L @ L.T
-            _chol = torch.linalg.cholesky(_Sigma)
-            self.register_buffer('copula_chol', _chol)   # (L, L) lower-triangular
-
-            # Precompute standard-normal quantiles: τ_ℓ = Φ⁻¹(p_ℓ)
-            # Threshold rule: M[b,ℓ]=1 iff z[b,ℓ] < τ_ℓ  →  P(M=1) = Φ(τ_ℓ) = p_ℓ exactly.
-            _tau = torch.distributions.Normal(0.0, 1.0).icdf(
-                p_tensor.clamp(1e-6, 1.0 - 1e-6)
-            )
-            self.register_buffer('copula_tau', _tau)     # (L,)
+        # Hierarchical sampler helper buffers.
+        # _block_members: (K, max_m) padded member indices; _block_mask: (K, max_m) validity.
+        _max_m = int(_sizes.max().item())
+        _block_members = torch.zeros(n_presence_blocks, _max_m, dtype=torch.long)
+        _block_valid   = torch.zeros(n_presence_blocks, _max_m, dtype=torch.bool)
+        for _k in range(n_presence_blocks):
+            _idx = (_block_ids == _k).nonzero(as_tuple=False).squeeze(1)
+            _block_members[_k, :len(_idx)] = _idx
+            _block_valid[_k,   :len(_idx)] = True
+        self.register_buffer('_block_members', _block_members)  # (K, max_m)
+        self.register_buffer('_block_valid',   _block_valid)    # (K, max_m)
+        self.register_buffer('_block_sizes',   _sizes)          # (K,)
 
         if distribution_type not in ['gaussian', 'uniform', 'shell']:
             raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
@@ -321,28 +308,25 @@ class LigandEnvironment(nn.Module):
         # 1. Inject the Concentration Strategy
         self.concentration_model = conc_model
 
-        # 1.5 Optional block-shared concentration mean (Change 4 — del Castillo §1.1).
-        # Turbulent transport scrambles concentration ratios even when source co-occurrence
-        # is preserved — so only the *mean* is shared per block; per-sniff concentrations
-        # still draw independently around it.
-        # NOTE: conc_model.mu may already be on CUDA (e.g. when called from
-        # clone_with_extra_units on a model that was moved to GPU). _block_ids is
-        # always built on CPU here, so we resolve the target device from conc_model.mu
-        # and move everything there before doing any arithmetic.
-        if block_shared_conc_mean and rho_block > 0.0:
+        # Optional block-shared concentration mean.
+        # Turbulent transport: co-occurrence is preserved but concentration ratios are not —
+        # only the *mean* is shared per block; per-sniff concentrations draw independently.
+        # NOTE: conc_model.mu may already be on CUDA; _block_ids built on CPU, so resolve
+        # the target device from conc_model.mu and move before arithmetic.
+        if block_shared_conc_mean and n_presence_blocks > 1:
             with torch.no_grad():
-                _mu  = conc_model.mu.clone()                       # (L,) on conc_model device
+                _mu  = conc_model.mu.clone()
                 _dev = _mu.device
-                _ids = _block_ids.long().to(_dev)                  # (L,) — match device
-                # bincount is CPU-only in all PyTorch versions; compute there, then move.
+                _ids = _block_ids.long().to(_dev)
+                # bincount is CPU-only; compute there, then move.
                 _block_cnt = torch.bincount(
                     _block_ids.long(), minlength=n_presence_blocks
-                ).float().to(_dev)                                  # (n_presence_blocks,)
+                ).float().to(_dev)
                 _block_sum = torch.zeros(
                     n_presence_blocks, dtype=_mu.dtype, device=_dev
-                ).scatter_add(0, _ids, _mu)                        # (n_presence_blocks,)
-                _block_mean = _block_sum / _block_cnt              # (n_presence_blocks,)
-                conc_model.mu.copy_(_block_mean[_ids])             # broadcast back to each ligand
+                ).scatter_add(0, _ids, _mu)
+                _block_mean = _block_sum / _block_cnt
+                conc_model.mu.copy_(_block_mean[_ids])
 
         # ----------------------------------------------------------------------
         # MECHANISTIC LATENT SPACE INITIALIZATION
@@ -412,15 +396,10 @@ class LigandEnvironment(nn.Module):
         else:
             self.base_energy_u = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
 
-        # Diagnostics for empty-mixture rejection (updated by sample_batch).
-        self.last_empty_redraws: int = 0
-        self.empty_fraction_ema: float = 0.0
-
     def clone_with_extra_units(self, extra_units: int = 1):
-        """
-        Creates a copy of the environment with additional units.
-        The new units are initialized randomly as in the constructor,
-        while the existing units retain their learned parameters.
+        """Creates a copy of the environment with additional gene units.
+
+        Existing unit parameters are preserved; new units are randomly initialized.
         """
         new_conc_model = copy.deepcopy(self.concentration_model)
 
@@ -433,14 +412,14 @@ class LigandEnvironment(nn.Module):
             n_families=self.n_families,
             conc_model=new_conc_model,
             n_ligands=self.n_ligands,
-            p_presence=self.p_presence,
+            mu_sources=self.mu_sources,
+            mu_ligands_per_source=self.mu_ligands_per_source,
             observation_noise_sigma=self.observation_noise_sigma,
             latent_dim=self.latent_dim,
             family_spread=self.family_spread,
             distribution_type=self.distribution_type,
             avg_family_distance=self.avg_family_distance,
             n_presence_blocks=self.n_presence_blocks,
-            rho_block=self.rho_block,
             affinity_kernel=self.affinity_kernel,
             kernel_params=self.kernel_params,
             use_interface_model=self.use_interface_model,
@@ -556,29 +535,92 @@ class LigandEnvironment(nn.Module):
             return E_base_pocket.unsqueeze(-1) + E_slope_pocket.unsqueeze(-1) * dist_sq
 
     def _sample_masks(self, batch_size: int) -> torch.Tensor:
-        """(B, L) float presence mask.
+        """(B, L) float presence mask via the hierarchical source→ligand sampler.
 
-        Independent Bernoulli path (default, rho_block == 0):
-            M[b,ℓ] ~ Bernoulli(p_ℓ) independently.
+        Per sniff:
+          1. Draw n_src ~ ZTP(mu_sources, K); select n_src distinct source blocks.
+          2. For each active block k: draw n_lig ~ ZTP(mu_ligands_per_source, m_k);
+             select n_lig distinct ligands within block k.
+          3. M[b, picked] = 1; all else 0.
 
-        Gaussian-copula path (rho_block > 0):
-            Draw eps (B, L) ~ N(0, I), correlate as z = eps @ L.T where L is
-            the lower-triangular Cholesky factor stored in copula_chol
-            (torch.linalg.cholesky convention: Σ = L @ L.T → cov(z) = L L.T = Σ).
-            Threshold: M[b,ℓ] = 1 iff z[b,ℓ] < τ_ℓ  →  P(M=1) = Φ(τ_ℓ) = p_ℓ.
-            Marginals are preserved exactly; correlation is absorbed into Σ.
-            Reference: del Castillo et al., PNAS 2026, §1.1.
+        ZTP (zero-truncated Poisson) on [1, n_max]: build unnormalized PMF
+        lambda^s / s! for s = 1..n_max, normalize, sample via torch.multinomial.
+
+        Distinct selection uses Gumbel-top-k (argsort of Gumbel(0,1) noise);
+        entries with rank < n are kept via (arange(width) < n[:, None]).
+
+        # HOOK: the two uniform selections (sources and ligands-per-source) are the
+        # only place where per-block or per-ligand frequency weights would re-enter.
+        # Replace the zero log-weights (torch.zeros) with log(w_k) or log(w_l) to
+        # implement nonuniform sampling over sources or ligands within a source.
         """
-        if not hasattr(self, 'copula_chol'):
-            # Independent Bernoulli — unchanged from the original code path.
-            return torch.bernoulli(
-                self.p_presence_tensor.unsqueeze(0).expand(batch_size, -1)
-            )
-        # Copula path: eps (B,L) iid N(0,1)  →  z = eps @ L.T  →  cov(z_row) = L L.T = Σ
-        device = self.copula_chol.device
-        eps = torch.randn(batch_size, self.n_ligands, device=device)
-        z   = eps @ self.copula_chol.T                        # (B, L); each row ~ N(0, Σ)
-        return (z < self.copula_tau.unsqueeze(0)).float()     # (B, L) multi-hot mask
+        device = self.presence_block_id.device
+        B  = batch_size
+        K  = self.n_presence_blocks
+        L  = self.n_ligands
+        mu_s = self.mu_sources
+        mu_l = self.mu_ligands_per_source
+
+        # ------------------------------------------------------------------
+        # Step 1 — draw n_src per sniff and select distinct source blocks
+        # ------------------------------------------------------------------
+        # Zero-truncated Poisson on [1, K].
+        s_vals = torch.arange(1, K + 1, device=device, dtype=torch.float32)  # (K,)
+        log_pmf_s = s_vals * math.log(mu_s) - torch.lgamma(s_vals + 1)       # (K,) unnorm log-PMF
+        log_pmf_s = log_pmf_s - log_pmf_s.logsumexp(0)
+        # (B,) number of active sources per sniff
+        n_src = torch.multinomial(log_pmf_s.exp(), B, replacement=True) + 1  # values in [1,K]
+
+        # Gumbel-top-k over K blocks: (B, K) — zero log-weights → uniform
+        # HOOK: replace torch.zeros with log(w_block) for nonuniform source weights.
+        gumbel_s = -torch.log(-torch.log(
+            torch.rand(B, K, device=device).clamp(1e-9, 1.0 - 1e-9)
+        ))  # Gumbel(0,1)
+        rank_s = gumbel_s.argsort(dim=1, descending=True)          # (B, K) sorted indices
+        active_src = (torch.arange(K, device=device).unsqueeze(0)  # (B, K) bool
+                      < n_src.unsqueeze(1))                         # True for top n_src entries
+        # active_src_mask[b, k] = True iff source block k is active in sniff b
+        active_src_mask = torch.zeros(B, K, dtype=torch.bool, device=device)
+        active_src_mask.scatter_(1, rank_s, active_src)
+
+        # ------------------------------------------------------------------
+        # Step 2 — for each active block, draw n_lig distinct ligands
+        # ------------------------------------------------------------------
+        M = torch.zeros(B, L, device=device)
+        for k in range(K):
+            m_k = int(self._block_sizes[k].item())
+            members_k = self._block_members[k, :m_k]   # (m_k,) ligand indices
+
+            # (B,) indicator: is block k active in this sniff?
+            active_b = active_src_mask[:, k]            # (B,) bool
+            n_active = int(active_b.sum().item())
+            if n_active == 0:
+                continue
+
+            # Zero-truncated Poisson on [1, m_k].
+            l_vals = torch.arange(1, m_k + 1, device=device, dtype=torch.float32)
+            log_pmf_l = l_vals * math.log(mu_l) - torch.lgamma(l_vals + 1)
+            log_pmf_l = log_pmf_l - log_pmf_l.logsumexp(0)
+            # (n_active,) number of ligands picked per active sniff
+            n_lig = torch.multinomial(log_pmf_l.exp(), n_active, replacement=True) + 1
+
+            # Gumbel-top-k over m_k ligands for the n_active sniffs.
+            # HOOK: replace torch.zeros with log(w_ligand_k) for nonuniform weights.
+            gumbel_l = -torch.log(-torch.log(
+                torch.rand(n_active, m_k, device=device).clamp(1e-9, 1.0 - 1e-9)
+            ))
+            rank_l = gumbel_l.argsort(dim=1, descending=True)           # (n_active, m_k)
+            picked = (torch.arange(m_k, device=device).unsqueeze(0)
+                      < n_lig.unsqueeze(1))                              # (n_active, m_k) bool
+            # picked_mask[i, j] = True iff ligand rank_l[i,j] is among top n_lig[i]
+            picked_mask = torch.zeros(n_active, m_k, dtype=torch.bool, device=device)
+            picked_mask.scatter_(1, rank_l, picked)
+
+            # Map within-block positions back to global ligand indices and scatter into M.
+            global_idx = members_k.unsqueeze(0).expand(n_active, -1)   # (n_active, m_k)
+            M[active_b] = M[active_b].scatter(1, global_idx, picked_mask.float())
+
+        return M
 
     def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
         """(B, L, D) ligand coordinates with i.i.d. observation noise."""
@@ -677,54 +719,18 @@ class LigandEnvironment(nn.Module):
         Returns (classic model):
             E_open:        (B, L, U) — open-state energy per unit per ligand.
             concs:         (B, L)    — sampled concentrations (masked).
-            mixture_masks: (B, L)    — Bernoulli presence mask.
+            mixture_masks: (B, L)    — hierarchical presence mask.
 
         Returns (interface model):
             E_open:        (B, L, R, k_sub) — pocket energy per interface.
             concs:         (B, L)
             mixture_masks: (B, L)
 
-        Empty-mixture rejection:
-            Rows with sum(M, dim=-1) == 0 are redrawn using the same sampling
-            path (independent Bernoulli or Gaussian copula) until all rows have
-            at least one present ligand, conditioning the batch on S >= 1.
-            This slightly inflates the realized per-ligand marginal above the
-            configured p_presence: empty mixtures that would have contributed
-            zeros to every ligand are removed, so the conditional mean presence
-            frequency is p_ℓ / (1 − P(S=0)) ≈ p_ℓ when P(S=0) is small.
-            Diagnostics: self.last_empty_redraws (total redraw operations this
-            call) and self.empty_fraction_ema (EMA of n_redraws / batch_size,
-            α=0.05).  A warning is emitted when the fraction exceeds 20%.
+        The hierarchical sampler guarantees S = sum(M, dim=-1) >= 1 for every
+        row by construction; no rejection loop is needed.
         """
-        _MAX_REDRAW_ATTEMPTS = 100
         masks = self._sample_masks(batch_size)
-        n_redraws = 0
-        for _ in range(_MAX_REDRAW_ATTEMPTS):
-            empty = masks.sum(dim=-1) == 0
-            if not empty.any():
-                break
-            n_empty = int(empty.sum().item())
-            n_redraws += n_empty
-            masks[empty] = self._sample_masks(n_empty)
-        else:
-            raise RuntimeError(
-                f"sample_batch: could not eliminate empty mixtures after "
-                f"{_MAX_REDRAW_ATTEMPTS} redraw attempts. "
-                f"The configured p_presence and/or rho_block={self.rho_block} are "
-                f"pathological for n_ligands={self.n_ligands}. "
-                f"Raise p_presence or reduce rho_block."
-            )
-        self.last_empty_redraws = n_redraws
-        self.empty_fraction_ema = (
-            0.95 * self.empty_fraction_ema + 0.05 * (n_redraws / batch_size)
-        )
-        if n_redraws / batch_size > 0.2:
-            warnings.warn(
-                f"LigandEnvironment: {n_redraws / batch_size:.1%} of presence draws "
-                f"were empty and redrawn (threshold 20%). "
-                f"Consider raising p_presence or reducing rho_block={self.rho_block}.",
-                stacklevel=2,
-            )
+        assert masks.sum(-1).min() >= 1, "hierarchical sampler produced an empty row"
         concs     = self.concentration_model.sample(batch_size) * masks
         v_ligands = self._sample_noisy_ligands(batch_size)
         E_open    = self._compute_energies(v_ligands, receptor_indices)

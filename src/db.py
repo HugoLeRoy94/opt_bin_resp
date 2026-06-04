@@ -188,12 +188,12 @@ def _cfg_values(cfg) -> dict[str, Any]:
 # Row builder
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build_row(run_dir: str, db_path: str) -> Optional[dict[str, Any]]:
-    """Load run_dir and assemble a DB row dict.  Returns None on failure."""
+def _build_row(run_dir: str, db_path: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Load run_dir and assemble a DB row dict.  Returns (row, None) or (None, reason)."""
     try:
         cfg = SingleRunLoader(run_dir).load_config()
-    except Exception:
-        return None
+    except Exception as e:
+        return None, str(e)
 
     data_root            = os.path.dirname(os.path.abspath(db_path))
     rel_path             = os.path.relpath(os.path.abspath(run_dir), data_root)
@@ -222,7 +222,7 @@ def _build_row(run_dir: str, db_path: str) -> Optional[dict[str, Any]]:
             if isinstance(v, list) and v:
                 row[f"{k}_mean"] = float(np.mean(v))
 
-    return row
+    return row, None
 
 
 def _upsert(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
@@ -267,7 +267,7 @@ def add_run(run_dir: str, db_path: str) -> None:
     """
     if not os.path.exists(db_path):
         return
-    row = _build_row(run_dir, db_path)
+    row, err = _build_row(run_dir, db_path)
     if row is None:
         return
     metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
@@ -281,15 +281,20 @@ def add_run(run_dir: str, db_path: str) -> None:
 def backfill(db_path: str) -> None:
     """Crawl the directory containing runs.db and upsert every discovered run."""
     data_root = os.path.dirname(os.path.abspath(db_path))
-    count = 0
+    print(f"Scanning: {data_root}")
+    count = skipped = 0
     for root, _dirs, files in os.walk(data_root):
         if "config.json" not in files:
             continue
         rel = os.path.relpath(root, data_root)
         if not _TS_RE.search(rel):
+            print(f"  [skip] no timestamp in path: {rel}")
+            skipped += 1
             continue
-        row = _build_row(root, db_path)
+        row, err = _build_row(root, db_path)
         if row is None:
+            print(f"  [skip] parse error in {rel}: {err}")
+            skipped += 1
             continue
         metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
         def _do(r=row, mk=metric_keys):
@@ -298,7 +303,7 @@ def backfill(db_path: str) -> None:
                 _upsert(conn, r)
         _retry(_do)
         count += 1
-    print(f"Backfilled {count} run(s) → {db_path}")
+    print(f"Backfilled {count} run(s), skipped {skipped} → {db_path}")
 
 
 def sync(db_path: str) -> None:
@@ -318,8 +323,9 @@ def sync(db_path: str) -> None:
             continue
         if known.get(rel) == os.path.getmtime(root):
             continue
-        row = _build_row(root, db_path)
+        row, err = _build_row(root, db_path)
         if row is None:
+            print(f"  [skip] parse error in {rel}: {err}")
             continue
         metric_keys = [k[:-5] for k in row if k.endswith("_mean")]
         def _do(r=row, mk=metric_keys):

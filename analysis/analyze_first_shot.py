@@ -42,7 +42,7 @@ output_dir = Path("output")
 output_dir.mkdir(exist_ok=True)
 
 # Metric used for the main H(A) signal.
-METRIC = "full_array_entropy_blocked"
+METRIC = "full_array_entropy"
 
 # (prefix, r_col, n_genes_fixed, label, color, linestyle)
 ARMS = [
@@ -247,6 +247,7 @@ for ax, (prefix, r_col, n_genes_fixed, label, color, ls) in zip(
         p10 = np.array([grp.get_group(r).quantile(0.10) for r in r_vals])
         p90 = np.array([grp.get_group(r).quantile(0.90) for r in r_vals])
         ax.plot(r_vals, med, color=est_color, ls=est_ls, lw=2, label=est_label)
+        ax.scatter(r_vals, med, color=est_color, ls=est_ls, lw=2, label=est_label)
         ax.fill_between(r_vals, p10, p90, color=est_color, alpha=0.5)
     ax.set_title(label, fontsize=10)
     ax.set_xlabel("R")
@@ -257,7 +258,7 @@ for ax, (prefix, r_col, n_genes_fixed, label, color, ls) in zip(
 
 plt.suptitle("Panel D — Estimator cross-check  (should agree for R ≤ 15)", fontsize=12)
 plt.tight_layout()
-plt.savefig(output_dir / "panelD_estimator_comparison.png", dpi=150, bbox_inches="tight")
+#plt.savefig(output_dir / "panelD_estimator_comparison.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 

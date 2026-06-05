@@ -23,7 +23,7 @@ config = RunConfig(
     # --- Environment ---
     n_families              = 5,
     n_ligands               = N_LIG,
-    latent_dim              = 5,
+    latent_dim              = 10,
     family_spread           = 0.15,
     average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
@@ -31,9 +31,9 @@ config = RunConfig(
     observation_noise_sigma = 0.01,
 
     # --- Presence (hierarchical sampler) ---
-    n_presence_blocks      = N_LIG//10,
-    mu_sources             = 4.0,
-    mu_ligands_per_source  = N_LIG//20,
+    n_presence_blocks      = 1,
+    mu_sources             = 1.0,
+    mu_ligands_per_source  = N_LIG//10,
     block_shared_conc_mean = True,
 
     # --- Interface model ---
@@ -48,7 +48,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=5000, lr=0.05, use_scheduler=False,

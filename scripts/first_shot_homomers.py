@@ -30,8 +30,8 @@ config = RunConfig(
     observation_noise_sigma = 0.01,
 
     # --- Presence (hierarchical sampler) ---
-    n_presence_blocks      = N_LIG//5,
-    mu_sources             = 4.0,
+    n_presence_blocks      = 1,#N_LIG//5,
+    mu_sources             = 1,
     mu_ligands_per_source  = N_LIG//10,
     block_shared_conc_mean = True,
 

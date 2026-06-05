@@ -301,6 +301,23 @@ class LigandEnvironment(nn.Module):
         self.register_buffer('_block_valid',   _block_valid)    # (K, max_m)
         self.register_buffer('_block_sizes',   _sizes)          # (K,)
 
+        # Precomputed buffers for vectorized _sample_masks (no Python loop, no GPU-CPU syncs).
+        _safe = _block_members.clone()
+        _safe[~_block_valid] = n_ligands                         # invalid slots → dummy column L
+        self.register_buffer('_safe_block_members', _safe)       # (K, max_m)
+
+        _s_vals = torch.arange(1, n_presence_blocks + 1, dtype=torch.float32)
+        _log_pmf_s = _s_vals * math.log(mu_sources) - torch.lgamma(_s_vals + 1)
+        _log_pmf_s -= _log_pmf_s.logsumexp(0)
+        self.register_buffer('_log_pmf_source', _log_pmf_s)      # (K,)
+
+        _l_vals = torch.arange(1, _max_m + 1, dtype=torch.float32)
+        _log_pmf_l = (_l_vals * math.log(mu_ligands_per_source)
+                      - torch.lgamma(_l_vals + 1)).unsqueeze(0).expand(n_presence_blocks, -1).clone()
+        _log_pmf_l[~_block_valid] = float('-inf')
+        _log_pmf_l -= _log_pmf_l.logsumexp(dim=1, keepdim=True)
+        self.register_buffer('_log_pmf_ligand', _log_pmf_l)      # (K, max_m)
+
         if distribution_type not in ['gaussian', 'uniform', 'shell']:
             raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
         self.distribution_type = distribution_type
@@ -535,92 +552,64 @@ class LigandEnvironment(nn.Module):
             return E_base_pocket.unsqueeze(-1) + E_slope_pocket.unsqueeze(-1) * dist_sq
 
     def _sample_masks(self, batch_size: int) -> torch.Tensor:
-        """(B, L) float presence mask via the hierarchical source→ligand sampler.
+        """(B, L) float presence mask via the vectorized hierarchical source→ligand sampler.
 
-        Per sniff:
-          1. Draw n_src ~ ZTP(mu_sources, K); select n_src distinct source blocks.
-          2. For each active block k: draw n_lig ~ ZTP(mu_ligands_per_source, m_k);
-             select n_lig distinct ligands within block k.
-          3. M[b, picked] = 1; all else 0.
+        All K blocks are processed simultaneously with O(1) CUDA kernel launches —
+        no Python loop, no GPU→CPU synchronization.
 
-        ZTP (zero-truncated Poisson) on [1, n_max]: build unnormalized PMF
-        lambda^s / s! for s = 1..n_max, normalize, sample via torch.multinomial.
-
-        Distinct selection uses Gumbel-top-k (argsort of Gumbel(0,1) noise);
-        entries with rank < n are kept via (arange(width) < n[:, None]).
+          1. Draw n_src ~ ZTP(mu_sources, K) via Gumbel-max; select n_src blocks via Gumbel-top-k.
+          2. Draw n_lig[b,k] ~ ZTP(mu_ligands_per_source, m_k) for all (b,k) via Gumbel-max.
+          3. Select top-n_lig[b,k] ligands within each block via Gumbel-top-k (argsort + scatter).
+          4. scatter_add_ into (B, L+1) buffer; dummy column L absorbs padding from
+             _safe_block_members (invalid slots pre-redirected to index L in __init__).
 
         # HOOK: the two uniform selections (sources and ligands-per-source) are the
         # only place where per-block or per-ligand frequency weights would re-enter.
-        # Replace the zero log-weights (torch.zeros) with log(w_k) or log(w_l) to
+        # Replace _log_pmf_source with log(w_k) or _log_pmf_ligand with log(w_l) to
         # implement nonuniform sampling over sources or ligands within a source.
         """
         device = self.presence_block_id.device
-        B  = batch_size
-        K  = self.n_presence_blocks
-        L  = self.n_ligands
-        mu_s = self.mu_sources
-        mu_l = self.mu_ligands_per_source
+        B, K, L = batch_size, self.n_presence_blocks, self.n_ligands
+        max_m = self._block_members.shape[1]
 
-        # ------------------------------------------------------------------
-        # Step 1 — draw n_src per sniff and select distinct source blocks
-        # ------------------------------------------------------------------
-        # Zero-truncated Poisson on [1, K].
-        s_vals = torch.arange(1, K + 1, device=device, dtype=torch.float32)  # (K,)
-        log_pmf_s = s_vals * math.log(mu_s) - torch.lgamma(s_vals + 1)       # (K,) unnorm log-PMF
-        log_pmf_s = log_pmf_s - log_pmf_s.logsumexp(0)
-        # (B,) number of active sources per sniff
-        n_src = torch.multinomial(log_pmf_s.exp(), B, replacement=True) + 1  # values in [1,K]
+        # --- Step 1: ZTP draw of n_src, Gumbel-top-K to select active source blocks ---
+        # HOOK: replace _log_pmf_source with log(w_block) for nonuniform source weights.
+        n_src = torch.multinomial(self._log_pmf_source.exp(), B, replacement=True) + 1  # (B,)
 
-        # Gumbel-top-k over K blocks: (B, K) — zero log-weights → uniform
-        # HOOK: replace torch.zeros with log(w_block) for nonuniform source weights.
-        gumbel_s = -torch.log(-torch.log(
-            torch.rand(B, K, device=device).clamp(1e-9, 1.0 - 1e-9)
-        ))  # Gumbel(0,1)
-        rank_s = gumbel_s.argsort(dim=1, descending=True)          # (B, K) sorted indices
-        active_src = (torch.arange(K, device=device).unsqueeze(0)  # (B, K) bool
-                      < n_src.unsqueeze(1))                         # True for top n_src entries
-        # active_src_mask[b, k] = True iff source block k is active in sniff b
+        gumbel_s = -torch.log(-torch.log(torch.rand(B, K, device=device).clamp(1e-9, 1 - 1e-9)))
+        rank_s = gumbel_s.argsort(dim=1, descending=True)
+        active_src = torch.arange(K, device=device).unsqueeze(0) < n_src.unsqueeze(1)
         active_src_mask = torch.zeros(B, K, dtype=torch.bool, device=device)
-        active_src_mask.scatter_(1, rank_s, active_src)
+        active_src_mask.scatter_(1, rank_s, active_src)                          # (B, K)
 
-        # ------------------------------------------------------------------
-        # Step 2 — for each active block, draw n_lig distinct ligands
-        # ------------------------------------------------------------------
-        M = torch.zeros(B, L, device=device)
-        for k in range(K):
-            m_k = int(self._block_sizes[k].item())
-            members_k = self._block_members[k, :m_k]   # (m_k,) ligand indices
+        # --- Step 2: ZTP draw of n_lig for every (b, k) simultaneously ---
+        # Gumbel-max trick: argmax(log_pmf + Gumbel) ~ categorical(exp(log_pmf)).
+        # HOOK: replace _log_pmf_ligand with log(w_ligand_k) for nonuniform ligand weights.
+        gumbel_ztp = (self._log_pmf_ligand.unsqueeze(0)
+                      + (-torch.log(-torch.log(
+                          torch.rand(B, K, max_m, device=device).clamp(1e-9, 1 - 1e-9)
+                      ))))                                                        # (B, K, max_m)
+        n_lig = gumbel_ztp.argmax(dim=-1) + 1                                   # (B, K) in [1, m_k]
+        n_lig = n_lig * active_src_mask                                          # 0 for inactive blocks
 
-            # (B,) indicator: is block k active in this sniff?
-            active_b = active_src_mask[:, k]            # (B,) bool
-            n_active = int(active_b.sum().item())
-            if n_active == 0:
-                continue
+        # --- Step 3: Gumbel-top-n_lig within each block, all (b, k) in parallel ---
+        gumbel_l = -torch.log(-torch.log(
+            torch.rand(B, K, max_m, device=device).clamp(1e-9, 1 - 1e-9)
+        ))
+        gumbel_l.masked_fill_(~self._block_valid.unsqueeze(0), float('-inf'))    # invalid slots
+        gumbel_l.masked_fill_(~active_src_mask.unsqueeze(-1), float('-inf'))     # inactive blocks
 
-            # Zero-truncated Poisson on [1, m_k].
-            l_vals = torch.arange(1, m_k + 1, device=device, dtype=torch.float32)
-            log_pmf_l = l_vals * math.log(mu_l) - torch.lgamma(l_vals + 1)
-            log_pmf_l = log_pmf_l - log_pmf_l.logsumexp(0)
-            # (n_active,) number of ligands picked per active sniff
-            n_lig = torch.multinomial(log_pmf_l.exp(), n_active, replacement=True) + 1
+        rank_l = gumbel_l.argsort(dim=-1, descending=True)                      # (B, K, max_m)
+        picked_ranked = torch.arange(max_m, device=device) < n_lig.unsqueeze(-1)# (B, K, max_m)
+        picked_mask = torch.zeros(B, K, max_m, dtype=torch.bool, device=device)
+        picked_mask.scatter_(2, rank_l, picked_ranked)                           # top-n_lig → True
 
-            # Gumbel-top-k over m_k ligands for the n_active sniffs.
-            # HOOK: replace torch.zeros with log(w_ligand_k) for nonuniform weights.
-            gumbel_l = -torch.log(-torch.log(
-                torch.rand(n_active, m_k, device=device).clamp(1e-9, 1.0 - 1e-9)
-            ))
-            rank_l = gumbel_l.argsort(dim=1, descending=True)           # (n_active, m_k)
-            picked = (torch.arange(m_k, device=device).unsqueeze(0)
-                      < n_lig.unsqueeze(1))                              # (n_active, m_k) bool
-            # picked_mask[i, j] = True iff ligand rank_l[i,j] is among top n_lig[i]
-            picked_mask = torch.zeros(n_active, m_k, dtype=torch.bool, device=device)
-            picked_mask.scatter_(1, rank_l, picked)
-
-            # Map within-block positions back to global ligand indices and scatter into M.
-            global_idx = members_k.unsqueeze(0).expand(n_active, -1)   # (n_active, m_k)
-            M[active_b] = M[active_b].scatter(1, global_idx, picked_mask.float())
-
-        return M
+        # --- Step 4: scatter into M; invalid slots point to dummy column L ---
+        picked_flat = picked_mask.view(B, K * max_m).float()
+        idx_flat    = self._safe_block_members.view(1, K * max_m).expand(B, -1) # (B, K*max_m)
+        M = torch.zeros(B, L + 1, device=device)
+        M.scatter_add_(1, idx_flat, picked_flat)
+        return M[:, :L].clamp(max=1.0)
 
     def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
         """(B, L, D) ligand coordinates with i.i.d. observation noise."""

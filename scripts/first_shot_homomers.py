@@ -31,7 +31,7 @@ config = RunConfig(
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 20,
-    mu_sources             = 2.0,
+    mu_sources             = 4.0,
     mu_ligands_per_source  = 5.0,
     block_shared_conc_mean = True,
 
@@ -61,7 +61,7 @@ config = RunConfig(
     ),
 
     # --- Sweep ---
-    n_genes     = list(range(3, 20)),
+    n_genes     = list(range(3, 15)),
     sweep_name  = "homomers",
     base_folder = "/app/data/test",
     warm_start  = False,

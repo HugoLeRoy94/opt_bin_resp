@@ -318,6 +318,11 @@ class LigandEnvironment(nn.Module):
         _log_pmf_l -= _log_pmf_l.logsumexp(dim=1, keepdim=True)
         self.register_buffer('_log_pmf_ligand', _log_pmf_l)      # (K, max_m)
 
+        # Static upper bound on present ligands per sniff — avoids a per-batch GPU→CPU sync.
+        # Covers the ~99.99th percentile of Poisson(mu_sources) * max_m without truncation risk.
+        _poisson_tail = int(mu_sources + 4.0 * mu_sources ** 0.5) + 1
+        self.s_upper = min(n_ligands, _poisson_tail * _max_m)
+
         if distribution_type not in ['gaussian', 'uniform', 'shell']:
             raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
         self.distribution_type = distribution_type
@@ -609,14 +614,32 @@ class LigandEnvironment(nn.Module):
         idx_flat    = self._safe_block_members.view(1, K * max_m).expand(B, -1) # (B, K*max_m)
         M = torch.zeros(B, L + 1, device=device)
         M.scatter_add_(1, idx_flat, picked_flat)
-        return M[:, :L].clamp(max=1.0)
 
-    def _sample_noisy_ligands(self, batch_size: int) -> torch.Tensor:
-        """(B, L, D) ligand coordinates with i.i.d. observation noise."""
-        device = self.ligand_latent.device
-        noise = (torch.randn(batch_size, self.n_ligands, self.latent_dim, device=device)
-                 * self.observation_noise_sigma)
-        return self.ligand_latent.unsqueeze(0) + noise  # (B, L, D)
+        # --- Step 5: build sparse_idx (B, s_upper) — selected ligand indices, L for padding ---
+        # torch.where: real member index where picked, dummy L otherwise.
+        safe_flat    = self._safe_block_members.view(K * max_m)                 # (K*max_m,)
+        selected_flat = torch.where(picked_flat.bool(), safe_flat.unsqueeze(0), L)  # (B, K*max_m)
+        # topk on picked_flat (1.0 = selected) brings selected positions to front without sorting.
+        _, front_order = picked_flat.topk(self.s_upper, dim=-1, sorted=False)   # (B, s_upper)
+        sparse_idx = selected_flat.gather(1, front_order)                        # (B, s_upper)
+
+        return M[:, :L].clamp(max=1.0), sparse_idx
+
+    def _sample_noisy_ligands(self, batch_size: int, sparse_idx: torch.Tensor) -> torch.Tensor:
+        """(B, s_upper, D) — noisy coordinates for the selected ligands only.
+
+        sparse_idx: (B, s_upper) long tensor — real ligand indices [0, L-1] for present
+                    ligands, n_ligands (dummy) for padding slots.
+        Dummy slots are zeroed out after noise injection so they contribute nothing to
+        downstream energies (their concentrations are also 0 in sample_batch).
+        """
+        S = sparse_idx.shape[1]
+        safe_idx = sparse_idx.clamp(max=self.n_ligands - 1)                  # (B, S)
+        base     = self.ligand_latent[safe_idx]                               # (B, S, D)
+        noise    = (torch.randn(batch_size, S, self.latent_dim, device=base.device)
+                    * self.observation_noise_sigma)
+        dummy    = (sparse_idx == self.n_ligands).unsqueeze(-1)               # (B, S, 1)
+        return (base + noise).masked_fill(dummy, 0.0)                         # (B, S, D)
 
     def _compute_energies(
         self,
@@ -706,23 +729,32 @@ class LigandEnvironment(nn.Module):
                               use_interface_model=True.
 
         Returns (classic model):
-            E_open:        (B, L, U) — open-state energy per unit per ligand.
-            concs:         (B, L)    — sampled concentrations (masked).
-            mixture_masks: (B, L)    — hierarchical presence mask.
+            E_open:        (B, s_upper, U) — open-state energy for present ligands only.
+            concs:         (B, s_upper)    — concentrations for present ligands (0 for padding).
+            mixture_masks: (B, L)          — full presence mask (needed for MI metrics).
 
         Returns (interface model):
-            E_open:        (B, L, R, k_sub) — pocket energy per interface.
-            concs:         (B, L)
+            E_open:        (B, s_upper, R, k_sub)
+            concs:         (B, s_upper)
             mixture_masks: (B, L)
 
-        The hierarchical sampler guarantees S = sum(M, dim=-1) >= 1 for every
-        row by construction; no rejection loop is needed.
+        s_upper is a static bound (set at __init__ time) on the max present ligands per sniff:
+        ~99.99th percentile of Poisson(mu_sources) * max_m.  Padding slots carry index L
+        with concentration 0, contributing exp(-27) ≈ 0 to the logsumexp in physics.
+        The hierarchical sampler guarantees S >= 1 for every row by construction.
         """
-        masks = self._sample_masks(batch_size)
+        masks, sparse_idx = self._sample_masks(batch_size)                    # (B,L), (B,s_upper)
         assert masks.sum(-1).min() >= 1, "hierarchical sampler produced an empty row"
-        concs     = self.concentration_model.sample(batch_size) * masks
-        v_ligands = self._sample_noisy_ligands(batch_size)
-        E_open    = self._compute_energies(v_ligands, receptor_indices)
+
+        # Sparse concentrations: gather only the present ligands.
+        safe_sidx = sparse_idx.clamp(max=self.n_ligands - 1)                  # (B, s_upper)
+        concs_all = self.concentration_model.sample(batch_size)                # (B, L)
+        concs     = concs_all.gather(1, safe_sidx).masked_fill(
+            sparse_idx == self.n_ligands, 0.0
+        )                                                                       # (B, s_upper)
+
+        v_ligands = self._sample_noisy_ligands(batch_size, sparse_idx)        # (B, s_upper, D)
+        E_open    = self._compute_energies(v_ligands, receptor_indices)        # (B, s_upper, *)
         return E_open, concs, masks
 
     @torch.no_grad()

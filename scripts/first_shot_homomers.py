@@ -14,7 +14,7 @@ from src.run import SweepRunner
 
 import numpy as np
 
-N_LIG = 2000
+N_LIG = 200
 CONC_MEAN = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
 CONC_STD  = (1.0,) * N_LIG
 
@@ -33,7 +33,7 @@ config = RunConfig(
     n_presence_blocks      = 1,#N_LIG//5,
     mu_sources             = 1,
     mu_ligands_per_source  = 20,
-    block_shared_conc_mean = True,
+    block_shared_conc_mean = False,
 
     # --- Interface model ---
     use_interface_model = True,

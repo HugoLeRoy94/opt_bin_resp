@@ -2,44 +2,47 @@
 
 # Heteromers cascading strategy, n_genes = 3.
 # Sweeps n_receptors from 3 to 49; n_genes fixed — no warm-start.
+# 50 runs with random environment parameters within the high-entropy regime
+# (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/het_casc_ng3.py
 
 import time
+import numpy as np
 import sys
 sys.path.append('/app')
 
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG = 200
-CONC_MEAN = (-5.5,) * N_LIG
-CONC_STD  = (1.0,)  * N_LIG
+N_RUNS = 10
+_D = np.random.randint(5, 16, N_RUNS)
+_N = np.random.randint(150, 301, N_RUNS)
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = 5,
-    n_ligands               = N_LIG,
-    latent_dim              = 10,
-    family_spread           = 0.15,
-    average_family_distance = 1.0,
+    n_families              = np.random.randint(5, 11, N_RUNS).tolist(),
+    n_ligands               = _N.tolist(),
+    latent_dim              = _D.tolist(),
+    family_spread           = (np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D)).tolist(),
+    average_family_distance = np.random.uniform(0.5, 1.5, N_RUNS).tolist(),
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
 
     # --- Presence (hierarchical sampler) ---
-    n_presence_blocks      = 20,
-    mu_sources             = 2.0,
-    mu_ligands_per_source  = 5.0,
-    block_shared_conc_mean = True,
+    n_presence_blocks      = 1,
+    mu_sources             = 1,
+    mu_ligands_per_source  = 20,
+    block_shared_conc_mean = False,
 
     # --- Interface model ---
     use_interface_model = True,
 
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = CONC_MEAN,
-    conc_std        = CONC_STD,
+    conc_mean       = [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N],
+    conc_std        = [(1.0,) * int(n) for n in _N],
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),

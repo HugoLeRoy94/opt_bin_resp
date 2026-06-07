@@ -3,7 +3,7 @@
 # Homomers sweep: n_genes from 3 to 49 with warm-start chain on n_genes.
 # R = n_genes (one homomer per gene).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/hom.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/sweep_block_size_D5.py
 
 import time
 import sys

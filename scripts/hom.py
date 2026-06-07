@@ -5,7 +5,7 @@
 # 50 runs with random parameters sampled within the high-entropy regime
 # (rho in [0.2,1], d_fam/lambda in [0.5,1.5], R_eff=2*mu_lig > R_max=49).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/hom.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/hom.py
 
 import time
 import numpy as np
@@ -16,16 +16,21 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 10
-_D   = np.random.randint(5, 16, N_RUNS)
-_N   = np.random.randint(150, 301, N_RUNS)
+_SWEEP = list(range(3, 50))    # n_genes values, length 47
+_NS    = len(_SWEEP)
+
+_D_r = np.random.randint(5, 16, N_RUNS)
+_N_r = np.random.randint(150, 301, N_RUNS)
+_D   = np.repeat(_D_r, _NS)
+_N   = np.repeat(_N_r, _NS)
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = np.random.randint(5, 11, N_RUNS).tolist(),
+    n_families              = np.repeat(np.random.randint(5, 11, N_RUNS), _NS).tolist(),
     n_ligands               = _N.tolist(),
     latent_dim              = _D.tolist(),
-    family_spread           = (np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D)).tolist(),
-    average_family_distance = np.random.uniform(0.5, 1.5, N_RUNS).tolist(),
+    family_spread           = np.repeat(np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D_r), _NS).tolist(),
+    average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
@@ -33,13 +38,13 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.random.randint(30, 81, N_RUNS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(30, 81, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N],
-    conc_std        = [(1.0,) * int(n) for n in _N],
+    conc_mean       = [cm for cm in [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N_r] for _ in range(_NS)],
+    conc_std        = [cs for cs in [(1.0,) * int(n) for n in _N_r] for _ in range(_NS)],
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
@@ -53,7 +58,7 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes     = list(range(3, 50)),
+    n_genes     = _SWEEP * N_RUNS,
     sweep_name  = "homomers",
     base_folder = "/app/data/fig1",
     warm_start  = False,

@@ -5,7 +5,7 @@
 # 50 runs with random environment parameters within the high-entropy regime
 # (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/run/script/het_casc_ng3.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/het_casc_ng3.py
 
 import time
 import numpy as np
@@ -16,16 +16,21 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 10
-_D = np.random.randint(5, 16, N_RUNS)
-_N = np.random.randint(150, 301, N_RUNS)
+_SWEEP = list(range(3, 50))    # n_receptors values, length 47
+_NS    = len(_SWEEP)
+
+_D_r = np.random.randint(5, 16, N_RUNS)
+_N_r = np.random.randint(150, 301, N_RUNS)
+_D   = np.repeat(_D_r, _NS)
+_N   = np.repeat(_N_r, _NS)
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = np.random.randint(5, 11, N_RUNS).tolist(),
+    n_families              = np.repeat(np.random.randint(5, 11, N_RUNS), _NS).tolist(),
     n_ligands               = _N.tolist(),
     latent_dim              = _D.tolist(),
-    family_spread           = (np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D)).tolist(),
-    average_family_distance = np.random.uniform(0.5, 1.5, N_RUNS).tolist(),
+    family_spread           = np.repeat(np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D_r), _NS).tolist(),
+    average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
@@ -41,8 +46,8 @@ config = RunConfig(
 
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N],
-    conc_std        = [(1.0,) * int(n) for n in _N],
+    conc_mean       = [cm for cm in [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N_r] for _ in range(_NS)],
+    conc_std        = [cs for cs in [(1.0,) * int(n) for n in _N_r] for _ in range(_NS)],
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
@@ -57,7 +62,7 @@ config = RunConfig(
 
     # --- Sweep ---
     n_genes                    = 3,
-    n_receptors                = list(range(3, 50)),
+    n_receptors                = _SWEEP * N_RUNS,
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
     sweep_name                 = "ng3",

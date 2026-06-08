@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 10
+N_RUNS = 1
 _SWEEP = list(range(3, 50))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
@@ -53,7 +53,7 @@ config = RunConfig(
     entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=5000, lr=0.05, use_scheduler=False,
+    epochs=500, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
@@ -61,7 +61,7 @@ config = RunConfig(
     n_genes     = _SWEEP * N_RUNS,
     sweep_name  = "homomers",
     base_folder = "/app/data/fig1",
-    warm_start  = False,
+    warm_start  = True,
 )
 
 print(config)

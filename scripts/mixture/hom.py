@@ -5,7 +5,7 @@
 # 50 runs with random parameters sampled within the high-entropy regime
 # (rho in [0.2,1], d_fam/lambda in [0.5,1.5], R_eff=2*mu_lig > R_max=49).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/hom.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/hom.py
 
 import time
 import numpy as np

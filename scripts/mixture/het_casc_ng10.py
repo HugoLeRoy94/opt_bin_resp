@@ -5,7 +5,7 @@
 # 10 runs x 40 receptor values = 400 configs, random environment within
 # high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/het_casc_ng10.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixtures/het_casc_ng10.py
 
 import time
 import numpy as np

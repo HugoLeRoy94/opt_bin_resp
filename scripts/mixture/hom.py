@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 1
+N_RUNS = 50
 _SWEEP = list(range(3, 50))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 

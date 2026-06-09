@@ -442,10 +442,11 @@ class SweepRunner:
                     ]
                     tqdm.write(f"--- {' | '.join(label_parts)} ---")
 
-                    # --- 2-way warm-start: chain only when n_genes grows ---
-                    if prev_cfg is None or not self.config.warm_start:
-                        warm_env = None
-                    elif prev_cfg.n_genes != run_cfg.n_genes:
+                    # --- warm-start: chain only when n_genes strictly increases ---
+                    # A decrease means a new env group is starting; reset there.
+                    if (prev_cfg is not None
+                            and self.config.warm_start
+                            and run_cfg.n_genes > prev_cfg.n_genes):
                         warm_env = prev_env
                     else:
                         warm_env = None

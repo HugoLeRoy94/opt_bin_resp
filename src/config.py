@@ -234,9 +234,13 @@ class RunConfig:
         all share the same length L; if not, a ValueError is raised naming every
         offending axis and its length.
 
-        When warm_start=True the steps are sorted by n_genes ascending before
-        building SingleRunConfig objects.  When warm_start=False they are emitted
-        in natural (input) order.
+        When warm_start=True the steps are sorted by (env_group, n_genes) before
+        building SingleRunConfig objects.  Env groups are inferred from the input
+        order: a new group begins each time n_genes does not strictly increase
+        (i.e., the n_genes sweep restarts).  This keeps each fixed-environment
+        chain contiguous and sorted by n_genes, so warm-starting is valid within
+        a group and resets automatically between groups.
+        When warm_start=False steps are emitted in natural (input) order.
 
         Tuple-typed fields (conc_mean, conc_std, kernel_params, measurement_fns)
         are converted to lists when forwarded to SingleRunConfig.
@@ -264,10 +268,19 @@ class RunConfig:
             if f.name not in _SWEEP_CONTROL_FIELDS and f.name not in axes
         }
 
-        # --- Sort indices by n_genes when warm_start is enabled ---
+        # --- Sort indices by (env_group, n_genes) when warm_start is enabled ---
+        # Groups are inferred from the input order: a new group starts each time
+        # n_genes does not strictly increase (i.e., the sweep restarts).
         order = list(range(L))
         if self.warm_start and "n_genes" in axes:
-            order.sort(key=lambda i: axes["n_genes"][i])
+            ng_vals = axes["n_genes"]
+            gid = 0
+            group_ids: list[int] = []
+            for i, ng in enumerate(ng_vals):
+                if i > 0 and ng <= ng_vals[i - 1]:
+                    gid += 1
+                group_ids.append(gid)
+            order.sort(key=lambda i: (group_ids[i], axes["n_genes"][i]))
 
         # --- Build trajectory ---
         trajectory: List[SingleRunConfig] = []

@@ -20,7 +20,7 @@ _SWEEP = list(range(3, 15, 2))  # n_receptors values, every 2, length 24
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
-_N_r = np.random.randint(1500, 3001, N_RUNS)
+_N_r = np.random.randint(150, 301, N_RUNS)
 _D   = np.repeat(_D_r, _NS)
 _N   = np.repeat(_N_r, _NS)
 
@@ -57,8 +57,8 @@ config = RunConfig(
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
-    lr=0.025, use_scheduler=False,
-    batch_size=1000, test_batch_size="auto",
+    lr=0.01, use_scheduler=False,
+    batch_size="auto", test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

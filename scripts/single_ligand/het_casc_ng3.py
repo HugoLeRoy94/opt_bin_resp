@@ -5,7 +5,7 @@
 # 50 runs with random environment parameters within the high-entropy regime
 # (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/het_casc_ng3.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/single_ligand/het_casc_ng3.py
 
 import time
 import numpy as np
@@ -58,7 +58,7 @@ config = RunConfig(
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
     lr=0.05, use_scheduler=False,
-    batch_size=5000, test_batch_size="auto",
+    batch_size=1000, test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

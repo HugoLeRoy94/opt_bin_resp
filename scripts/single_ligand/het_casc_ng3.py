@@ -16,7 +16,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(3, 15, 2))  # n_receptors values, every 2, length 24
+_SWEEP = list(range(3, 30, 2))  # n_receptors values, every 2, length 24
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -33,7 +33,7 @@ config = RunConfig(
     average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.1,
+    observation_noise_sigma = 0.01,
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,

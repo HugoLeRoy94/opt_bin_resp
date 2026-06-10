@@ -9,29 +9,29 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG = 100
-CONC_MEAN = (-5.5,) * N_LIG
-CONC_STD  = (1.0,)  * N_LIG
+N_LIG = 200
+CONC_MEAN = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
+CONC_STD  = (1.0,) * N_LIG
 
 config = RunConfig(
     # --- Environment ---
-    n_families=5,
+    n_families=7,
     n_ligands=N_LIG,
-    latent_dim=10,
-    family_spread=.1,
+    latent_dim=15,
+    family_spread=.15,
     average_family_distance=1.0,
     environment_geometry="asymmetric",
     distribution_type="gaussian",
-    observation_noise_sigma=0.0,
+    observation_noise_sigma=0.01,
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks=1,
     mu_sources=1.0,
-    mu_ligands_per_source=3.0,
+    mu_ligands_per_source=73.0,
     block_shared_conc_mean=False,
 
     # --- Interface model ---
-    use_interface_model=False,
+    use_interface_model=True,
 
     # --- Concentration ---
     conc_model_type="lognormal",
@@ -39,7 +39,7 @@ config = RunConfig(
     conc_std=CONC_STD,
 
     # --- Physics ---
-    n_genes=5,
+    n_genes=4,
     k_sub=5,
     temperature=0.1,
     affinity_kernel="gaussian",
@@ -55,7 +55,7 @@ config = RunConfig(
     n_c_bins=10,
 
     # --- Training ---
-    epochs=5000,
+    epochs=500,
     lr=0.05,
     use_scheduler=False,
     test_batch_size="auto",

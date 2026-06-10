@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 from src.IO import run_files
 
-base_dir = Path(exec_dir + "/data/test")
+base_dir = Path(exec_dir + "/data/fig1_single_ligand")
 db_path  = base_dir / "runs.db"
 METRIC   = "full_array_entropy_mean"
 
@@ -45,7 +45,8 @@ ARMS = [
 ]
 # %%
 
-homo_df['sweep_date']
+#homo_df['sweep_date']
+hete_df['sweep_data']
 
 # ── Plot 1 — H(A) vs R ───────────────────────────────────────────────────────
 # %%

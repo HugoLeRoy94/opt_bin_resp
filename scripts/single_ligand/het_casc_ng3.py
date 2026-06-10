@@ -16,7 +16,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(3, 50, 2))  # n_receptors values, every 2, length 24
+_SWEEP = list(range(3, 15, 2))  # n_receptors values, every 2, length 24
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -53,12 +53,12 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
     lr=0.05, use_scheduler=False,
-    batch_size="auto", test_batch_size="auto",
+    batch_size=5000, test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

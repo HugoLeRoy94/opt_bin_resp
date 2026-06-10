@@ -33,7 +33,7 @@ config = RunConfig(
     average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.01,
+    observation_noise_sigma = 0.1,
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
@@ -57,7 +57,7 @@ config = RunConfig(
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
-    lr=0.05, use_scheduler=False,
+    lr=0.025, use_scheduler=False,
     batch_size=1000, test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 

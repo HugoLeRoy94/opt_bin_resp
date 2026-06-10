@@ -41,12 +41,9 @@ services:
         no_proxy: ${no_proxy:-}
     shm_size: '16gb' # use the host memory capacity
     volumes:
-      - ./unit_test:/app/unit_test/:z
       - ./data:/app/data:z
       - ./src:/app/src:ro,z
-      - ./objectives:/app/objectives:ro,z
-      - ./run:/app/run:z
-      - ./analysis:/app/analysis:z
+      - ./scripts:/app/scripts:z
     deploy:
       resources:
         reservations:

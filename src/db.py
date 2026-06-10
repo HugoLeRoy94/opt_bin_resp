@@ -37,7 +37,7 @@ import sqlite3
 import subprocess
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import numpy as np
@@ -60,6 +60,7 @@ _META_COLS: list[tuple[str, str]] = [
     ("path",          "TEXT PRIMARY KEY"),
     ("sweep_name",    "TEXT"),
     ("sweep_date",    "TEXT"),
+    ("sweep_folder",  "TEXT"),
     ("receptor_type", "TEXT"),   # "homomer" | "heteromer"
     ("status",        "TEXT"),
     ("run_mtime",     "REAL"),
@@ -213,12 +214,13 @@ def _build_row(run_dir: str, db_path: str) -> tuple[Optional[dict[str, Any]], Op
     sweep_name, sweep_date = _sweep_info(run_dir)
     test_json            = os.path.join(run_dir, "test_results.json")
     status               = "complete" if os.path.exists(test_json) else "partial"
-    now_iso              = datetime.utcnow().isoformat(timespec="seconds")
+    now_iso              = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     row: dict[str, Any] = {
         "path":          rel_path,
         "sweep_name":    sweep_name,
         "sweep_date":    sweep_date,
+        "sweep_folder":  rel_path.split("/")[0],
         "receptor_type": "homomer" if cfg.n_receptors is None else "heteromer",
         "status":        status,
         "run_mtime":     os.path.getmtime(run_dir),
@@ -319,6 +321,16 @@ def backfill(db_path: str) -> None:
                 _upsert(conn, r)
         _retry(_do)
         count += 1
+    # Prune rows whose directories were deleted since the last backfill
+    with _connect(db_path) as conn:
+        all_paths = [r["path"] for r in conn.execute("SELECT path FROM runs").fetchall()]
+    stale = [p for p in all_paths if not os.path.isdir(os.path.join(data_root, p))]
+    if stale:
+        def _prune(paths=stale):
+            with _connect(db_path) as conn:
+                conn.executemany("DELETE FROM runs WHERE path = ?", [(p,) for p in paths])
+        _retry(_prune)
+        print(f"Pruned {len(stale)} deleted run(s) from index.")
     print(f"Backfilled {count} run(s), skipped {skipped} → {db_path}")
 
 
@@ -373,7 +385,7 @@ def reconcile(db_path: str, dry_run: bool = False) -> None:
     for p in missing:
         print(f"  {p}")
     if not dry_run:
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         def _do():
             with _connect(db_path) as conn:
                 conn.executemany(
@@ -405,7 +417,7 @@ def delete_run(rel_path: str, db_path: str, dry_run: bool = False) -> None:
 
 def move_run(old_path: str, new_path: str, db_path: str) -> None:
     """Update the path column for a renamed/moved run directory."""
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     def _do():
         with _connect(db_path) as conn:
             n = conn.execute(

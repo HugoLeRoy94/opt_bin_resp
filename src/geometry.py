@@ -147,6 +147,42 @@ def generate_targeted_ordered_receptors(n_genes: int, k_sub: int, composition_ta
     return torch.tensor(selected_combos, dtype=torch.long)
 
 
+def _positive_compositions(total: int, parts: int):
+    """
+    Yield all ordered compositions of `total` into exactly `parts` positive
+    integers (stars-and-bars). Used to enumerate the per-gene stoichiometries
+    of a receptor that uses a fixed set of genes, each at least once.
+    """
+    for dividers in itertools.combinations(range(1, total), parts - 1):
+        prev = 0
+        comp = []
+        for d in dividers:
+            comp.append(d - prev)
+            prev = d
+        comp.append(total - prev)
+        yield tuple(comp)
+
+
+def _tier_canonical_forms(n_genes: int, k_sub: int, n_unique: int) -> set:
+    """
+    Canonical ordered ring arrangements (interface model) of length `k_sub`
+    that use EXACTLY `n_unique` distinct genes.
+
+    This reproduces a single complexity bucket of the full enumeration without
+    touching any other tier — enabling lazy, ascending-complexity generation.
+
+    Cost is bounded by C(n_genes, n_unique) * C(k_sub-1, n_unique-1) * k_sub!,
+    i.e. it scales with the size of THIS tier only.
+    """
+    forms: set = set()
+    for genes in itertools.combinations(range(n_genes), n_unique):
+        for counts in _positive_compositions(k_sub, n_unique):
+            multiset = tuple(g for g, c in zip(genes, counts) for _ in range(c))
+            for perm in set(itertools.permutations(multiset)):
+                forms.add(_canonical_rotation(perm))
+    return forms
+
+
 def generate_cascading_ordered_receptors(n_genes: int, k_sub: int, n_sensors: int,
                                          seed: Optional[int] = None) -> torch.Tensor:
     """
@@ -155,26 +191,25 @@ def generate_cascading_ordered_receptors(n_genes: int, k_sub: int, n_sensors: in
     Fills the quota ascending by complexity (homomers → 2-mers → …) using
     ordered cyclic arrangements.
 
+    Tiers are generated LAZILY: tier `u` (arrangements with exactly u distinct
+    genes) is only enumerated if the quota is not yet met after tiers < u. For
+    small `n_sensors` this skips the costly high-complexity tiers entirely
+    (which dominate the pool), instead of enumerating all
+    C(n_genes+k_sub-1, k_sub) multisets up front.
+
     Args:
         seed: When provided, the intra-tier shuffle is deterministic.
               Same (n_genes, k_sub, n_sensors, seed) → identical tensor.
     """
-    all_combos = list(itertools.combinations_with_replacement(range(n_genes), k_sub))
-
-    buckets: dict = {}
-    for combo in all_combos:
-        for perm in set(itertools.permutations(combo)):
-            canon = _canonical_rotation(perm)
-            n_unique = len(set(canon))
-            buckets.setdefault(n_unique, set()).add(canon)
-
     rng = random.Random(seed)
     selected_combos = []
     remaining = n_sensors
-    for n_unique in sorted(buckets.keys()):
+    for n_unique in range(1, k_sub + 1):
         if remaining <= 0:
             break
-        available = list(buckets[n_unique])
+        # sorted() gives a deterministic order independent of set-insertion
+        # order, so the seeded shuffle is reproducible across runs/platforms.
+        available = sorted(_tier_canonical_forms(n_genes, k_sub, n_unique))
         rng.shuffle(available)
         take_n = min(remaining, len(available))
         selected_combos.extend(available[:take_n])

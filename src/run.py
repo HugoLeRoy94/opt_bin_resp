@@ -115,10 +115,26 @@ def resolve_batch_sizes(
         b_train = min(b_train, entropy_cap)
     else:
         b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
+        # Rényi-2 materialises a (B, B) collision matrix: B²·4 bytes. The
+        # 16·√(2^R) heuristic explodes for large R and was previously bounded
+        # only by the physics cap (which ignores the B² term), so cap B
+        # explicitly at √(budget / (4 bytes · 4× safety)).
+        renyi_cap = max(B_min, int((mem_budget_bytes / (4 * 4)) ** 0.5))
+        b_train = min(b_train, renyi_cap)
 
-    # Physics cap: gathered_flat is (B, n_ligands, R·k_sub) float32; safety factor 4×.
+    # Physics cap. The interface-model forward+backward holds *many*
+    # (B, n_ligands, R·k_sub) float32 tensors at once: in _compute_energies
+    # (ab, dist_sq, exp(·), E_open) and again in p_open (log_terms_open/closed),
+    # several retained for backward + their gradients. The retained energy graph
+    # also coexists with the Rényi (B,B) matrix during the loss/backward, so the
+    # factor must leave headroom for that term too. 16× restores roughly the
+    # safety the classic model enjoyed by accident (see below) and clears the
+    # OOM that the old 4× hit once the k_sub axis is real (use_interface_model=
+    # True). For the classic model the true width is n_genes (no k_sub), so
+    # charging R·k_sub here is conservative — exactly that hidden margin.
+    # Note s_upper ≤ n_ligands, so n_ligands bounds the 2nd dimension.
     bytes_per_sample = n_ligands * n_receptors * k_sub * 4
-    physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 4))
+    physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 16))
     b_train = min(b_train, physics_cap)
 
     return b_train, 4 * b_train

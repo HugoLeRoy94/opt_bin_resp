@@ -87,20 +87,26 @@ def resolve_batch_sizes(
     n_ligands: int = 1,
     k_sub: int = 1,
     mem_budget_bytes: Optional[int] = None,
+    block_size: int = 12,
+    n_partitions: int = 4,
 ) -> tuple:
     """Returns (batch_size, test_batch_size) appropriate for the array size.
 
-    Shannon / exact: B_train = 2^R — one sample per histogram bin for good coverage.
-    Memory cap: soft_assign tensor is (B, 2^R) float32; budget B×2^R ≤ 2^35 floats
-    (~128 GiB), giving ~10^6 max samples at R=15 on an A100.
+    The estimator dictates the dominant entropy-side tensor, so each gets its
+    own cap (memory model in parentheses):
+      shannon : B = 2^R coverage, capped by (B, 2^R) float32.        — only R<~15
+      renyi   : B = 16·√(2^R), capped by the (B, B) collision matrix.
+      blocked : capped by ceil(R/block_size)·n_partitions histograms of
+                shape (B, 2^block_size) — independent of R, so B stays large.
+      proxy / mi_* : O(B·R²)/O(B·R), no exponential or B² term; physics-bound.
 
-    Rényi-2: cost is O(B²·R) not O(B·2^R); keep B ~ 16·√(2^R) instead.
+    Physics bottleneck cap (all estimators): the interface-model forward+backward
+    holds many (B, n_ligands, R·k_sub) float32 tensors at once (see below); a 16×
+    safety factor is applied. mem_budget_bytes should be the free GPU memory at
+    _initialize time; defaults to 8 GiB when CUDA is unavailable.
 
-    Physics bottleneck cap (both entropy types): the gathered_flat tensor in physics.py
-    has shape (B, n_ligands, R·k_sub) float32. A safety factor of 4× is applied to
-    account for gradients and intermediate tensors during the training forward pass.
-    mem_budget_bytes should be the free GPU memory at _initialize time; defaults to
-    8 GiB when CUDA is unavailable.
+    block_size / n_partitions must match the DiscreteExactLoss config (defaults
+    12 / 4) for the blocked cap to be correct.
 
     test_batch_size = 4 × batch_size.
     """
@@ -108,12 +114,12 @@ def resolve_batch_sizes(
     if mem_budget_bytes is None:
         mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
 
-    if entropy_type != "renyi":
+    if entropy_type == "shannon":
         b_train = max(B_min, 1 << n_receptors)
         # soft_assign is (B, 2^R) float32; 4× safety for backward graph copies.
         entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
         b_train = min(b_train, entropy_cap)
-    else:
+    elif entropy_type == "renyi":
         b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
         # Rényi-2 materialises a (B, B) collision matrix: B²·4 bytes. The
         # 16·√(2^R) heuristic explodes for large R and was previously bounded
@@ -121,6 +127,17 @@ def resolve_batch_sizes(
         # explicitly at √(budget / (4 bytes · 4× safety)).
         renyi_cap = max(B_min, int((mem_budget_bytes / (4 * 4)) ** 0.5))
         b_train = min(b_train, renyi_cap)
+    elif entropy_type == "blocked":
+        # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
+        # ceil(R/block_size)·n_partitions of them are retained for backward.
+        # More samples only help (better per-bin estimates), so let the blocked
+        # memory cap and the physics cap below decide B.
+        n_blk = ((n_receptors + block_size - 1) // block_size) * n_partitions
+        b_train = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
+    else:
+        # proxy / mi_* : O(B·R²) or O(B·R), no exponential or B² memory term.
+        # The physics cap below is the binding constraint; start large.
+        b_train = max(B_min, mem_budget_bytes // (n_receptors * n_receptors * 4 * 4))
 
     # Physics cap. The interface-model forward+backward holds *many*
     # (B, n_ligands, R·k_sub) float32 tensors at once: in _compute_energies
@@ -151,6 +168,8 @@ def _build_loss(cfg) -> nn.Module:
             entropy_type=cfg.entropy,
             cov_weight=cfg.cov_weight or 0.0,
             penalty_type=cfg.penalty_type or 'covariance',
+            block_size=cfg.block_size,
+            n_partitions=cfg.n_partitions,
         )
     elif cfg.entropy == 'mi_ligand':
         return MaximizeMutualInformationLigandLoss(entropy_type='renyi')
@@ -200,6 +219,8 @@ class SimulationRunner:
                 n_ligands=self.config.n_ligands,
                 k_sub=self.config.k_sub,
                 mem_budget_bytes=mem_budget,
+                block_size=self.config.block_size,
+                n_partitions=self.config.n_partitions,
             )
             if self.config.batch_size == "auto":
                 self.config.batch_size = b_train

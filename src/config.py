@@ -81,6 +81,8 @@ class SingleRunConfig:
     lr:              float
     use_scheduler:   bool
     test_batch_size:  Union[int, str]        # "auto" resolved at init time
+    block_size:       int = 12               # blocked estimator: receptors per block (2^block_size bins)
+    n_partitions:     int = 4                # blocked estimator: number of random partitions averaged
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
@@ -192,6 +194,8 @@ class RunConfig:
 
     # --- Evaluation chunking ---
     eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None
+    block_size:      Union[int,           List[int]] = 12
+    n_partitions:    Union[int,           List[int]] = 4
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False

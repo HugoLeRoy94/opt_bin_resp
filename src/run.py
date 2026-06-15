@@ -114,30 +114,43 @@ def resolve_batch_sizes(
     if mem_budget_bytes is None:
         mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
 
+    # Statistical saturation caps — estimator-specific upper bound on useful B.
+    # Beyond these, extra samples yield negligible variance reduction.
+    #   shannon / blocked : need ~100 samples per histogram bin → 100 · 2^bin_dim
+    #     bin_dim = min(R, block_size) (blocked reduces to exact Shannon when R < block_size)
+    #   renyi             : 16·√(2^R) pairs; already encoded as the starting value below
+    #   proxy / mi_*      : marginal entropies converge fast; 200·R samples is generous
+    # bin_dim: effective state-space dimension shared by blocked and renyi caps.
+    # For R < block_size the blocked estimator is exact Shannon over 2^R states;
+    # for R ≥ block_size each block has 2^block_size states. Rényi at small R
+    # also benefits from the same 100-samples-per-state floor before the
+    # large-R heuristic (16·√(2^R)) takes over.
+    bin_dim   = min(n_receptors, block_size)
+    stats_cap = {
+        "shannon": max(B_min, 100 * (1 << n_receptors)),
+        "renyi":   max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
+        "blocked": max(B_min, 100 * (1 << bin_dim)),
+    }.get(entropy_type, max(B_min, 200 * n_receptors))
+
     if entropy_type == "shannon":
-        b_train = max(B_min, 1 << n_receptors)
-        # soft_assign is (B, 2^R) float32; 4× safety for backward graph copies.
+        b_train = stats_cap
+        # Hard memory cap: soft_assign is (B, 2^R) float32; 4× safety for backward.
         entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
         b_train = min(b_train, entropy_cap)
     elif entropy_type == "renyi":
-        b_train = max(B_min, 16 * int(2 ** (n_receptors / 2)))
-        # Rényi-2 materialises a (B, B) collision matrix: B²·4 bytes. The
-        # 16·√(2^R) heuristic explodes for large R and was previously bounded
-        # only by the physics cap (which ignores the B² term), so cap B
-        # explicitly at √(budget / (4 bytes · 4× safety)).
+        b_train = stats_cap
+        # Rényi-2 materialises a (B, B) collision matrix: B²·4 bytes.
         renyi_cap = max(B_min, int((mem_budget_bytes / (4 * 4)) ** 0.5))
         b_train = min(b_train, renyi_cap)
     elif entropy_type == "blocked":
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # ceil(R/block_size)·n_partitions of them are retained for backward.
-        # More samples only help (better per-bin estimates), so let the blocked
-        # memory cap and the physics cap below decide B.
         n_blk = ((n_receptors + block_size - 1) // block_size) * n_partitions
-        b_train = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
+        blocked_mem_cap = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
+        b_train = min(stats_cap, blocked_mem_cap)
     else:
         # proxy / mi_* : O(B·R²) or O(B·R), no exponential or B² memory term.
-        # The physics cap below is the binding constraint; start large.
-        b_train = max(B_min, mem_budget_bytes // (n_receptors * n_receptors * 4 * 4))
+        b_train = stats_cap
 
     # Physics cap. The interface-model forward+backward holds *many*
     # (B, n_ligands, R·k_sub) float32 tensors at once: in _compute_energies

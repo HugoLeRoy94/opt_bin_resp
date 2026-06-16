@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 50
+N_RUNS = 5
 _SWEEP = list(range(3, 50))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
@@ -38,7 +38,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.repeat(np.random.randint(30, 81, N_RUNS), _NS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(10, 20, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Concentration ---
@@ -50,10 +50,10 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="blocked", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=500, lr=0.05, use_scheduler=False,
+    epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 

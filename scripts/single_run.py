@@ -9,7 +9,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG = 200
+N_LIG = 10
 CONC_MEAN = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
 CONC_STD  = (1.0,) * N_LIG
 
@@ -17,7 +17,7 @@ config = RunConfig(
     # --- Environment ---
     n_families=7,
     n_ligands=N_LIG,
-    latent_dim=15,
+    latent_dim=5,
     family_spread=.15,
     average_family_distance=1.0,
     environment_geometry="asymmetric",
@@ -27,7 +27,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks=1,
     mu_sources=1.0,
-    mu_ligands_per_source=73.0,
+    mu_ligands_per_source=5,
     block_shared_conc_mean=False,
 
     # --- Interface model ---
@@ -39,7 +39,7 @@ config = RunConfig(
     conc_std=CONC_STD,
 
     # --- Physics ---
-    n_genes=4,
+    n_genes=20,
     k_sub=5,
     temperature=0.1,
     affinity_kernel="gaussian",
@@ -49,20 +49,20 @@ config = RunConfig(
     batch_size="auto",
 
     # --- Loss ---
-    entropy="renyi",
+    entropy="blocked",
     cov_weight=1.0,
     penalty_type="repulsion",
     n_c_bins=10,
 
     # --- Training ---
-    epochs=500,
+    epochs=5000,
     lr=0.05,
     use_scheduler=False,
     test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
     # --- Heteromer sampling ---
-    n_receptors=50,
+    n_receptors=20,
     receptor_sampling_strategy="cascading",
     receptor_sampling_seed=0,
 

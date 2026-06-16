@@ -28,7 +28,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks=1,
     mu_sources=1.0,
-    mu_ligands_per_source=5,
+    mu_ligands_per_source=10,
     block_shared_conc_mean=False,
 
     # --- Interface model ---

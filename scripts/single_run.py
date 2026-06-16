@@ -10,7 +10,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG = 10
+N_LIG = 200
 CONC_MEAN = tuple(np.random.uniform(-8.0, -3.0, N_LIG))
 CONC_STD  = (1.0,) * N_LIG
 

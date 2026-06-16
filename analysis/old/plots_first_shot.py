@@ -123,5 +123,6 @@ for ax, (df, r_col, label, color, ls) in zip(axes, ARMS):
     ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.show()
+plt.savefig('convergence.svg')
+#plt.show()
 # %%

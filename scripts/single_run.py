@@ -4,6 +4,7 @@
 
 import time
 import sys
+import numpy as np
 sys.path.append('/app')
 
 from src.config import RunConfig

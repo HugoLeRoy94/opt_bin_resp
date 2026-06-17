@@ -87,7 +87,7 @@ def resolve_batch_sizes(
     n_ligands: int = 1,
     k_sub: int = 1,
     mem_budget_bytes: Optional[int] = None,
-    block_size: int = 12,
+    block_size: int = 15,
     n_partitions: int = 4,
 ) -> tuple:
     """Returns (batch_size, test_batch_size) appropriate for the array size.
@@ -106,7 +106,7 @@ def resolve_batch_sizes(
     _initialize time; defaults to 8 GiB when CUDA is unavailable.
 
     block_size / n_partitions must match the DiscreteExactLoss config (defaults
-    12 / 4) for the blocked cap to be correct.
+    15 / 4) for the blocked cap to be correct.
 
     test_batch_size = 4 × batch_size.
     """

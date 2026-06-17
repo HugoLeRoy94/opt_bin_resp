@@ -111,7 +111,7 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
 
 def compute_blocked_entropy(
     soft_assign: torch.Tensor,
-    block_size: int = 12,
+    block_size: int = 15,
     n_partitions: int = 4,
 ) -> torch.Tensor:
     """
@@ -129,7 +129,7 @@ def compute_blocked_entropy(
     Averaging over multiple random partitions reduces bias from whichever
     cross-block correlations happen to be ignored in a single partition.
 
-    Memory: O(B * 2^block_size) per block — for block_size=12 and B=5000, ~80 MB,
+    Memory: O(B * 2^block_size) per block — for block_size=15 and B=5000, ~640 MB,
     vs O(B * 2^R) for the exact joint computation.
     """
     B, R, _ = soft_assign.shape
@@ -216,7 +216,7 @@ class DiscreteExactLoss(nn.Module):
     def __init__(
         self,
         entropy_type: str,
-        block_size:   int   = 12,
+        block_size:   int   = 15,
         n_partitions: int   = 4,
         cov_weight:   float = 0.0,
         penalty_type: str   = 'covariance',

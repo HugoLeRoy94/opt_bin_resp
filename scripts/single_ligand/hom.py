@@ -16,7 +16,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(3, 50))    # n_genes values, length 47
+_SWEEP = list(range(3, 15))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -26,14 +26,14 @@ _N   = np.repeat(_N_r, _NS)
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = np.repeat(np.random.randint(5, 11, N_RUNS), _NS).tolist(),
-    n_ligands               = _N.tolist(),
-    latent_dim              = _D.tolist(),
-    family_spread           = np.repeat(np.random.uniform(0.2, 1.0, N_RUNS) / np.sqrt(_D_r), _NS).tolist(),
-    average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
+    n_families              = 1,
+    n_ligands               = 1,
+    latent_dim              = 5,
+    family_spread           = 1.,
+    average_family_distance = 0.,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.01,
+    observation_noise_sigma = 0.0,
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
@@ -41,27 +41,31 @@ config = RunConfig(
     mu_ligands_per_source  = 1,
     block_shared_conc_mean = False,
 
+    # --- Interface model ---
+    use_interface_model = False,
+
+
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = [cm for cm in [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N_r] for _ in range(_NS)],
-    conc_std        = [cs for cs in [(1.0,) * int(n) for n in _N_r] for _ in range(_NS)],
+    conc_mean       = -5,
+    conc_std        = 1,
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="renyi", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=500, lr=0.05, use_scheduler=False,
-    batch_size="auto", test_batch_size="auto",
+    epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.01, use_scheduler=False,
+    batch_size=500, test_batch_size=500,
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
     n_genes     = _SWEEP * N_RUNS,
     sweep_name  = "homomers",
     base_folder = "/app/data/fig1_single_ligand",
-    warm_start  = True,
+    warm_start  = False,
 )
 
 print(config)

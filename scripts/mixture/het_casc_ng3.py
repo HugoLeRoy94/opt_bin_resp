@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 10
+N_RUNS = 1
 _SWEEP = list(range(3, 50, 2))  # n_receptors values, every 2, length 24
 _NS    = len(_SWEEP)
 

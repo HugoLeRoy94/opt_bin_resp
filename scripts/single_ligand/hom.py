@@ -23,7 +23,7 @@ _NS    = len(_SWEEP)
 config = RunConfig(
     # --- Environment ---
     n_families              = 1,
-    n_ligands               = 10,
+    n_ligands               = 100,
     latent_dim              = 5,
     family_spread           = 1.,
     average_family_distance = 0.,

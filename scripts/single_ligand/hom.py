@@ -19,15 +19,11 @@ N_RUNS = 1
 _SWEEP = list(range(3, 15))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
-_D_r = np.random.randint(5, 16, N_RUNS)
-_N_r = np.random.randint(150, 301, N_RUNS)
-_D   = np.repeat(_D_r, _NS)
-_N   = np.repeat(_N_r, _NS)
 
 config = RunConfig(
     # --- Environment ---
     n_families              = 1,
-    n_ligands               = 1,
+    n_ligands               = 10,
     latent_dim              = 5,
     family_spread           = 1.,
     average_family_distance = 0.,
@@ -58,7 +54,7 @@ config = RunConfig(
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.01, use_scheduler=False,
-    batch_size=500, test_batch_size=500,
+    batch_size=1000, test_batch_size=1000,
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

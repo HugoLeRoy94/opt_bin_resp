@@ -54,7 +54,7 @@ config = RunConfig(
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.01, use_scheduler=False,
-    batch_size=1000, test_batch_size=1000,
+    batch_size=5000, test_batch_size=5000,
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

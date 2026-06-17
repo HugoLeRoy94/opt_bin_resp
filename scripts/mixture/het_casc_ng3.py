@@ -38,7 +38,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.repeat(np.random.randint(30, 81, N_RUNS), _NS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(10, 20, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Interface model ---

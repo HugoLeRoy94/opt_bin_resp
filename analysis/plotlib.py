@@ -31,6 +31,11 @@ Typical use
 
     # a single run
     cfg, hist = load_run("fig1", n_genes=5, n_receptors=10)
+
+    # reconstruct env/physics for visualization
+    env, physics, ri = load_model("fig1", n_genes=5, n_receptors=10)
+    from src.analysis_helper import plot_summary
+    plot_summary(env, physics, ri)
 """
 import sys
 import sqlite3
@@ -43,7 +48,11 @@ import matplotlib.pyplot as plt
 _EXEC_DIR = Path(__file__).resolve().parents[1]          # opt_bin_resp/
 if str(_EXEC_DIR) not in sys.path:
     sys.path.append(str(_EXEC_DIR))
+import torch
+
 from src.IO import SingleRunLoader, run_files            # noqa: E402
+from src.run import ENV_REGISTRY, CONC_REGISTRY          # noqa: E402
+from src.physics import BinaryReceptor                   # noqa: E402
 
 DATA_ROOT = _EXEC_DIR / "data"
 
@@ -93,21 +102,100 @@ def load_runs(goal: str, n_genes=None, date=None, complete: bool = True,
     return df
 
 
-def load_run(goal: str = None, run_dir: str = None, **filters):
+def _resolve_run_dir(runs, goal=None, run_dir=None):
+    """Return an absolute run_dir path from the various input forms.
+
+    ``runs`` can be:
+      - a DataFrame from load_runs (first row is used)
+      - a Series (single row from a DataFrame)
+      - None (fall back to ``run_dir``)
+
+    ``goal`` is read from ``runs.attrs['goal']`` when available.
+    """
+    if run_dir is not None:
+        return run_dir
+    if runs is None:
+        raise ValueError("pass runs (DataFrame/Series) or run_dir")
+    if isinstance(runs, pd.DataFrame):
+        if runs.empty:
+            raise FileNotFoundError("empty DataFrame — no run to load")
+        goal = goal or runs.attrs.get("goal")
+        row = runs.iloc[0]
+    else:
+        goal = goal or getattr(runs, "attrs", {}).get("goal")
+        row = runs
+    if goal is None:
+        raise ValueError("goal unknown; pass goal= or use a df from load_runs")
+    return str(DATA_ROOT / goal / row["path"])
+
+
+def load_run(runs=None, *, goal: str = None, run_dir: str = None):
     """Return ``(config, history_df)`` for a single run.
 
-    Either pass an explicit ``run_dir``, or a ``goal`` plus equality filters
-    that identify a run (first match wins, e.g. n_genes=5, n_receptors=10).
+    Typical usage — filter with load_runs, then pick::
+
+        df = load_runs("fig1", receptor_type="homomer", entropy="shannon")
+        cfg, hist = load_run(df[df["R"] == 14])
+
+    Also accepts ``run_dir="/abs/path"`` for standalone directories.
     """
-    if run_dir is None:
-        if goal is None:
-            raise ValueError("pass run_dir, or goal + filters")
-        df = load_runs(goal, complete=False, **filters)
-        if df.empty:
-            raise FileNotFoundError(f"No run matches {filters} in goal {goal!r}")
-        run_dir = str(DATA_ROOT / goal / df.iloc[0]["path"])
+    run_dir = _resolve_run_dir(runs, goal, run_dir)
     loader = SingleRunLoader(run_dir)
     return loader.load_config(), loader.load_history()
+
+
+def load_model(runs=None, *, goal: str = None, run_dir: str = None,
+               device: str = "cpu"):
+    """Reconstruct ``(env, physics, receptor_indices)`` from a saved checkpoint.
+
+    Same input convention as :func:`load_run`::
+
+        df = load_runs("fig1", receptor_type="homomer", entropy="shannon")
+        env, physics, ri = load_model(df[df["R"] == 14])
+
+    Also accepts ``run_dir=`` for standalone directories (no runs.db).
+    """
+    run_dir = _resolve_run_dir(runs, goal, run_dir)
+
+    loader = SingleRunLoader(run_dir)
+    cfg = loader.load_config()
+    ckpt = loader.load_checkpoint(map_location=device)
+
+    conc_model = CONC_REGISTRY[cfg.conc_model_type](cfg)
+    env = ENV_REGISTRY[cfg.environment_geometry](
+        cfg.n_genes, cfg.n_families,
+        conc_model=conc_model,
+        n_ligands=cfg.n_ligands,
+        mu_sources=cfg.mu_sources,
+        mu_ligands_per_source=cfg.mu_ligands_per_source,
+        observation_noise_sigma=cfg.observation_noise_sigma,
+        latent_dim=cfg.latent_dim,
+        family_spread=cfg.family_spread,
+        avg_family_distance=cfg.average_family_distance,
+        n_presence_blocks=cfg.n_presence_blocks,
+        affinity_kernel=cfg.affinity_kernel,
+        kernel_params=cfg.kernel_params,
+        distribution_type=cfg.distribution_type,
+        use_interface_model=cfg.use_interface_model,
+        block_shared_conc_mean=cfg.block_shared_conc_mean,
+    ).to(device)
+    env.load_state_dict(ckpt["env_state"])
+    env.eval()
+
+    physics = BinaryReceptor(
+        cfg.n_genes, cfg.k_sub, temperature=cfg.temperature
+    ).to(device)
+    if ckpt["physics_state"]:
+        physics.load_state_dict(ckpt["physics_state"])
+    physics.eval()
+
+    ri = ckpt["receptor_indices"]
+    if isinstance(ri, torch.Tensor):
+        ri = ri.to(device)
+    else:
+        ri = torch.tensor(ri, dtype=torch.long, device=device)
+
+    return env, physics, ri
 
 
 def latest_sweep(df: pd.DataFrame, group: str = "n_genes") -> pd.DataFrame:

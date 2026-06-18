@@ -322,24 +322,26 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         n_samples_per_family: How many points to sample per family to generate the gradient.
     """
     import umap  # lazy: only needed here, keeps src importable without umap-learn
-    device = env.unit_latent.device
+    device = next(env.parameters()).device
     n_families = env.n_families
     n_ligands = env.n_ligands
     n_receptors = receptor_indices.shape[0]
-    
+
     # =====================================================================
     # 1. EXTRACT CENTERS AND ASSEMBLED RECEPTORS
     # =====================================================================
     v_families = env.family_latent.detach().cpu().numpy()
     v_ligands = env.ligand_latent.detach().cpu().numpy()
     ligand_assignments = env.ligand_family_assignments.detach().cpu().numpy()
-    
-    # Fetch all raw unit vectors: (n_genes, latent_dim)
-    v_units_tensor = env.unit_latent.detach().cpu()
-    
-    # Calculate the centroid of each assembled receptor 
-    # Shape: (N_Receptors, k_sub, latent_dim) -> mean(dim=1) -> (N_Receptors, latent_dim)
-    v_receptors = v_units_tensor[receptor_indices].mean(dim=1).numpy()
+
+    # Receptor centroids: pocket midpoints for interface model, unit embeddings otherwise
+    if getattr(env, 'use_interface_model', False):
+        idx_i = receptor_indices
+        idx_j = receptor_indices.roll(-1, dims=1)
+        v_pocket = 0.5 * (env.unit_latent_plus[idx_i] + env.unit_latent_minus[idx_j])
+        v_receptors = v_pocket.mean(dim=1).detach().cpu().numpy()
+    else:
+        v_receptors = env.unit_latent[receptor_indices].mean(dim=1).detach().cpu().numpy()
     
     # =====================================================================
     # 2. SAMPLE THE LIGAND REGIONS (To generate the gradient)

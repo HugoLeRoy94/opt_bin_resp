@@ -16,27 +16,29 @@ METRIC    = "full_array_entropy_blocked_mean"   # upper bound on MI
 METRIC_LO = "full_array_entropy_mean"           # lower bound on MI
 GENES     = [3, 5, 10, 20, 25, 35]
 
-homo = load_runs(GOAL, receptor_type="homomer",   entropy="renyi")
+homo = load_runs(GOAL, receptor_type="homomer",   entropy="blocked")
 hete = load_runs(GOAL, receptor_type="heteromer", entropy="blocked")
 
 r_ref = np.arange(1, 50)
 
-# %%
-# ── Plot 1 — env-condition spread for one arm (each sweep folder = one curve) ──
-df_g = hete[hete["n_genes"] == 10]
-ax = plot_metric(df_g, y=METRIC, x="R", group="sweep_folder")
-ax.plot(r_ref, r_ref, "k--", lw=.8)
-ax.set_title("Heteromers (20 genes) — per sweep folder")
-plt.show()
-
-# %%
-def latest(df):
-    max_date = df.groupby("n_genes")["sweep_date"].transform("max")
-    return df[df["sweep_date"] == max_date]
-
 # %% 
 
-print(latest(hete))
+hete = latest_sweep(hete)
+#print(homo.columns)
+print(set(hete['sweep_folder']))
+print(set(homo['sweep_folder']))
+
+#print(set(latest_sweep(hete[hete['n_genes']==10]['sweep_folder'])))
+print(latest_sweep(hete[hete['n_genes']==10])['sweep_folder'])
+
+# %%
+# ── Plot 1 — env-condition spread for one arm (each sweep folder = one curve) ──
+#df_g = hete[hete["n_genes"] == 10]
+df_g = homo
+ax = plot_metric(df_g, y=METRIC, x="R", group="sweep_folder")
+ax.plot(r_ref, r_ref, "k--", lw=.8)
+ax.set_title("Homomers — per sweep folder")
+plt.show()
 
 # %%
 # ── Plot 2 — summary: H(A) vs R, homomers + one heteromer curve per gene count ─
@@ -46,14 +48,17 @@ ax.plot(r_ref, r_ref, "k--", lw=1)
 ax.set_ylim(0, 50)
 ax.set_ylabel("H(A)  [bits]")
 ax.set_title("Array entropy vs number of receptors")
+#ax.set_xlim(0,10)
+#ax.set_ylim(0,10)
 plt.show()
 
 # %%
 # ── Plot 3 — convergence: metric vs epoch for one arm, one curve per R ─────────
-ep = load_epochs(hete[hete["n_genes"] == 35])
+#ep = load_epochs(hete[hete["n_genes"] == 35])
+ep = load_epochs(homo)
 ax = plot_metric(ep, y="full_array_entropy_blocked", x="epoch",
                  group="R", cmap="viridis", err=None)
-ax.set_title("Convergence — Heteromers (20 genes)")
+ax.set_title("Convergence — Homomers")
 ax.set_ylabel("H(A)  [bits]")
 plt.show()
 

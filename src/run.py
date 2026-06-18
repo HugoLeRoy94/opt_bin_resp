@@ -373,8 +373,10 @@ class SimulationRunner:
         return stat
 
     def _train(self, env, physics, loss_fn, optimizer, receptor_indices):
-        start_temp = compute_initial_temperature(env, receptor_indices)
-        print(start_temp)
+        if self.config.initial_temperature == "auto":
+            start_temp = compute_initial_temperature(env, receptor_indices)
+        else:
+            start_temp = float(self.config.initial_temperature)
         end_temp   = self.config.temperature
         scheduler  = (
             optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.epochs, eta_min=1e-5)

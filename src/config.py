@@ -65,7 +65,6 @@ class SingleRunConfig:
     temperature:           float
     affinity_kernel:       str          # "gaussian" or "quadratic"
     kernel_params:         List[float]  # [lambda] for gaussian, [] for quadratic
-    initial_temperature:   Union[float, str] = "auto"  # "auto" or explicit float
 
     # --- Mixture ---
     # Accepts int or the sentinel "auto" — resolved to an int by SimulationRunner._initialize().
@@ -82,6 +81,7 @@ class SingleRunConfig:
     lr:              float
     use_scheduler:   bool
     test_batch_size:  Union[int, str]        # "auto" resolved at init time
+    initial_temperature: Union[float, str] = "auto"  # "auto" or explicit float
     block_size:       int = 15               # blocked estimator: receptors per block (2^block_size bins)
     n_partitions:     int = 4                # blocked estimator: number of random partitions averaged
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
@@ -176,7 +176,6 @@ class RunConfig:
     temperature:           Union[float, List[float]]
     affinity_kernel:       Union[str,   List[str]]
     kernel_params:         Union[Tuple[float, ...], List[Tuple[float, ...]]]
-    initial_temperature:   Union[float, str, List[Union[float, str]]] = "auto"
 
     # --- Mixture ---
     batch_size: Union[int, str, List[Union[int, str]]]
@@ -195,6 +194,7 @@ class RunConfig:
     measurement_fns: Union[Tuple[str, ...], List[Tuple[str, ...]]]
 
     # --- Evaluation chunking ---
+    initial_temperature: Union[float, str, List[Union[float, str]]] = "auto"
     eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None
     block_size:      Union[int,           List[int]] = 15
     n_partitions:    Union[int,           List[int]] = 4

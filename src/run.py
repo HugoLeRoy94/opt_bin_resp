@@ -52,6 +52,7 @@ from src.analysis_helper import (
 )
 
 from src.bin_loss import DiscreteExactLoss
+from src.annealed_loss import AnnealedEntropyLoss
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
@@ -127,9 +128,10 @@ def resolve_batch_sizes(
     # large-R heuristic (16·√(2^R)) takes over.
     bin_dim   = min(n_receptors, block_size)
     stats_cap = {
-        "shannon": max(B_min, 100 * (1 << n_receptors)),
-        "renyi":   max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
-        "blocked": max(B_min, 100 * (1 << bin_dim)),
+        "shannon":  max(B_min, 100 * (1 << n_receptors)),
+        "renyi":    max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
+        "blocked":  max(B_min, 100 * (1 << bin_dim)),
+        "annealed": max(B_min, 100 * (1 << bin_dim)),
     }.get(entropy_type, max(B_min, 200 * n_receptors))
 
     if entropy_type == "shannon":
@@ -142,9 +144,10 @@ def resolve_batch_sizes(
         # Rényi-2 materialises a (B, B) collision matrix: B²·4 bytes.
         renyi_cap = max(B_min, int((mem_budget_bytes / (4 * 4)) ** 0.5))
         b_train = min(b_train, renyi_cap)
-    elif entropy_type == "blocked":
+    elif entropy_type in ("blocked", "annealed"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # ceil(R/block_size)·n_partitions of them are retained for backward.
+        # Annealed shares the same batch since its Rényi term reuses the batch.
         n_blk = ((n_receptors + block_size - 1) // block_size) * n_partitions
         blocked_mem_cap = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
         b_train = min(stats_cap, blocked_mem_cap)
@@ -184,13 +187,19 @@ def _build_loss(cfg) -> nn.Module:
             block_size=cfg.block_size,
             n_partitions=cfg.n_partitions,
         )
+    elif cfg.entropy == 'annealed':
+        return AnnealedEntropyLoss(
+            block_size=cfg.block_size,
+            n_partitions=cfg.n_partitions,
+        )
     elif cfg.entropy == 'mi_ligand':
         return MaximizeMutualInformationLigandLoss(entropy_type='renyi')
     elif cfg.entropy == 'mi_conc':
         return MaximizeMutualInformationConcentrationLoss(n_c_bins=cfg.n_c_bins, entropy_type='renyi')
     else:
         raise ValueError(f"Unknown entropy: {cfg.entropy!r}. "
-                         f"Choose from {DiscreteExactLoss._ENTROPY_FNS} or 'mi_ligand' / 'mi_conc'.")
+                         f"Choose from {DiscreteExactLoss._ENTROPY_FNS} or "
+                         f"'annealed' / 'mi_ligand' / 'mi_conc'.")
 
 CONC_REGISTRY = {
     "lognormal": lambda cfg: LogNormalConcentration(
@@ -402,6 +411,8 @@ class SimulationRunner:
                 loss = loss_fn(activity, mixture_masks=masks)
             elif isinstance(loss_fn, MaximizeMutualInformationConcentrationLoss):
                 loss = loss_fn(activity, concs=concs)
+            elif isinstance(loss_fn, AnnealedEntropyLoss):
+                loss = loss_fn(activity, epoch, self.config.epochs)
             else:
                 loss = loss_fn(activity)
 

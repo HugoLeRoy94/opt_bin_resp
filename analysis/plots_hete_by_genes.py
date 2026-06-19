@@ -55,12 +55,15 @@ plt.show()
 # %%
 # ── Plot 3 — convergence: metric vs epoch for one arm, one curve per R ─────────
 #ep = load_epochs(hete[hete["n_genes"] == 35])
-ep = load_epochs(homo)
-ax = plot_metric(ep, y="full_array_entropy_blocked", x="epoch",
+ep = load_epochs(hete[hete['n_genes']==35])
+ax = plot_metric(ep, y="full_array_entropy", x="epoch",
                  group="R", cmap="viridis", err=None)
 ax.set_title("Convergence — Homomers")
 ax.set_ylabel("H(A)  [bits]")
 plt.show()
+
+# %%
+print(hete[(hete['n_genes']==3) & (hete['R']==11)]['epochs'])
 
 # %%
 # ── Plot 4 — MI vs n_genes: homomer line + heteromer error bars by n_receptors ─
@@ -82,9 +85,9 @@ plt.show()
 
 # %%
 # ── Plot 5 — MI bounds: upper (solid) vs lower (dashed) per arm ────────────────
-ax = plot_metric(homo, y=METRIC,    x="R", color="k", lw=2, label="Homomers")
-plot_metric(homo, y=METRIC_LO, x="R", color="k", lw=1.5, ls="--", ax=ax)
-plot_metric(hete, y=METRIC,    x="R", group="n_genes", cmap="viridis", ax=ax)
+#ax = plot_metric(homo, y=METRIC,    x="R", color="k", lw=2, label="Homomers")
+ax = plot_metric(homo, y=METRIC_LO, x="R", color="k", lw=1.5, ls="--")
+#plot_metric(hete, y=METRIC,    x="R", group="n_genes", cmap="viridis", ax=ax)
 plot_metric(hete, y=METRIC_LO, x="R", group="n_genes", cmap="viridis",
             ax=ax, ls="--")
 ax.plot(r_ref, r_ref, "k--", lw=1); ax.set_ylim(0, 50)

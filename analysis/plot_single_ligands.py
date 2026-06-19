@@ -29,7 +29,7 @@ hete = latest_sweep(hete)
 #print(set(hete['sweep_folder']))
 print(set(homo['sweep_folder']))
 #homo = homo[homo['sweep_folder'] == 'homomers_20260617_150903']
-homo = homo[homo['sweep_folder'] == 'homomers_20260617_155120']
+#homo = homo[homo['sweep_folder'] == 'homomers_20260617_155120']
 print(set(homo['sweep_folder']))
 print(homo["n_ligands"])
 
@@ -55,5 +55,6 @@ env, physics, ri = load_model(homo[homo["R"] == max_R])
 fig, ax = plt.subplots(figsize=(7, 6))
 plot_latent_umap(env, ri, ax=ax)
 ax.set_title(f"Latent space UMAP — Homomers (R={max_R})")
+plt.savefig('umap_test.svg')
 plt.show()
 # %%

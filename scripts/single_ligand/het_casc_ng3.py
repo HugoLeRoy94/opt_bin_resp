@@ -16,21 +16,17 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(3, 15, 1))  # n_receptors values, every 2, length 24
+_SWEEP = list(range(3, 50, 1))  # n_receptors values, every 2, length 24
 _NS    = len(_SWEEP)
 
-_D_r = np.random.randint(5, 16, N_RUNS)
-_N_r = np.random.randint(150, 301, N_RUNS)
-_D   = np.repeat(_D_r, _NS)
-_N   = np.repeat(_N_r, _NS)
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = 1,
-    n_ligands               = _N.tolist(),
-    latent_dim              = _D.tolist(),
-    family_spread           = 1.,
-    average_family_distance = np.repeat(np.random.uniform(0.5, 1.5, N_RUNS), _NS).tolist(),
+    n_families              = 5,
+    n_ligands               = 200,
+    latent_dim              = 5,
+    family_spread           = .2,
+    average_family_distance = 1.,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
     observation_noise_sigma = 0.01,
@@ -46,14 +42,14 @@ config = RunConfig(
 
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = [cm for cm in [tuple(np.random.uniform(-8.0, -3.0, n)) for n in _N_r] for _ in range(_NS)],
-    conc_std        = [cs for cs in [(1.0,) * int(n) for n in _N_r] for _ in range(_NS)],
+    conc_mean       = -5.,
+    conc_std        = 1.,
 
     # --- Physics ---
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="blocked", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,

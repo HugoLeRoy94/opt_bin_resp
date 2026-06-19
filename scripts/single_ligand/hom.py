@@ -16,21 +16,21 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(3, 15))    # n_genes values, length 47
+_SWEEP = list(range(3, 50))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
 
 config = RunConfig(
     # --- Environment ---
-    n_families              = 1,
-    n_ligands               = 10,
+    n_families              = 5,
+    n_ligands               = 200,
     latent_dim              = 5,
-    family_spread           = 1.,
-    average_family_distance = 0.,
+    family_spread           = .2,
+    average_family_distance = 1.,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.0,
-    initial_temperature=5.0,
+    observation_noise_sigma = 0.01,
+    initial_temperature="auto",
 
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
@@ -51,11 +51,11 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="shannon", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="blocked", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.01, use_scheduler=False,
-    batch_size=500, test_batch_size=500,
+    batch_size="auto", test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---

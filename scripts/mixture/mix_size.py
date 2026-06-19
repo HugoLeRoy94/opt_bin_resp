@@ -31,7 +31,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = list(range(10,20,1)),
+    mu_ligands_per_source  = list(range(1,20,2)),
     block_shared_conc_mean = False,
 
     # --- Interface model ---
@@ -55,7 +55,7 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes                    = 3,
+    n_genes                    = 5,
     n_receptors                = 20,
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,

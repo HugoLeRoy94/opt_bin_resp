@@ -7,8 +7,12 @@ bin_loss.py — Discrete joint entropy estimators for binary receptor arrays.
 Four estimators selectable via entropy_type in DiscreteExactLoss:
   'shannon' : exact enumeration, O(B·2^R) — only for R < ~15.
   'renyi'   : exact Rényi H2, O(B²·R) — default scalable choice.
-  'blocked' : block-wise Shannon, O(B·2^block_size) — captures higher-order terms.
+  'blocked' : correlation-aware blocked Shannon, O(B·2^block_size + R²).
   'proxy'   : Σ H_r − cov_weight·penalty, O(B·R²) — fastest pairwise approximation.
+
+Blocked estimator: partitions receptors by |Pearson correlation| affinity
+(greedy clustering), then computes exact Shannon entropy within each block.
+Partition is cached and refreshed every block_refresh_interval training steps.
 
 Rényi trick: log P(collision) = Σ_r log P_r(collision) computed in log-space
 via logsumexp, diagonal (self-collision) masked out before averaging.
@@ -109,43 +113,108 @@ def compute_renyi_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     return joint_h
 
 
+def compute_correlation_aware_partition(
+    activity: torch.Tensor,
+    block_size: int = 15,
+) -> list:
+    """Partition receptors into blocks that group correlated receptors together.
+
+    Uses |Pearson correlation| as an affinity measure computed via a single
+    matmul on batch-centered activity.  Greedy grouping: each block is seeded
+    with the highest-affinity remaining pair, then grown by picking the
+    receptor with the maximum affinity to the current block until the block
+    reaches ``block_size``.  The procedure repeats until all receptors are
+    assigned.
+
+    Args:
+        activity:   (B, R) tensor, already detached (stop-grad).
+        block_size: maximum number of receptors per block.
+
+    Returns:
+        List of 1-D ``LongTensor`` index vectors, one per block.
+    """
+    B, R = activity.shape
+    device = activity.device
+
+    centered = activity - activity.mean(dim=0, keepdim=True)
+    std = centered.norm(dim=0).clamp(min=1e-12)           # (R,)
+    corr = (centered.T @ centered) / (B - 1)              # (R, R)
+    corr = corr / (std.unsqueeze(1) * std.unsqueeze(0))   # normalise to Pearson
+    affinity = corr.abs()
+    affinity.fill_diagonal_(0.0)
+
+    remaining = set(range(R))
+    blocks: list = []
+
+    while remaining:
+        if len(remaining) <= block_size:
+            blocks.append(torch.tensor(sorted(remaining), dtype=torch.long, device=device))
+            break
+
+        rem_list = sorted(remaining)
+        rem_t = torch.tensor(rem_list, dtype=torch.long, device=device)
+        sub_aff = affinity[rem_t][:, rem_t]                # (|rem|, |rem|)
+        best = sub_aff.argmax().item()
+        i_local, j_local = best // len(rem_list), best % len(rem_list)
+        block = [rem_list[i_local], rem_list[j_local]]
+        remaining.discard(block[0])
+        remaining.discard(block[1])
+
+        while len(block) < block_size and remaining:
+            block_t = torch.tensor(block, dtype=torch.long, device=device)
+            rem_list_inner = sorted(remaining)
+            rem_t_inner = torch.tensor(rem_list_inner, dtype=torch.long, device=device)
+            aff_to_block = affinity[rem_t_inner][:, block_t].sum(dim=1)  # (|rem|,)
+            best_idx = aff_to_block.argmax().item()
+            chosen = rem_list_inner[best_idx]
+            block.append(chosen)
+            remaining.discard(chosen)
+
+        blocks.append(torch.tensor(block, dtype=torch.long, device=device))
+
+    return blocks
+
+
 def compute_blocked_entropy(
     soft_assign: torch.Tensor,
     block_size: int = 15,
-    n_partitions: int = 4,
+    partition: list = None,
 ) -> torch.Tensor:
-    """
-    Approximates the joint Shannon entropy by partitioning receptors into small
-    blocks and computing the exact Shannon entropy within each block, then summing
+    """Approximates the joint Shannon entropy via correlation-aware blocking.
+
+    Partitions receptors into blocks that cluster correlated receptors
+    together, computes exact Shannon entropy within each block, and sums
     under a between-block independence assumption:
 
-        H_blocked = (1/n_partitions) * Σ_partitions [ Σ_k H_exact(block_k) ]
+        H_blocked = Σ_k H_exact(block_k)
 
-    This is fundamentally different from pairwise (Bethe) approximations: it
-    captures all within-block higher-order interactions exactly. Cross-block
-    correlations are the only source of error, and that error vanishes at the
-    entropy-maximizing solution (independent receptors).
+    Correlated receptors sharing a block means the within-block entropy
+    already accounts for their joint distribution, yielding a tighter upper
+    bound than random partitioning.  Cross-block correlations are the only
+    source of error, and that error vanishes at the entropy-maximizing
+    solution (independent receptors).
 
-    Averaging over multiple random partitions reduces bias from whichever
-    cross-block correlations happen to be ignored in a single partition.
+    The partition is computed from the detached activity (no gradient) so
+    the grouping does not contribute to the computational graph; gradients
+    flow only through the within-block Shannon entropy terms.
 
-    Memory: O(B * 2^block_size) per block — for block_size=15 and B=5000, ~640 MB,
-    vs O(B * 2^R) for the exact joint computation.
+    Memory: O(B * 2^block_size) per block.
+
+    Args:
+        soft_assign: (B, R, K) soft-assignment tensor.
+        block_size:  max receptors per block.
+        partition:   optional precomputed partition (list of LongTensor).
+                     When ``None`` a fresh correlation-aware partition is
+                     built from ``soft_assign[:, :, 1]`` (the activity).
     """
-    B, R, _ = soft_assign.shape
+    if partition is None:
+        activity_detached = soft_assign[:, :, 1].detach()
+        partition = compute_correlation_aware_partition(activity_detached, block_size)
 
-    partition_entropies = []
-    for _ in range(n_partitions):
-        perm = torch.randperm(R, device=soft_assign.device)
-        h_partition = soft_assign.new_zeros(())
-
-        for k in range(math.ceil(R / block_size)):
-            block_idx = perm[k * block_size : (k + 1) * block_size]
-            h_partition = h_partition + compute_shannon_joint_entropy(soft_assign[:, block_idx, :])
-
-        partition_entropies.append(h_partition)
-
-    return torch.stack(partition_entropies).mean()
+    h = soft_assign.new_zeros(())
+    for block_idx in partition:
+        h = h + compute_shannon_joint_entropy(soft_assign[:, block_idx, :])
+    return h
 
 
 def compute_proxy_entropy(
@@ -199,7 +268,7 @@ class DiscreteExactLoss(nn.Module):
     entropy_type selects the estimator used for training:
       'shannon' : exact enumeration         O(B · 2^R)            only for small R
       'renyi'   : exact Rényi H2            O(B² · R)             scalable, good gradients
-      'blocked' : blocked Shannon approx    O(B · 2^block_size)   captures higher-order terms
+      'blocked' : correlation-aware blocked Shannon  O(B · 2^block_size)
       'proxy'   : Σ H_r − cov_weight·penalty  O(B · R²)           fast pairwise approximation
 
     Training with one estimator and evaluating with another is supported via
@@ -210,6 +279,11 @@ class DiscreteExactLoss(nn.Module):
         loss      = criterion(activity)                          # training
         h_renyi   = criterion.compute_entropy(activity)          # Rényi in bits
         h_blocked = criterion.compute_entropy(activity, 'blocked')  # blocked in bits
+
+    The blocked estimator caches its correlation-aware partition and refreshes
+    it every ``block_refresh_interval`` training steps.  Evaluation calls
+    should pass ``use_cache=False`` to get a fresh partition for the eval
+    batch without touching the training cache.
     """
     _ENTROPY_FNS = ('shannon', 'renyi', 'blocked', 'proxy')
 
@@ -220,6 +294,7 @@ class DiscreteExactLoss(nn.Module):
         n_partitions: int   = 4,
         cov_weight:   float = 0.0,
         penalty_type: str   = 'covariance',
+        block_refresh_interval: int = 50,
     ):
         super().__init__()
         if entropy_type not in self._ENTROPY_FNS:
@@ -231,9 +306,11 @@ class DiscreteExactLoss(nn.Module):
         self.n_partitions = n_partitions
         self.cov_weight   = cov_weight
         self.penalty_type = penalty_type
+        self.block_refresh_interval = block_refresh_interval
+        self._cached_partition = None
+        self._steps_since_refresh = 0
 
     def compute_soft_assignment(self, activity: torch.Tensor) -> torch.Tensor:
-        # For binary systems, activity is exactly P(fire). This avoids vanishing gradients.
         return torch.stack([1.0 - activity, activity], dim=-1)
 
     def _compute_soft_histogram_entropy(self, activity: torch.Tensor) -> torch.Tensor:
@@ -241,7 +318,23 @@ class DiscreteExactLoss(nn.Module):
         p = self.compute_soft_assignment(activity).mean(dim=0).clamp(min=1e-12)  # (R, 2)
         return -(p * torch.log2(p)).sum(dim=-1)                                   # (R,)
 
-    def compute_entropy(self, activity: torch.Tensor, entropy_type: str = None) -> torch.Tensor:
+    def _get_blocked_entropy(self, activity: torch.Tensor, soft_assign: torch.Tensor,
+                             use_cache: bool) -> torch.Tensor:
+        """Blocked entropy with optional partition caching."""
+        if not use_cache:
+            return compute_blocked_entropy(soft_assign, self.block_size)
+
+        self._steps_since_refresh += 1
+        if (self._cached_partition is None
+                or self._steps_since_refresh >= self.block_refresh_interval):
+            self._cached_partition = compute_correlation_aware_partition(
+                activity.detach(), self.block_size
+            )
+            self._steps_since_refresh = 0
+        return compute_blocked_entropy(soft_assign, self.block_size, self._cached_partition)
+
+    def compute_entropy(self, activity: torch.Tensor, entropy_type: str = None,
+                        use_cache: bool = True) -> torch.Tensor:
         """
         Returns the joint entropy in bits (positive scalar).
 
@@ -249,6 +342,8 @@ class DiscreteExactLoss(nn.Module):
             activity:     Soft binary activity, shape (B, R).
             entropy_type: Override the instance entropy_type for this call.
                           Useful for computing a more accurate estimate at eval time.
+            use_cache:    If True (default), use/maintain the cached partition for
+                          the blocked estimator.  Eval callers should pass False.
         """
         etype = entropy_type if entropy_type is not None else self.entropy_type
         if etype not in self._ENTROPY_FNS:
@@ -260,9 +355,9 @@ class DiscreteExactLoss(nn.Module):
         elif etype == 'renyi':
             return compute_renyi_joint_entropy(soft_assign)
         elif etype == 'blocked':
-            return compute_blocked_entropy(soft_assign, self.block_size, self.n_partitions)
+            return self._get_blocked_entropy(activity, soft_assign, use_cache)
         else:  # proxy
             return compute_proxy_entropy(soft_assign, self.cov_weight, self.penalty_type)
 
     def forward(self, activity: torch.Tensor) -> torch.Tensor:
-        return -self.compute_entropy(activity)  # Maximize joint entropy
+        return -self.compute_entropy(activity, use_cache=True)

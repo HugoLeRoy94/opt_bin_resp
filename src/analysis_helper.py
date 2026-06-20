@@ -543,8 +543,8 @@ def full_array_entropy(activity, loss_fn):
     act = activity.detach()
 
     if hasattr(loss_fn, 'compute_entropy'):
-        h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi').item()
-        h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked').item()
+        h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi', use_cache=False).item()
+        h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked', use_cache=False).item()
         return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked}
 
     # Legacy path for other loss types.

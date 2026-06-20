@@ -146,9 +146,10 @@ def resolve_batch_sizes(
         b_train = min(b_train, renyi_cap)
     elif entropy_type in ("blocked", "annealed"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
-        # ceil(R/block_size)·n_partitions of them are retained for backward.
+        # One correlation-aware partition with ceil(R/block_size) blocks is
+        # retained for backward (no partition averaging).
         # Annealed shares the same batch since its Rényi term reuses the batch.
-        n_blk = ((n_receptors + block_size - 1) // block_size) * n_partitions
+        n_blk = (n_receptors + block_size - 1) // block_size
         blocked_mem_cap = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
         b_train = min(stats_cap, blocked_mem_cap)
     else:

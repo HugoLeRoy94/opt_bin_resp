@@ -16,7 +16,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(10, 50, 2))  # n_receptors values, every 2, length 20
+_SWEEP = list(range(15, 50, 2))  # n_receptors values, every 2, length 20
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -62,11 +62,11 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes                    = 10,
+    n_genes                    = 15,
     n_receptors                = _SWEEP * N_RUNS,
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
-    sweep_name                 = "ng10",
+    sweep_name                 = "ng15",
     base_folder                = "/app/data/fig1",
     warm_start                 = False,
 )

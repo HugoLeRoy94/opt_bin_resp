@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-# Heteromers cascading strategy, n_genes = 10.
-# Sweeps n_receptors from 10 to 49; n_genes fixed — no warm-start.
-# 10 runs x 40 receptor values = 400 configs, random environment within
+# Heteromers cascading strategy, n_genes = 5.
+# Sweeps n_receptors from 5 to 49; n_genes fixed — no warm-start.
+# 10 runs x 45 receptor values = 450 configs, random environment within
 # high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/het_casc_ng10.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/het_casc_ng5.py
 
 import time
 import numpy as np
@@ -16,7 +16,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 1
-_SWEEP = list(range(10, 50, 2))  # n_receptors values, every 2, length 20
+_SWEEP = list(range(7, 50, 2))  # n_receptors values, every 2, length 23
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -62,11 +62,11 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes                    = 10,
+    n_genes                    = 7,
     n_receptors                = _SWEEP * N_RUNS,
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
-    sweep_name                 = "ng10",
+    sweep_name                 = "ng7",
     base_folder                = "/app/data/fig1",
     warm_start                 = False,
 )
@@ -76,4 +76,4 @@ t0 = time.time()
 SweepRunner(config).execute()
 h, rem = divmod(time.time() - t0, 3600)
 m, s = divmod(rem, 60)
-print(f"\nHeteromer cascading ng=10 sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")
+print(f"\nHeteromer cascading ng=5 sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")

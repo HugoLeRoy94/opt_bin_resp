@@ -342,6 +342,12 @@ class RunConfig:
         d.setdefault("mu_ligands_per_source", 1.0)
         d.setdefault("block_shared_conc_mean", False)
 
+        # Backward compat: renyi → collision rename
+        if d.get("entropy") == "renyi":
+            d["entropy"] = "collision"
+        elif isinstance(d.get("entropy"), list):
+            d["entropy"] = ["collision" if e == "renyi" else e for e in d["entropy"]]
+
         return cls(**d)
 
     def __str__(self) -> str:

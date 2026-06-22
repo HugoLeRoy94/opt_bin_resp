@@ -50,7 +50,7 @@ python -m src.db query runs.db --where "n_genes=5 AND status='complete'"
 
 # Specific columns, limit output
 python -m src.db query runs.db \
-  --where "entropy='renyi' AND n_receptors>10" \
+  --where "entropy='collision' AND n_receptors>10" \
   --cols "path,n_genes,n_receptors,full_array_entropy_mean" \
   --limit 20
 

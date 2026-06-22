@@ -9,7 +9,7 @@ H(A|M) is computed by hashing mixture masks to integer IDs via binary powers
 """
 import torch
 import torch.nn as nn
-from .bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy
+from .bin_loss import compute_shannon_joint_entropy, compute_collision_entropy
 
 class MaximizeMutualInformationLigandLoss(nn.Module):
     """
@@ -33,10 +33,10 @@ class MaximizeMutualInformationLigandLoss(nn.Module):
         
         if self.entropy_type == 'shannon':
             entropy_fn = compute_shannon_joint_entropy
-        elif self.entropy_type == 'renyi':
-            entropy_fn = compute_renyi_joint_entropy
+        elif self.entropy_type == 'collision':
+            entropy_fn = compute_collision_entropy
         else:
-            raise ValueError(f"Unknown entropy_type: {self.entropy_type}. Choose 'shannon' or 'renyi'.")
+            raise ValueError(f"Unknown entropy_type: {self.entropy_type}. Choose 'shannon' or 'collision'.")
             
         h_a = entropy_fn(soft_assign)
         

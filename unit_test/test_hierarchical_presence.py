@@ -195,7 +195,7 @@ def test_old_config_compat():
         "affinity_kernel": "gaussian",
         "kernel_params": [1.0],
         "batch_size": 256,
-        "entropy": "renyi",
+        "entropy": "collision",
         "cov_weight": None,
         "penalty_type": None,
         "n_c_bins": 10,

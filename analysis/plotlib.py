@@ -18,7 +18,7 @@ Typical use
     M = "full_array_entropy_blocked_mean"
 
     # all heteromers in goal "fig1", Renyi entropy, one curve per gene count
-    df = load_runs("fig1", receptor_type="heteromer", entropy="renyi")
+    df = load_runs("fig1", receptor_type="heteromer", entropy="collision")
     plot_metric(df, y=M, x="R", group="n_genes", cmap="viridis")
 
     # one specific sweep (goal + n_genes + date)
@@ -71,7 +71,7 @@ def load_runs(goal: str, n_genes=None, date=None, complete: bool = True,
                "20260612" or a full "ng20_20260612_165139". ([... + date])
     complete : keep only finished runs (status == 'complete').
     filters  : extra equality filters on ANY column; scalar or list, e.g.
-               entropy="renyi", receptor_type="heteromer", git_hash="a1885319".
+               entropy="collision", receptor_type="heteromer", git_hash="a1885319".
 
     All receptor counts and environmental conditions matching the filter are
     returned together (one row per run).  A convenience column ``R`` is added:

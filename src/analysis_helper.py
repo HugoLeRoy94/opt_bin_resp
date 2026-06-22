@@ -8,7 +8,7 @@ via signature introspection, accepting whichever of (env, physics, receptor_indi
 loss_fn, activity, concs, mixture_masks, family_labels, epoch) they need.
 
 Key metrics:
-  full_array_entropy      — Rényi H2 + blocked Shannon of soft joint activity
+  full_array_entropy      — collision H2 + blocked Shannon of soft joint activity
   codeword_entropy        — hard plug-in entropy + Miller-Madow bias correction
   mean_specialization_index — S_r = (A_max − A_bg) / (A_max + A_bg)
   rank_ordered_distances  — average energy gap from preferred ligand (rank-ordered)
@@ -24,7 +24,7 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import seaborn as sns
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
-from src.bin_loss import compute_shannon_joint_entropy, compute_renyi_joint_entropy, compute_blocked_entropy
+from src.bin_loss import compute_shannon_joint_entropy, compute_collision_entropy, compute_blocked_entropy
 
 
 @torch.no_grad()
@@ -217,7 +217,7 @@ def evaluate_model(env,physics,receptor_indices,loss_fn,n_samples=2000):
     activity = physics(energies, concs, receptor_indices)
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = compute_renyi_joint_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi' else compute_shannon_joint_entropy
+    entropy_fn = compute_collision_entropy if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision' else compute_shannon_joint_entropy
     val = entropy_fn(soft_assign)
     return val.item() if isinstance(val, torch.Tensor) else val
 
@@ -533,7 +533,7 @@ def full_array_entropy(activity, loss_fn):
     Soft-assignment joint entropy of the full receptor array.
 
     Returns a dict with keys:
-      'full_array_entropy'         — Rényi H2 (fast, used as training loss)
+      'full_array_entropy'         — collision H2 (fast, used as training loss)
       'full_array_entropy_blocked' — blocked Shannon approximation (more accurate)
 
     Both estimators work on continuous soft probabilities, so they are not
@@ -543,15 +543,21 @@ def full_array_entropy(activity, loss_fn):
     act = activity.detach()
 
     if hasattr(loss_fn, 'compute_entropy'):
-        h_renyi   = loss_fn.compute_entropy(act, entropy_type='renyi', use_cache=False).item()
-        h_blocked = loss_fn.compute_entropy(act, entropy_type='blocked', use_cache=False).item()
-        return {'full_array_entropy': h_renyi, 'full_array_entropy_blocked': h_blocked}
+        h_collision = loss_fn.compute_entropy(act, entropy_type='collision', use_cache=False).item()
+        h_blocked   = loss_fn.compute_entropy(act, entropy_type='blocked', use_cache=False).item()
+        result = {'full_array_entropy': h_collision, 'full_array_entropy_blocked': h_blocked}
+        try:
+            h_bc = loss_fn.compute_entropy(act, entropy_type='blocked_corrected', use_cache=False).item()
+            result['full_array_entropy_blocked_corrected'] = h_bc
+        except (ValueError, AttributeError):
+            pass
+        return result
 
     # Legacy path for other loss types.
     if hasattr(loss_fn, 'compute_soft_assignment'):
         soft_assign = loss_fn.compute_soft_assignment(act)
-        entropy_fn = (compute_renyi_joint_entropy
-                      if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+        entropy_fn = (compute_collision_entropy
+                      if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                       else compute_shannon_joint_entropy)
         h = entropy_fn(soft_assign).item()
     elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
@@ -611,8 +617,8 @@ def conditional_entropy_ligand(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
 
     B, n_ligands = mixture_masks.shape[0], mixture_masks.shape[1]
@@ -642,8 +648,8 @@ def mutual_information_ligand(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
@@ -666,8 +672,8 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
 
     B, n_ligands = activity.shape[0], concs.shape[1]
@@ -701,8 +707,8 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
@@ -729,8 +735,8 @@ def conditional_entropy_family(activity, family_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
 
     B, n_fam = family_labels.shape
@@ -761,8 +767,8 @@ def mutual_information_family(activity, family_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
@@ -794,8 +800,8 @@ def conditional_entropy_block(activity, block_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
 
     B, n_blocks = block_labels.shape
@@ -829,8 +835,8 @@ def mutual_information_block(activity, block_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_renyi_joint_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'renyi'
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a

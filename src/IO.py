@@ -150,6 +150,8 @@ class SingleRunLoader:
         filtered.setdefault("mu_sources", 1.0)
         filtered.setdefault("mu_ligands_per_source", 1.0)
         filtered.setdefault("block_shared_conc_mean", False)
+        if filtered.get("entropy") == "renyi":
+            filtered["entropy"] = "collision"
         return SingleRunConfig(**filtered)
 
     def load_history(self) -> pd.DataFrame:

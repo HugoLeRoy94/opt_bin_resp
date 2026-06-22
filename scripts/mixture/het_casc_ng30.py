@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 1
+N_RUNS = 10
 _SWEEP = list(range(25, 50, 2))  # n_receptors values, every 2, length 20
 _NS    = len(_SWEEP)
 
@@ -38,7 +38,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.repeat(np.random.randint(10, 20, N_RUNS), _NS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(30, 81, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Interface model ---
@@ -53,7 +53,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="annealed", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="collision", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,

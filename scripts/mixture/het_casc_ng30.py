@@ -5,7 +5,7 @@
 # 10 runs x 40 receptor values = 400 configs, random environment within
 # high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixtures/het_casc_ng25.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixtures/het_casc_ng30.py
 
 import time
 import numpy as np
@@ -15,8 +15,8 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 10
-_SWEEP = list(range(25, 50, 2))  # n_receptors values, every 2, length 20
+N_RUNS = 1
+_SWEEP = list(range(30, 50, 2))  # n_receptors values, every 2, length 20
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -38,7 +38,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.repeat(np.random.randint(30, 81, N_RUNS), _NS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(10, 20, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Interface model ---
@@ -53,7 +53,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="collision", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="blocked_to_corrected", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
@@ -62,11 +62,11 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes                    = 25,
+    n_genes                    = 30,
     n_receptors                = _SWEEP * N_RUNS,
     receptor_sampling_strategy = "cascading",
     receptor_sampling_seed     = 0,
-    sweep_name                 = "ng25",
+    sweep_name                 = "ng30",
     base_folder                = "/app/data/fig1",
     warm_start                 = False,
 )

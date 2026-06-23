@@ -17,7 +17,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 N_RUNS = 5
-_SWEEP = [15, 30, 45]           # R/G ≈ 1,2,3 (4*15=60 > 49)
+_SWEEP = [15, 30, 45, 60, 75]           # R/G ≈ 1,2,3 (4*15=60 > 49)
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -39,7 +39,7 @@ config = RunConfig(
     # --- Presence (hierarchical sampler) ---
     n_presence_blocks      = 1,
     mu_sources             = 1,
-    mu_ligands_per_source  = np.repeat(np.random.randint(10, 20, N_RUNS), _NS).tolist(),
+    mu_ligands_per_source  = np.repeat(np.random.randint(20, 30, N_RUNS), _NS).tolist(),
     block_shared_conc_mean = False,
 
     # --- Interface model ---

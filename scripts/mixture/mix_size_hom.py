@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-# Heteromers cascading strategy, n_genes = 10.
-# Sweeps n_receptors from 10 to 49; n_genes fixed — no warm-start.
-# 10 runs x 40 receptor values = 400 configs, random environment within
-# high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
+# Homomers mixture-size sweep: n_genes = 5.
+# Sweeps mu_ligands_per_source from 1 to 29 (step 2); n_genes fixed — no warm-start.
+# 10 runs with fixed environment parameters.
 #
-# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/mix_size.py
+# docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/mix_size_hom.py
 
 import time
 import numpy as np
@@ -34,9 +33,6 @@ config = RunConfig(
     mu_ligands_per_source  = list(range(1,40,2)),
     block_shared_conc_mean = False,
 
-    # --- Interface model ---
-    use_interface_model = True,
-
     # --- Concentration ---
     conc_model_type = "lognormal",
     conc_mean       = -5.,
@@ -55,13 +51,10 @@ config = RunConfig(
     measurement_fns=("full_array_entropy",),
 
     # --- Sweep ---
-    n_genes                    = 5,
-    n_receptors                = 15,
-    receptor_sampling_strategy = "cascading",
-    receptor_sampling_seed     = 0,
-    sweep_name                 = "het_ng15",
-    base_folder                = "/app/data/mix_size",
-    warm_start                 = False,
+    n_genes     = 15,
+    sweep_name  = "hom",
+    base_folder = "/app/data/mix_size",
+    warm_start  = False,
 )
 
 print(config)
@@ -69,4 +62,4 @@ t0 = time.time()
 SweepRunner(config).execute()
 h, rem = divmod(time.time() - t0, 3600)
 m, s = divmod(rem, 60)
-print(f"\nHeteromer cascading ng=10 sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")
+print(f"\nHomomer mix-size sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")

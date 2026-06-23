@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
-# Heteromers cascading strategy, n_genes = 10.
-# Sweeps n_receptors from 10 to 49; n_genes fixed — no warm-start.
-# 10 runs x 40 receptor values = 400 configs, random environment within
-# high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
+# Heteromers cascading strategy, n_genes = 15.
+# Targets R/G ratios 1–3 (R = 15,30,45); n_genes fixed — no warm-start.
+# Ratios 4+ exceed R=49 limit for this gene count.
+# Each invocation draws one random environment within the high-entropy regime
+# (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/het_casc_ng15.py
 
@@ -15,8 +16,8 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 1
-_SWEEP = list(range(15, 50, 2))  # n_receptors values, every 2, length 20
+N_RUNS = 5
+_SWEEP = [15, 30, 45]           # R/G ≈ 1,2,3 (4*15=60 > 49)
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -53,7 +54,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="blocked_to_corrected", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="annealed", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,
@@ -76,4 +77,4 @@ t0 = time.time()
 SweepRunner(config).execute()
 h, rem = divmod(time.time() - t0, 3600)
 m, s = divmod(rem, 60)
-print(f"\nHeteromer cascading ng=10 sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")
+print(f"\nHeteromer cascading ng=15 sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")

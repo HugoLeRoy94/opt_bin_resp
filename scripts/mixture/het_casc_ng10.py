@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 # Heteromers cascading strategy, n_genes = 10.
-# Sweeps n_receptors from 10 to 49; n_genes fixed — no warm-start.
-# 10 runs x 40 receptor values = 400 configs, random environment within
-# high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
+# Targets R/G ratios 1–5 (R = 10,20,30,40,49); n_genes fixed — no warm-start.
+# Each invocation draws one random environment within the high-entropy regime
+# (rho in [0.2,1], d_fam/lambda in [0.5,1.5]).
 #
 # docker compose -f /home/leroy/opt_bin_resp/docker-compose.server.yaml run --rm gpu-runner python3 /app/scripts/mixture/het_casc_ng10.py
 
@@ -15,8 +15,8 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 1
-_SWEEP = list(range(10, 50, 2))  # n_receptors values, every 2, length 20
+N_RUNS = 5
+_SWEEP = [10, 20, 30, 40, 49]   # R/G ≈ 1,2,3,4,5 (49 rounds to ratio 5)
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)

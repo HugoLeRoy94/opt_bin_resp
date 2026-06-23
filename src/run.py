@@ -13,6 +13,7 @@ Key behaviours:
   - Measurement dispatch: functions selected by name from MEASUREMENT_REGISTRY,
     called via inspect.signature to inject only the arguments they accept.
 """
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -91,12 +92,18 @@ def resolve_batch_sizes(
     block_size: int = 15,
     n_partitions: int = 4,
 ) -> tuple:
-    """Returns (batch_size, test_batch_size) appropriate for the array size.
+    """Returns (batch_size, test_batch_size, collision_chunk_size).
+
+    collision_chunk_size is the largest collision-chunk m that fits in GPU
+    memory (the binding tensor is (R, m, m) float32 with a 3× safety factor
+    for backward).  Returned only for the collision estimator (None otherwise).
+    The batch is rounded up to a multiple of m so chunking wastes no samples.
 
     The estimator dictates the dominant entropy-side tensor, so each gets its
     own cap (memory model in parentheses):
       shannon   : B = 2^R coverage, capped by (B, 2^R) float32.        — only R<~15
-      collision : B = 16·√(2^R), capped by the (B, B) collision matrix.
+      collision : B = 16·√(2^R), rounded to multiple of m_max, physics-capped.
+                  Memory for collision is per-chunk (R, m, m), not (B, B).
       blocked   : capped by ceil(R/block_size)·n_partitions histograms of
                 shape (B, 2^block_size) — independent of R, so B stays large.
       proxy / mi_* : O(B·R²)/O(B·R), no exponential or B² term; physics-bound.
@@ -112,6 +119,7 @@ def resolve_batch_sizes(
     test_batch_size = 4 × batch_size.
     """
     B_min = 512
+    collision_chunk_size = None
     if mem_budget_bytes is None:
         mem_budget_bytes = 8 * (1 << 30)  # 8 GiB fallback
 
@@ -142,10 +150,13 @@ def resolve_batch_sizes(
         entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
         b_train = min(b_train, entropy_cap)
     elif entropy_type == "collision":
-        b_train = stats_cap
-        # Collision materialises a (B, B) matrix: B²·4 bytes.
-        collision_cap = max(B_min, int((mem_budget_bytes / (4 * 4)) ** 0.5))
-        b_train = min(b_train, collision_cap)
+        # Adaptive collision chunk: the binding tensor is (R, m, m) float32.
+        # SAFETY ≈ 3 covers forward matrix + backward graph.
+        SAFETY = 3
+        m_max = max(512, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
+        collision_chunk_size = m_max
+        # Round up to a multiple of m_max so chunking wastes no samples.
+        b_train = math.ceil(stats_cap / m_max) * m_max
     elif entropy_type in ("blocked", "blocked_corrected", "annealed", "blocked_to_corrected"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # One correlation-aware partition with ceil(R/block_size) blocks is
@@ -162,7 +173,7 @@ def resolve_batch_sizes(
     # (B, n_ligands, R·k_sub) float32 tensors at once: in _compute_energies
     # (ab, dist_sq, exp(·), E_open) and again in p_open (log_terms_open/closed),
     # several retained for backward + their gradients. The retained energy graph
-    # also coexists with the collision (B,B) matrix during the loss/backward, so the
+    # also coexists with the collision (R,m,m) chunk during the loss/backward, so the
     # factor must leave headroom for that term too. 16× restores roughly the
     # safety the classic model enjoyed by accident (see below) and clears the
     # OOM that the old 4× hit once the k_sub axis is real (use_interface_model=
@@ -173,14 +184,14 @@ def resolve_batch_sizes(
     physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 16))
     b_train = min(b_train, physics_cap)
 
-    return b_train, 4 * b_train
+    return b_train, 4 * b_train, collision_chunk_size
 
 ENV_REGISTRY = {
     "asymmetric": LigandEnvironment,
     "symmetric":  SymmetricLigandEnvironment,
 }
 
-def _build_loss(cfg) -> nn.Module:
+def _build_loss(cfg, collision_chunk_size: int = 2048) -> nn.Module:
     """Dispatch on cfg.entropy to construct the appropriate loss module."""
     if cfg.entropy in DiscreteExactLoss._ENTROPY_FNS:
         return DiscreteExactLoss(
@@ -189,6 +200,7 @@ def _build_loss(cfg) -> nn.Module:
             penalty_type=cfg.penalty_type or 'covariance',
             block_size=cfg.block_size,
             n_partitions=cfg.n_partitions,
+            collision_chunk_size=collision_chunk_size,
         )
     elif cfg.entropy == 'annealed':
         return AnnealedEntropyLoss(
@@ -236,31 +248,37 @@ class SimulationRunner:
             self.config.receptor_indices, dtype=torch.long, device=self.device
         )
 
-        # Resolve "auto" batch sizes now that receptor_indices is known.
+        # Always resolve to obtain collision_chunk_size; batch sizes used only when "auto".
+        n_r = receptor_indices.shape[0]
+        if torch.cuda.is_available():
+            free_mem, _ = torch.cuda.mem_get_info()
+            mem_budget = int(free_mem * 0.8)
+        else:
+            mem_budget = None
+        b_auto, b_eval_auto, collision_chunk_size = resolve_batch_sizes(
+            n_r, self.config.entropy,
+            n_ligands=self.config.n_ligands,
+            k_sub=self.config.k_sub,
+            mem_budget_bytes=mem_budget,
+            block_size=self.config.block_size,
+            n_partitions=self.config.n_partitions,
+        )
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
-            n_r = receptor_indices.shape[0]
-            if torch.cuda.is_available():
-                free_mem, _ = torch.cuda.mem_get_info()
-                mem_budget = int(free_mem * 0.8)
-            else:
-                mem_budget = None
-            b_train, b_eval = resolve_batch_sizes(
-                n_r, self.config.entropy,
-                n_ligands=self.config.n_ligands,
-                k_sub=self.config.k_sub,
-                mem_budget_bytes=mem_budget,
-                block_size=self.config.block_size,
-                n_partitions=self.config.n_partitions,
-            )
             if self.config.batch_size == "auto":
-                self.config.batch_size = b_train
+                self.config.batch_size = b_auto
             if self.config.test_batch_size == "auto":
-                self.config.test_batch_size = b_eval
+                self.config.test_batch_size = b_eval_auto
             print(
                 f"[auto batch] R={n_r}  "
                 f"batch_size={self.config.batch_size}  "
                 f"test_batch_size={self.config.test_batch_size}"
                 + (f"  gpu_free={mem_budget//(1<<20)} MiB" if mem_budget is not None else "")
+            )
+        if collision_chunk_size is not None:
+            n_chunks = math.ceil(self.config.batch_size / collision_chunk_size)
+            print(
+                f"[collision] chunk_size={collision_chunk_size}  "
+                f"n_chunks={n_chunks}  batch={self.config.batch_size}"
             )
 
         if prev_env is not None:
@@ -291,7 +309,7 @@ class SimulationRunner:
         physics = BinaryReceptor(
             self.config.n_genes, self.config.k_sub, temperature=self.config.temperature
         ).to(self.device)
-        loss_fn = _build_loss(self.config).to(self.device)
+        loss_fn = _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048).to(self.device)
 
         # Dampen LR when picking up from a previous env to preserve learned representations
         lr = self.config.lr if prev_env is None else self.config.lr * 0.1

@@ -53,19 +53,31 @@ def compute_shannon_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
 def compute_collision_entropy(
     soft_assign: torch.Tensor,
     return_collision_prob: bool = False,
+    collision_chunk_size: int = 2048,
 ) -> torch.Tensor:
     """Collision entropy H2 = -log2(C) where C is the collision probability.
+
+    Processes the full batch by splitting into chunks of ``collision_chunk_size``
+    and accumulating cross-chunk collision log-probabilities via a single
+    logsumexp.  The chunk size sets the pairwise-collision window (quadratic
+    memory: the (R, m, m) binding matrix); the number of chunks only reduces
+    variance (linear memory when looped).
+
+    Honest scope: removing the old silent discard and sizing chunks to GPU
+    memory raises the usable-sample wall from ~2^14 toward ~2^17-18 (a few
+    more honest bits).  It does NOT remove the log2(collision_chunk_size)
+    ceiling on resolvable entropy; that ceiling is set by chunk size (quadratic
+    memory), not chunk count (linear).
 
     When ``return_collision_prob=True`` returns C directly (for use as a
     training loss: minimising C is equivalent to maximising H2 but the
     gradient has no 1/C blow-up at low collision probability).
 
-    Default (``False``) returns H2 in bits — identical to the old behaviour.
+    Default (``False``) returns H2 in bits.
     """
     B, R, K = soft_assign.shape
-    chunk_size = 2048
 
-    if B <= chunk_size:
+    if B <= collision_chunk_size:
         S_R = soft_assign.permute(1, 0, 2)
         match_prob_per_receptor = torch.bmm(S_R, S_R.permute(0, 2, 1))  # (R, B, B)
 
@@ -79,14 +91,13 @@ def compute_collision_entropy(
         log_mean_coll_prob_nats = torch.logsumexp(log_match_probs_flat, dim=0) - math.log(num_pairs)
 
     else:
-        max_chunks = 8
-        n_chunks = min(math.ceil(B / chunk_size), max_chunks)
+        n_chunks = math.ceil(B / collision_chunk_size)
         indices = torch.randperm(B, device=soft_assign.device)
 
         all_log_match_probs = []
         for i in range(n_chunks - 1):
-            idx_A = indices[i * chunk_size : (i + 1) * chunk_size]
-            idx_B = indices[(i + 1) * chunk_size : (i + 2) * chunk_size]
+            idx_A = indices[i * collision_chunk_size : (i + 1) * collision_chunk_size]
+            idx_B = indices[(i + 1) * collision_chunk_size : (i + 2) * collision_chunk_size]
 
             S_A = soft_assign[idx_A].permute(1, 0, 2)
             S_B = soft_assign[idx_B].permute(1, 0, 2)
@@ -362,6 +373,7 @@ class DiscreteExactLoss(nn.Module):
         cov_weight:   float = 0.0,
         penalty_type: str   = 'covariance',
         block_refresh_interval: int = 50,
+        collision_chunk_size: int = 2048,
     ):
         super().__init__()
         if entropy_type not in self._ENTROPY_FNS:
@@ -374,6 +386,7 @@ class DiscreteExactLoss(nn.Module):
         self.cov_weight   = cov_weight
         self.penalty_type = penalty_type
         self.block_refresh_interval = block_refresh_interval
+        self.collision_chunk_size = collision_chunk_size
         self._cached_partition = None
         self._steps_since_refresh = 0
 
@@ -429,7 +442,8 @@ class DiscreteExactLoss(nn.Module):
         if etype == 'shannon':
             return compute_shannon_joint_entropy(soft_assign)
         elif etype == 'collision':
-            return compute_collision_entropy(soft_assign)
+            return compute_collision_entropy(soft_assign,
+                                             collision_chunk_size=self.collision_chunk_size)
         elif etype == 'blocked':
             return self._get_blocked_entropy(activity, soft_assign, use_cache)
         elif etype == 'blocked_corrected':
@@ -440,7 +454,8 @@ class DiscreteExactLoss(nn.Module):
     def forward(self, activity: torch.Tensor) -> torch.Tensor:
         if self.entropy_type == 'collision':
             soft = self.compute_soft_assignment(activity)
-            return compute_collision_entropy(soft, return_collision_prob=True)
+            return compute_collision_entropy(soft, return_collision_prob=True,
+                                             collision_chunk_size=self.collision_chunk_size)
         return -self.compute_entropy(activity, use_cache=True)
 
 

@@ -15,8 +15,8 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 5
-_SWEEP = list(range(3, 50))    # n_genes values, length 47
+N_RUNS = 10
+_SWEEP = list(range(1, 50))    # n_genes values, length 47
 _NS    = len(_SWEEP)
 
 _D_r = np.random.randint(5, 16, N_RUNS)
@@ -53,7 +53,8 @@ config = RunConfig(
     entropy="annealed", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
 
     # --- Training ---
-    epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS, lr=0.05, use_scheduler=False,
+    epochs=500,#[int(170 * n + 500) for n in _SWEEP] * N_RUNS, 
+    lr=0.05, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
     measurement_fns=("full_array_entropy",),
 

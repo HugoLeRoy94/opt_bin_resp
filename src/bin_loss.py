@@ -118,7 +118,7 @@ def compute_collision_entropy(
 
 def compute_correlation_aware_partition(
     activity: torch.Tensor,
-    block_size: int = 15,
+    block_size: int = 18,
 ) -> list:
     """Partition receptors into blocks that group correlated receptors together.
 
@@ -180,7 +180,7 @@ def compute_correlation_aware_partition(
 
 def compute_blocked_entropy(
     soft_assign: torch.Tensor,
-    block_size: int = 15,
+    block_size: int = 18,
     partition: list = None,
 ) -> torch.Tensor:
     """Approximates the joint Shannon entropy via correlation-aware blocking.
@@ -258,7 +258,7 @@ def compute_pairwise_mi(activity: torch.Tensor) -> torch.Tensor:
 
 def compute_blocked_corrected_entropy(
     soft_assign: torch.Tensor,
-    block_size: int = 15,
+    block_size: int = 18,
     partition: list = None,
 ) -> torch.Tensor:
     """Corrected blocked Shannon: H_blocked - cross-block pairwise MI.
@@ -368,7 +368,7 @@ class DiscreteExactLoss(nn.Module):
     def __init__(
         self,
         entropy_type: str,
-        block_size:   int   = 15,
+        block_size:   int   = 18,
         n_partitions: int   = 4,
         cov_weight:   float = 0.0,
         penalty_type: str   = 'covariance',

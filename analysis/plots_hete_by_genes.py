@@ -22,20 +22,28 @@ hete = load_runs(GOAL, receptor_type="heteromer", entropy="annealed")
 
 r_ref = np.arange(1, 50)
 
+# %%
+for date in set(hete[hete['n_genes']==10]['sweep_folder']):
+    print(hete[hete['sweep_folder']==date].__len__())
+    print(hete[hete['sweep_folder']==date]['mu_ligands_per_source'])
+
 # %% 
 
 hete = latest_sweep(hete)
+homo = latest_sweep(homo)
 #print(homo.columns)
 print(set(hete['sweep_folder']))
 print(set(homo['sweep_folder']))
 
-#print(set(latest_sweep(hete[hete['n_genes']==10]['sweep_folder'])))
-print(latest_sweep(hete[hete['n_genes']==10])['sweep_folder'])
+for mus in hete.groupby('n_genes')['mu_ligands_per_source']:
+    print("n genes : "+str(mus[0]))
+    print(mus[1].__len__())
+
 
 # %%
 # ── Plot 1 — env-condition spread for one arm (each sweep folder = one curve) ──
-df_g = hete[hete["n_genes"] == 15]
-#df_g = homo
+#df_g = hete[hete["n_genes"] == 15]
+df_g = homo
 ax = plot_metric(df_g, y=METRIC, x="R", group="sweep_folder")
 ax.plot(r_ref, r_ref, "k--", lw=.8)
 ax.set_title("Homomers — per sweep folder")
@@ -56,13 +64,13 @@ plt.show()
 # %%
 # ── Plot 3 — convergence: metric vs epoch for one arm, one curve per R ─────────
 #ep = load_epochs(hete[hete["n_genes"] == 35])
-ep = load_epochs(hete[hete['n_genes']==25])
-#ep = load_epochs(homo)
-ax = plot_metric(ep, y="full_array_entropy", x="epoch",
+ep = load_epochs(hete[hete['n_genes']==20])
+#ep = load_epochs(hom)
+ax = plot_metric(ep, y="full_array_entropy_blocked_corrected", x="epoch",
                  group="R", cmap="viridis", err=None)
 ax.set_title("Convergence — Homomers")
 ax.set_ylabel("H(A)  [bits]")
-#plt.ylim(0,50)
+plt.ylim(0,50)
 plt.show()
 
 # %%
@@ -145,31 +153,37 @@ for ratio in RATIO_LEVELS:
 axA.set_xlabel("$n_{\\mathrm{genes}}$")
 axA.set_ylabel("MI  [bits]")
 axA.legend(frameon=False, fontsize=8, loc="lower right")
+axA.set_xlim(2,20)
+axA.set_ylim(2,40)
+axA.plot(np.arange(0,21,1),np.arange(0,21,1))
 
-
-# ---- Panel B: MI vs R/G at fixed n_genes (diminishing returns) -------------
-G_FIXED = 10
-sub_b = hete_ls[hete_ls["n_genes"] == G_FIXED]
-stat_b = sub_b.groupby("R")[METRIC].agg(["mean", "std"]).sort_index()
-rg = stat_b.index / G_FIXED
-
-axB.plot(rg, stat_b["mean"], "-o", color="#555", lw=1.8, ms=3)
-band_b = stat_b["std"].fillna(0)
-axB.fill_between(rg, stat_b["mean"] - band_b, stat_b["mean"] + band_b,
-                 color="#555", alpha=0.15)
-if G_FIXED in h_up.index:
-    axB.axhline(h_up.loc[G_FIXED, "mean"], color="k", lw=1, ls="--",
-                label=f"homomer ($G={G_FIXED}$)")
-    axB.legend(frameon=False, fontsize=8)
+# ---- Panel B: MI vs R/G, one curve per n_genes (diminishing returns) -------
+genes_b = sorted(hete_ls["R"].unique())
+cmap_b = plt.colormaps["viridis"]
+norm_b = plt.Normalize(min(genes_b), max(genes_b))
+for g in genes_b:
+    sub_b = hete_ls[hete_ls["R"] == g]
+    stat_b = sub_b.groupby("n_genes")[METRIC].agg(["mean", "std"]).sort_index()
+    if stat_b.empty:
+        continue
+    rg = stat_b.index / g
+    color = cmap_b(norm_b(g))
+    mi_per_r = stat_b["mean"] / stat_b.index
+    std_per_r = stat_b["std"].fillna(0) / stat_b.index
+    axB.plot(rg, mi_per_r, "-o", color=color, lw=1.8, ms=3,
+             label=f"$G={g}$")
+    axB.fill_between(rg, mi_per_r - std_per_r, mi_per_r + std_per_r,
+                     color=color, alpha=0.15)
+axB.legend(frameon=False, fontsize=8)
 axB.set_xlabel("$R \\,/\\, n_{\\mathrm{genes}}$")
-axB.set_ylabel("MI  [bits]")
+axB.set_ylabel("MI / R  [bits per receptor]")
 
 fig.tight_layout()
-fig.savefig(
-    "/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/analysis/"
-    "heteromer_by_genes_real.svg",
-    bbox_inches="tight",
-)
+#fig.savefig(
+#    "/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/analysis/"
+#    "heteromer_by_genes_real.svg",
+#    bbox_inches="tight",
+#)
 plt.show()
 
 # %%

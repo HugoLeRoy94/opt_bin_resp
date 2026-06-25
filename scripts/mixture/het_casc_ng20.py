@@ -15,7 +15,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 1
+N_RUNS = 5
 _SWEEP = [20, 40, 60,80,100]
 _NS    = len(_SWEEP)
 
@@ -53,7 +53,7 @@ config = RunConfig(
     k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Loss ---
-    entropy="annealed", cov_weight=1.0, penalty_type="repulsion", n_c_bins=10,
+    entropy="annealed",block_size=18,
 
     # --- Training ---
     epochs=[int(170 * n + 500) for n in _SWEEP] * N_RUNS,

@@ -72,17 +72,19 @@ class SingleRunConfig:
 
     # --- Loss ---
     entropy:      str
-    cov_weight:   Optional[float]
-    penalty_type: Optional[str]
-    n_c_bins:     int
 
     # --- Training ---
     epochs:          int
     lr:              float
     use_scheduler:   bool
     test_batch_size:  Union[int, str]        # "auto" resolved at init time
+
+    # --- Loss (optional, estimator-specific) ---
+    cov_weight:   Optional[float] = None     # only used by proxy estimator
+    penalty_type: Optional[str]   = None     # only used by proxy estimator
+    n_c_bins:     int              = 10      # only used by mi_conc loss
     initial_temperature: Union[float, str] = "auto"  # "auto" or explicit float
-    block_size:       int = 15               # blocked estimator: receptors per block (2^block_size bins)
+    block_size:       int = 18               # blocked estimator: receptors per block (2^block_size bins)
     n_partitions:     int = 4                # blocked estimator: number of random partitions averaged
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
@@ -182,9 +184,6 @@ class RunConfig:
 
     # --- Loss ---
     entropy:      Union[str,             List[str]]
-    cov_weight:   Union[Optional[float], List[Optional[float]]]
-    penalty_type: Union[Optional[str],   List[Optional[str]]]
-    n_c_bins:     Union[int,             List[int]]
 
     # --- Training ---
     epochs:          Union[int,   List[int]]
@@ -193,10 +192,13 @@ class RunConfig:
     test_batch_size: Union[int,   str,          List[Union[int, str]]]
     measurement_fns: Union[Tuple[str, ...], List[Tuple[str, ...]]]
 
-    # --- Evaluation chunking ---
+    # --- Loss (optional, estimator-specific) ---
+    cov_weight:   Union[Optional[float], List[Optional[float]]] = None
+    penalty_type: Union[Optional[str],   List[Optional[str]]]   = None
+    n_c_bins:     Union[int,             List[int]]              = 10
     initial_temperature: Union[float, str, List[Union[float, str]]] = "auto"
     eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None
-    block_size:      Union[int,           List[int]] = 15
+    block_size:      Union[int,           List[int]] = 18
     n_partitions:    Union[int,           List[int]] = 4
 
     # --- Interface model ---

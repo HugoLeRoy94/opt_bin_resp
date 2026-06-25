@@ -37,7 +37,7 @@ class AnnealedEntropyLoss(nn.Module):
         block_refresh_interval:  training steps between partition recomputation.
     """
 
-    def __init__(self, block_size: int = 15, n_partitions: int = 4,
+    def __init__(self, block_size: int = 18, n_partitions: int = 4,
                  block_refresh_interval: int = 50):
         super().__init__()
         self.block_size = block_size
@@ -111,7 +111,7 @@ class BlockedToCorrectedLoss(nn.Module):
         lam_override:            if not None, fixes lambda (bypasses epoch schedule).
     """
 
-    def __init__(self, block_size: int = 15, n_partitions: int = 4,
+    def __init__(self, block_size: int = 18, n_partitions: int = 4,
                  block_refresh_interval: int = 50, lam_override: float = None):
         super().__init__()
         self.block_size = block_size

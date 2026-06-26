@@ -32,6 +32,14 @@ MIC  = "mutual_information_concentration_mean"   # per-ligand concentration marg
 
 def _load(tag):
     df = latest_sweep(load_runs(GOAL, date=tag)).copy()
+    missing = [c for c in (ID, CONC) if c not in df.columns]
+    if missing:
+        raise KeyError(
+            f"{tag}: runs.db is missing {missing}. These columns only exist for runs "
+            f"executed AFTER identity_channel/concentration_channel were added to "
+            f"measurement_fns. Re-run scripts/concentration_vs_family_spread/{tag}.py "
+            f"(the old rows also used the buggy concentration metric), then reload."
+        )
     total = df[ID] + df[CONC]                       # = H(A) on the Shannon estimator
     df["identity_frac"]      = df[ID]   / total
     df["concentration_frac"] = df[CONC] / total

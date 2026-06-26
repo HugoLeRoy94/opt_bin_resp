@@ -29,7 +29,7 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_RUNS = 10                                  # independent samples (different seeds)
+N_RUNS = 1                                  # independent samples (different seeds)
 _SWEEP = [1, 2, 4, 8, 16, 32]                # mu_ligands_per_source: dense -> sparse, length 6
 _NS    = len(_SWEEP)
 

@@ -720,6 +720,7 @@ class LigandEnvironment(nn.Module):
         self,
         batch_size: int,
         receptor_indices: Optional[torch.Tensor] = None,
+        return_dense_conc: bool = False,
     ):
         """Generate one batch of sensory environments.
 
@@ -755,6 +756,16 @@ class LigandEnvironment(nn.Module):
 
         v_ligands = self._sample_noisy_ligands(batch_size, sparse_idx)        # (B, s_upper, D)
         E_open    = self._compute_energies(v_ligands, receptor_indices)        # (B, s_upper, *)
+
+        if return_dense_conc:
+            # (B, L) per-ligand concentration aligned to ligand identity (0 if absent),
+            # built from the same sparse_idx/concs that produced `activity`.  Padding
+            # slots carry index L and scatter into a throwaway dummy column.
+            concs_dense = torch.zeros(batch_size, self.n_ligands + 1,
+                                      device=concs.device, dtype=concs.dtype)
+            concs_dense.scatter_(1, sparse_idx, concs)
+            return E_open, concs, masks, concs_dense[:, :self.n_ligands]
+
         return E_open, concs, masks
 
     @torch.no_grad()

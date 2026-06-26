@@ -42,6 +42,8 @@ from src.analysis_helper import (
     mutual_information_ligand,
     conditional_entropy_concentration,
     mutual_information_concentration,
+    concentration_channel,
+    identity_channel,
     conditional_entropy_family,
     mutual_information_family,
     conditional_entropy_block,
@@ -69,6 +71,8 @@ MEASUREMENT_REGISTRY = {
     "mutual_information_ligand":         mutual_information_ligand,
     "conditional_entropy_concentration": conditional_entropy_concentration,
     "mutual_information_concentration":  mutual_information_concentration,
+    "concentration_channel":             concentration_channel,
+    "identity_channel":                  identity_channel,
     "conditional_entropy_family":        conditional_entropy_family,
     "mutual_information_family":         mutual_information_family,
     "conditional_entropy_block":         conditional_entropy_block,
@@ -343,7 +347,8 @@ class SimulationRunner:
         ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
             # --- First chunk: soft metrics + soft assignments ---
-            E, concs, masks = env.sample_batch(batch_size=chunk_size, receptor_indices=ri_for_batch)
+            E, concs, masks, concs_dense = env.sample_batch(
+                batch_size=chunk_size, receptor_indices=ri_for_batch, return_dense_conc=True)
             activity = physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model)
 
             stat = {}
@@ -360,6 +365,7 @@ class SimulationRunner:
                 if "activity"         in sig.parameters: kwargs["activity"]         = activity
                 if "epoch"            in sig.parameters: kwargs["epoch"]            = epoch
                 if "concs"            in sig.parameters: kwargs["concs"]            = concs
+                if "concs_dense"      in sig.parameters: kwargs["concs_dense"]      = concs_dense
                 if "mixture_masks"    in sig.parameters: kwargs["mixture_masks"]    = masks
                 if "family_labels"    in sig.parameters:
                     if family_labels_cache is None:
@@ -418,12 +424,18 @@ class SimulationRunner:
             if self.config.use_scheduler else None
         )
 
+        # Anneal to end_temp by 80% of training, then hold at end_temp for the
+        # last 20% so the sharp-temperature objective (which eval always uses) is
+        # actually optimized to convergence instead of only at the final epoch.
+        anneal_epochs = max(1, int(0.8 * self.config.epochs))
+
         stats = []
         for epoch in range(self.config.epochs):
             optimizer.zero_grad()
 
+            frac = min(1.0, epoch / anneal_epochs)
             current_temp = (
-                end_temp + (start_temp - end_temp) * (1.0 - epoch / self.config.epochs)
+                end_temp + (start_temp - end_temp) * (1.0 - frac)
                 if end_temp < start_temp else end_temp
             )
             if hasattr(physics, "temperature"):

@@ -61,9 +61,11 @@ config = RunConfig(
     # --- Training ---
     epochs=2200, lr=0.01, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
-    measurement_fns=("full_array_entropy",
-                     "mutual_information_ligand",
-                     "mutual_information_concentration"),
+    measurement_fns=("full_array_entropy",          # total H(A)
+                     "identity_channel",            # I(A;M)   — total-comparable
+                     "concentration_channel",       # H(A|M)   — total-comparable (sum = H(A))
+                     "mutual_information_ligand",        # per-ligand identity marginal (dense regime)
+                     "mutual_information_concentration"),# per-ligand concentration marginal (dense regime)
 
     # --- Sweep ---
     n_genes                    = 3,

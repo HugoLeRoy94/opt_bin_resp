@@ -657,16 +657,37 @@ def mutual_information_ligand(activity, mixture_masks, loss_fn):
     return h_a_val - h_a_given_m
 
 @torch.no_grad()
-def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
-    """Mean over ligands of H(A | C_l), where C_l is the concentration of
-    ligand l (independent marginal conditioning via equal-quantile binning).
+def _binned_conditional_entropy(soft_present, c_present, entropy_fn, n_c_bins):
+    """H(A | C) over a present-only subset: sort by concentration c, split into
+    n_c_bins equal-count bins, return the count-weighted mean bin entropy."""
+    n = soft_present.shape[0]
+    order = torch.argsort(c_present)
+    a_sorted = soft_present[order]
+    bin_size = max(1, n // n_c_bins)
+    cond_h = 0.0
+    for b in range(n_c_bins):
+        start = b * bin_size
+        end   = start + bin_size if b < n_c_bins - 1 else n
+        chunk = a_sorted[start:end]
+        if chunk.shape[0] > 1:
+            h = entropy_fn(chunk)
+            cond_h += (chunk.shape[0] / n) * (h.item() if isinstance(h, torch.Tensor) else h)
+    return cond_h
 
-    For each ligand l:
-      - Sort samples by c_l and split into n_c_bins equal-quantile bins.
-      - H(A | C_l) ≈ Σ_k (n_k/B) · H(A | C_l ∈ bin_k)
 
-    Returns (1/N_l) Σ_l H(A | C_l).  The corresponding MI is the mean
-    pairwise I(A ; C_l) over ligands — see mutual_information_concentration.
+@torch.no_grad()
+def conditional_entropy_concentration(activity, concs_dense, mixture_masks, loss_fn, n_c_bins=10):
+    """Mean over ligands of H(A | C_l, l present).
+
+    For each ligand l we restrict to the samples where l is actually present
+    (mixture_masks[:, l] == 1), bin those by the dense per-ligand concentration
+    concs_dense[:, l] into n_c_bins equal-count bins, and average H(A | bin).
+
+    concs_dense is the DENSE (B, L) per-ligand concentration (0 for absent ligands),
+    identity-aligned to mixture_masks — NOT the sparse present-slot tensor.  The
+    present-only restriction removes the presence/absence confound, so the result
+    measures genuine concentration (level) coding.  Ligands present in < 2*n_c_bins
+    samples are skipped; returns the mean over the scored ligands.
     """
     if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
@@ -676,32 +697,99 @@ def conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=10):
                   if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
                   else compute_shannon_joint_entropy)
 
-    B, n_ligands = activity.shape[0], concs.shape[1]
-    bin_size = max(1, B // n_c_bins)
-    total_cond_h = 0.0
+    L = mixture_masks.shape[1]
+    total_cond_h, scored = 0.0, 0
+    for l in range(L):
+        present = mixture_masks[:, l].bool()
+        n_p = int(present.sum())
+        if n_p < 2 * n_c_bins:
+            continue
+        total_cond_h += _binned_conditional_entropy(
+            soft_assign[present], concs_dense[present, l], entropy_fn, n_c_bins)
+        scored += 1
 
-    for l in range(n_ligands):
-        _, indices = torch.sort(concs[:, l])
-        sorted_assign = soft_assign[indices]
-        cond_h_l = 0.0
-        for b in range(n_c_bins):
-            start = b * bin_size
-            end   = start + bin_size if b < n_c_bins - 1 else B
-            chunk = sorted_assign[start:end]
-            n_k   = chunk.shape[0]
-            if n_k > 1:
-                h = entropy_fn(chunk)
-                cond_h_l += (n_k / B) * (h.item() if isinstance(h, torch.Tensor) else h)
-        total_cond_h += cond_h_l
+    return total_cond_h / scored if scored else 0.0
 
-    return total_cond_h / n_ligands
 
 @torch.no_grad()
-def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
-    """Mean over ligands of I(A ; C_l), where C_l is the concentration of
-    ligand l.
+def mutual_information_concentration(activity, concs_dense, mixture_masks, loss_fn, n_c_bins=10):
+    """Mean over ligands of I(A ; C_l | l present) — how much the array output
+    depends on ligand l's concentration among the samples where l is present:
 
-    Formula: (1/N_l) Σ_l I(A ; C_l) = H(A) - conditional_entropy_concentration(...)
+        I_l = H(A | l present) - H(A | C_l, l present)
+
+    Uses the DENSE (B, L) concentration, so it is free of the presence/padding
+    confound of the old sparse-slot version.  This is a per-ligand MARGINAL
+    average and is NOT on the same scale as the joint full_array_entropy; for a
+    split that sums to the total, see identity_channel / concentration_channel.
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
+                  else compute_shannon_joint_entropy)
+
+    L = mixture_masks.shape[1]
+    total_mi, scored = 0.0, 0
+    for l in range(L):
+        present = mixture_masks[:, l].bool()
+        n_p = int(present.sum())
+        if n_p < 2 * n_c_bins:
+            continue
+        a_present = soft_assign[present]
+        h_present = entropy_fn(a_present)
+        h_present = h_present.item() if isinstance(h_present, torch.Tensor) else h_present
+        h_cond = _binned_conditional_entropy(
+            a_present, concs_dense[present, l], entropy_fn, n_c_bins)
+        total_mi += (h_present - h_cond)
+        scored += 1
+
+    return total_mi / scored if scored else 0.0
+
+
+@torch.no_grad()
+def concentration_channel(activity, mixture_masks, loss_fn):
+    """Concentration channel H(A | M): condition on the full presence pattern M.
+
+    Samples are grouped by identical presence pattern (torch.unique over rows);
+    within a group the composition is fixed, so the only thing left varying is the
+    concentrations -> this residual IS the concentration channel I(A; c | M).
+    With identity_channel it forms an EXACT, total-comparable split:
+        H(A) = identity_channel + concentration_channel = I(A;M) + H(A|M).
+
+    Estimable when patterns repeat (single-ligand / low-mu sniffs, where M is
+    effectively the categorical ligand id).  In dense mixtures most rows are
+    unique -> singleton groups -> this collapses toward 0 and identity_channel
+    -> H(A) spuriously; treat it as a low-mu-regime metric.
+    """
+    if not hasattr(loss_fn, 'compute_soft_assignment'):
+        return 0.0
+
+    soft_assign = loss_fn.compute_soft_assignment(activity)
+    entropy_fn = (compute_collision_entropy
+                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
+                  else compute_shannon_joint_entropy)
+
+    B = activity.shape[0]
+    _, inverse = torch.unique(mixture_masks.bool(), dim=0, return_inverse=True)
+    total_cond_h = 0.0
+    for g in inverse.unique():
+        grp = inverse == g
+        n = int(grp.sum())
+        if n > 1:
+            h = entropy_fn(soft_assign[grp])
+            total_cond_h += (n / B) * (h.item() if isinstance(h, torch.Tensor) else h)
+    return total_cond_h
+
+
+@torch.no_grad()
+def identity_channel(activity, mixture_masks, loss_fn):
+    """Identity channel I(A ; M) = H(A) - H(A | M): how much the codeword reveals
+    about which ligands are present, on the same joint scale as full_array_entropy.
+    Together with concentration_channel the two sum to H(A).  See
+    concentration_channel for the single-ligand-regime caveat.
     """
     if not hasattr(loss_fn, 'compute_soft_assignment'):
         return 0.0
@@ -712,8 +800,7 @@ def mutual_information_concentration(activity, concs, loss_fn, n_c_bins=10):
                   else compute_shannon_joint_entropy)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
-    h_a_given_c = conditional_entropy_concentration(activity, concs, loss_fn, n_c_bins=n_c_bins)
-    return h_a_val - h_a_given_c
+    return h_a_val - concentration_channel(activity, mixture_masks, loss_fn)
 
 
 # ---------------------------------------------------------------------------

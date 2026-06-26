@@ -38,15 +38,21 @@ print(set(homo['sweep_folder']))
 for mus in hete.groupby('n_genes')['mu_ligands_per_source']:
     print("n genes : "+str(mus[0]))
     print(mus[1].__len__())
+    print(np.mean(mus[1]))
 
 
 # %%
 # ── Plot 1 — env-condition spread for one arm (each sweep folder = one curve) ──
-#df_g = hete[hete["n_genes"] == 15]
-df_g = homo
-ax = plot_metric(df_g, y=METRIC, x="R", group="sweep_folder")
-ax.plot(r_ref, r_ref, "k--", lw=.8)
-ax.set_title("Homomers — per sweep folder")
+# %%
+# ── Plot 2 — summary: H(A) vs R, homomers + one heteromer curve per gene count ─
+ax = plot_metric(latest_sweep(homo), y=METRIC, x="R", color="k", lw=2, label="Homomers")
+plot_metric(latest_sweep(hete[hete["n_genes"] == 3]), y=METRIC, x="R", cmap="viridis", ax=ax)
+ax.plot(r_ref, r_ref, "k--", lw=1)
+ax.set_ylim(0, 50)
+ax.set_ylabel("H(A)  [bits]")
+ax.set_title("Array entropy vs number of receptors")
+ax.set_xlim(1,16)
+ax.set_ylim(1,16)
 plt.show()
 
 # %%
@@ -64,7 +70,7 @@ plt.show()
 # %%
 # ── Plot 3 — convergence: metric vs epoch for one arm, one curve per R ─────────
 #ep = load_epochs(hete[hete["n_genes"] == 35])
-ep = load_epochs(hete[hete['n_genes']==20])
+ep = load_epochs(hete[hete['n_genes']==15])
 #ep = load_epochs(hom)
 ax = plot_metric(ep, y="full_array_entropy_blocked_corrected", x="epoch",
                  group="R", cmap="viridis", err=None)

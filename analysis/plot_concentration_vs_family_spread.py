@@ -56,6 +56,13 @@ def _panel(hom, het, x, title, ax=None):
     ax.legend(fontsize=8)
     return ax
 
+# %%
+fig,ax = plt.subplots(ncols=3,figsize=(12,4))
+sparse_hom = load_runs(GOAL,date='sparsity_hom')
+print(sparse_hom.columns)
+plot_metric(sparse_hom,y='full_array_entropy_mean',x='mu_ligands_per_source',ax=ax[0])
+plot_metric(sparse_hom,y='mutual_information_ligand_mean',x='mu_ligands_per_source',ax=ax[1])
+plot_metric(sparse_hom,y='mutual_information_concentration_mean',x='mu_ligands_per_source',ax=ax[2])
 
 # %% ── Panel 1: vary family_spread (concentration fixed) ───────────────────────
 fam_hom = latest_sweep(load_runs(GOAL, date="family_hom"))

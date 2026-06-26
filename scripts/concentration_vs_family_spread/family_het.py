@@ -60,7 +60,10 @@ config = RunConfig(
     # --- Training ---
     epochs=2200, lr=0.01, use_scheduler=False,
     batch_size="auto", test_batch_size="auto",
-    measurement_fns=("full_array_entropy",),
+    measurement_fns=("full_array_entropy",
+                     "mutual_information_family",
+                     "mutual_information_concentration",
+                     "mutual_information_ligand"),
 
     # --- Sweep ---
     n_genes                    = 3,

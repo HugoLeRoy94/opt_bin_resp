@@ -284,7 +284,7 @@ def plot_metric(df: pd.DataFrame, y: str, x: str = "R", group: str = None,
             ax.fill_between(stat.index.values,
                             (stat["mean"] - band).values,
                             (stat["mean"] + band).values,
-                            color=line.get_color(), alpha=0.2)
+                            color=line.get_color(), alpha=0.5)
 
     ax.set_xlabel(x)
     ax.set_ylabel(y)

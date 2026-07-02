@@ -23,6 +23,7 @@ homo = load_runs(GOAL, receptor_type="homomer",   entropy="annealed")
 hete = load_runs(GOAL, receptor_type="heteromer", entropy="annealed")
 
 r_ref = np.arange(1, 10)
+
 # %%
 hete = latest_sweep(hete)
 homo = latest_sweep(homo)

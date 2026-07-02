@@ -79,12 +79,14 @@ plt.show()
 # Compare these to EACH OTHER (same per-ligand normalization), not to H(A).
 fig, ax = plt.subplots()
 plot_metric(hom, y=MIL, x=X, ax=ax, label="homomer  identity (per ligand)",      color="C0")
-plot_metric(hom, y=MIC, x=X, ax=ax, label="homomer  concentration (per ligand)", color="C0", ls="--")
+#plot_metric(hom, y=MIC, x=X, ax=ax, label="homomer  concentration (per ligand)", color="C0", ls="--")
 plot_metric(het, y=MIL, x=X, ax=ax, label="heteromer identity (per ligand)",      color="C1")
-plot_metric(het, y=MIC, x=X, ax=ax, label="heteromer concentration (per ligand)", color="C1", ls="--")
+#plot_metric(het, y=MIC, x=X, ax=ax, label="heteromer concentration (per ligand)", color="C1", ls="--")
 ax.set_xscale("log")
 ax.set_xlabel("mu_ligands_per_source")
 ax.set_ylabel("bits (per-ligand marginal)")
 ax.set_title("Per-ligand marginals — corrected concentration should rise toward sparse")
 ax.legend(fontsize=8)
 plt.show()
+
+# %%

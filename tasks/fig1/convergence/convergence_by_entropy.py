@@ -14,15 +14,17 @@ Divergence between the two = loss is being gamed.
 """
 import sys
 from pathlib import Path
-_HERE = Path(__file__).resolve().parent
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from analysis.plotlib import load_runs, load_epochs, latest_sweep
+from src.plotlib import load_runs, load_epochs, latest_sweep
 
 GOAL = "fig1_1"
+
+FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES.mkdir(exist_ok=True)
 
 ENTROPY_TYPES = ["shannon", "collision", "blocked", "annealed"]
 
@@ -81,12 +83,11 @@ handles = [
 fig.legend(handles=handles, loc="upper right", fontsize=9)
 fig.suptitle("Convergence by entropy loss type — fig1_1", fontsize=13)
 fig.tight_layout()
-#plt.savefig(_HERE / "convergence_by_entropy.png", dpi=150, bbox_inches="tight")
+plt.savefig(FIGURES / "convergence_by_entropy_type.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%
 # ── Absolute MI comparison — one subplot per condition, all entropy types overlaid ──
-# Solid = upper bound, dashed = lower bound. Color = entropy type.
 
 ENT_COLORS = {
     "shannon":   "tab:green",
@@ -130,6 +131,7 @@ handles2 = (
 fig2.legend(handles=handles2, loc="upper right", fontsize=9)
 fig2.suptitle("Absolute MI by entropy loss type — fig1_1", fontsize=13)
 fig2.tight_layout()
+plt.savefig(FIGURES / "absolute_mi_by_entropy_type.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%

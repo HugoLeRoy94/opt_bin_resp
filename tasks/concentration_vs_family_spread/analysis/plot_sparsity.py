@@ -15,19 +15,23 @@ unique M) fall back to the per-ligand marginals mutual_information_ligand vs
 mutual_information_concentration, compared to each other (not to the total).
 """
 import sys
+from pathlib import Path
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")  # exec dir
 
 import matplotlib.pyplot as plt
 
-from analysis.plotlib import load_runs, latest_sweep, plot_metric
+from src.plotlib import load_runs, latest_sweep, plot_metric
 
 GOAL = "concentration_vs_family_spread"
 X    = "mu_ligands_per_source"
 
-ID   = "identity_channel_mean"            # I(A;M)
-CONC = "concentration_channel_mean"       # H(A|M)
-MIL  = "mutual_information_ligand_mean"          # per-ligand identity marginal
-MIC  = "mutual_information_concentration_mean"   # per-ligand concentration marginal
+ID   = "identity_channel_mean"
+CONC = "concentration_channel_mean"
+MIL  = "mutual_information_ligand_mean"
+MIC  = "mutual_information_concentration_mean"
+
+FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES.mkdir(exist_ok=True)
 
 
 def _load(tag):
@@ -40,7 +44,7 @@ def _load(tag):
             f"measurement_fns. Re-run scripts/concentration_vs_family_spread/{tag}.py "
             f"(the old rows also used the buggy concentration metric), then reload."
         )
-    total = df[ID] + df[CONC]                       # = H(A) on the Shannon estimator
+    total = df[ID] + df[CONC]
     df["identity_frac"]      = df[ID]   / total
     df["concentration_frac"] = df[CONC] / total
     return df
@@ -60,6 +64,7 @@ ax.set_xlabel("mu_ligands_per_source  (dense → ; sparse ←)")
 ax.set_ylabel("bits")
 ax.set_title("Identity vs concentration channels (total-comparable, reliable at low mu)")
 ax.legend(fontsize=8)
+plt.savefig(FIGURES / "identity_vs_conc_channels.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %% ── Panel 2: reliance fractions (sum to 1) ──────────────────────────────────
@@ -73,20 +78,19 @@ ax.set_xlabel("mu_ligands_per_source")
 ax.set_ylabel("concentration fraction  H(A|M)/H(A)")
 ax.set_title("How much each architecture leans on concentration coding")
 ax.legend(fontsize=8)
+plt.savefig(FIGURES / "concentration_reliance_fractions.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %% ── Panel 3: per-ligand marginals (dense-regime diagnostic) ─────────────────
-# Compare these to EACH OTHER (same per-ligand normalization), not to H(A).
 fig, ax = plt.subplots()
 plot_metric(hom, y=MIL, x=X, ax=ax, label="homomer  identity (per ligand)",      color="C0")
-#plot_metric(hom, y=MIC, x=X, ax=ax, label="homomer  concentration (per ligand)", color="C0", ls="--")
 plot_metric(het, y=MIL, x=X, ax=ax, label="heteromer identity (per ligand)",      color="C1")
-#plot_metric(het, y=MIC, x=X, ax=ax, label="heteromer concentration (per ligand)", color="C1", ls="--")
 ax.set_xscale("log")
 ax.set_xlabel("mu_ligands_per_source")
 ax.set_ylabel("bits (per-ligand marginal)")
 ax.set_title("Per-ligand marginals — corrected concentration should rise toward sparse")
 ax.legend(fontsize=8)
+plt.savefig(FIGURES / "per_ligand_marginals.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%

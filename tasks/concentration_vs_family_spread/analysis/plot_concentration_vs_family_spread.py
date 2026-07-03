@@ -19,16 +19,20 @@ Notes on filtering this goal:
     from each run's saved SingleRunConfig.
 """
 import sys
+from pathlib import Path
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")  # exec dir
 
 import matplotlib.pyplot as plt
 
-from analysis.plotlib import (load_runs, latest_sweep, plot_metric, load_run,
-                              load_epochs, DATA_ROOT)
+from src.plotlib import (load_runs, latest_sweep, plot_metric, load_run,
+                         load_epochs, DATA_ROOT)
 
 GOAL      = "concentration_vs_family_spread"
 METRIC    = "full_array_entropy_blocked_mean"   # MI upper bound
 METRIC_LO = "full_array_entropy_mean"           # MI lower bound
+
+FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES.mkdir(exist_ok=True)
 
 
 def attach_cfg(df, field):
@@ -46,9 +50,7 @@ def attach_cfg(df, field):
 def _panel(hom, het, x, title, ax=None):
     """Overlay homomer (C0) vs heteromer (C1); upper bound solid, lower dashed."""
     ax = plot_metric(hom, y=METRIC,    x=x, ax=ax, label="homomer (upper)",   color="C0")
-    #plot_metric(hom, y=METRIC_LO, x=x, ax=ax, label="homomer (lower)",   color="C0", ls="--")
     plot_metric(het, y=METRIC,    x=x, ax=ax, label="heteromer (upper)", color="C1")
-    #plot_metric(het, y=METRIC_LO, x=x, ax=ax, label="heteromer (lower)", color="C1", ls="--")
     ax.set_xscale("log")
     ax.set_xlabel(x)
     ax.set_ylabel("full_array_entropy  [bits]")
@@ -63,12 +65,15 @@ print(sparse_hom.columns)
 plot_metric(sparse_hom,y='full_array_entropy_mean',x='mu_ligands_per_source',ax=ax[0])
 plot_metric(sparse_hom,y='mutual_information_ligand_mean',x='mu_ligands_per_source',ax=ax[1])
 plot_metric(sparse_hom,y='mutual_information_concentration_mean',x='mu_ligands_per_source',ax=ax[2])
+plt.savefig(FIGURES / "sparsity_channels.png", dpi=150, bbox_inches="tight")
+plt.show()
 
 # %% ── Panel 1: vary family_spread (concentration fixed) ───────────────────────
 fam_hom = latest_sweep(load_runs(GOAL, date="family_hom"))
 fam_het = latest_sweep(load_runs(GOAL, date="family_het"))
 _panel(fam_hom, fam_het, x="family_spread",
        title="Homomers vs heteromers — varying family_spread")
+plt.savefig(FIGURES / "mi_vs_family_spread.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %% ── Panel 2: vary conc_std (family_spread fixed) ────────────────────────────
@@ -76,6 +81,7 @@ con_hom = attach_cfg(latest_sweep(load_runs(GOAL, date="conc_hom")), "conc_std")
 con_het = attach_cfg(latest_sweep(load_runs(GOAL, date="conc_het")), "conc_std")
 _panel(con_hom, con_het, x="conc_std",
        title="Homomers vs heteromers — varying conc_std")
+plt.savefig(FIGURES / "mi_vs_conc_std.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %% ── Both panels side by side ────────────────────────────────────────────────
@@ -85,18 +91,13 @@ _panel(fam_hom, fam_het, x="family_spread",
 _panel(con_hom, con_het, x="conc_std",
        title="varying conc_std", ax=axes[1])
 fig.tight_layout()
+plt.savefig(FIGURES / "mi_both_panels.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 
 # %% ── Convergence check ───────────────────────────────────────────────────────
-# Per-epoch full_array_entropy_blocked, one curve per swept value (viridis).
-# A flat-near-zero trace = the run collapsed / never trained (NOT genuinely low
-# info); a trace that rises then plateaus = converged.  Use this to tell whether
-# the non-monotonic peak is physical (matching of spread to receptor resolution)
-# or an optimization artefact at the extreme spreads.
-
 def _conv(df, group, title):
-    ep = load_epochs(df)                       # carries `group` col onto epoch rows
+    ep = load_epochs(df)
     ax = plot_metric(ep, y="full_array_entropy", x="epoch",
                      group=group, cmap="viridis", err=None)
     ax.set_xlabel("epoch")
@@ -106,12 +107,19 @@ def _conv(df, group, title):
 
 
 _conv(fam_hom, "family_spread", "Convergence — homomer, vary family_spread")
+plt.savefig(FIGURES / "conv_hom_family_spread.png", dpi=150, bbox_inches="tight")
 plt.show()
+
 _conv(fam_het, "family_spread", "Convergence — heteromer, vary family_spread")
+plt.savefig(FIGURES / "conv_het_family_spread.png", dpi=150, bbox_inches="tight")
 plt.show()
-_conv(con_hom, "conc_std",      "Convergence — homomer, vary conc_std")
+
+_conv(con_hom, "conc_std", "Convergence — homomer, vary conc_std")
+plt.savefig(FIGURES / "conv_hom_conc_std.png", dpi=150, bbox_inches="tight")
 plt.show()
-_conv(con_het, "conc_std",      "Convergence — heteromer, vary conc_std")
+
+_conv(con_het, "conc_std", "Convergence — heteromer, vary conc_std")
+plt.savefig(FIGURES / "conv_het_conc_std.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%

@@ -14,7 +14,7 @@ from src.analysis_helper import plot_latent_umap
 
 GOAL      = "fig1"
 METRIC    = "full_array_entropy_blocked_mean"   # upper bound on MI
-#METRIC = "full_array_entropy_blocked_corrected_mean"
+METRIC = "full_array_entropy_blocked_corrected_mean"
 METRIC_LO = "full_array_entropy_mean"           # lower bound on MI
 GENES     = [2,3, 5, 7, 10, 15,20, 25]
 

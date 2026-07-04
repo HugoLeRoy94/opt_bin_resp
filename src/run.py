@@ -87,6 +87,13 @@ MEASUREMENT_REGISTRY = {
 # Batch-size auto-scaling
 # ---------------------------------------------------------------------------
 
+# collision retains ~n_chunks (R,m,m) blocks in the training graph, so peak is
+# n_chunks·R·m²·4 at fixed m. This sets how many blocks coexist: raising it shrinks
+# the chunk m (lower log2(m) ceiling) in exchange for more pairs / a bigger batch B
+# at the SAME peak memory. The knob to turn when you need larger collision batches.
+COLLISION_TARGET_CHUNKS = 4
+
+
 def resolve_batch_sizes(
     n_receptors: int,
     entropy_type: str = "shannon",
@@ -154,17 +161,34 @@ def resolve_batch_sizes(
         # Hard memory cap: soft_assign is (B, 2^R) float32; 4× safety for backward.
         entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
         b_train = min(b_train, entropy_cap)
-    elif entropy_type in ("collision", "kt"):
-        # Adaptive chunk: the per-block tensor is (m, m, R) float32 (KT) or
-        # (R, m, m) (collision) — identical memory scaling.
-        # SAFETY ≈ 3 covers forward matrix + backward graph.
-        # NB: KT eval time is O(B²·R) (quadratic in total batch), so very large
-        # eval batches cost quadratically even though they fit in memory.
+    elif entropy_type == "collision":
+        # Per-block tensor (R,m,m) is fed to torch.log, so autograd RETAINS it for
+        # backward. The single adjacent-chunk loop keeps ~n_chunks of them alive ⇒
+        # training peak ≈ n_chunks·R·m²·4 = B·R·m·4 (LINEAR in m). Size m so
+        # COLLISION_TARGET_CHUNKS blocks fit; B spans that many chunks. Peak stays
+        # ≈ mem_budget/SAFETY regardless of the chunk count (see the constant).
+        # SAFETY ≈ 3 covers the transient torch.log output + backward buffers.
         SAFETY = 3
-        m_max = max(512, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
+        tc = COLLISION_TARGET_CHUNKS
+        m_max = max(512, int(math.sqrt(
+            mem_budget_bytes / (tc * n_receptors * 4 * SAFETY))))
         collision_chunk_size = m_max
-        # Round up to a multiple of m_max so chunking wastes no samples.
-        b_train = math.ceil(stats_cap / m_max) * m_max
+        # B = up to tc chunks (multiple of m_max so chunking wastes no samples).
+        b_train = math.ceil(min(stats_cap, tc * m_max) / m_max) * m_max
+    elif entropy_type == "kt":
+        # Per-block tensor (m,m,R) is likewise retained for backward, but the DOUBLE
+        # loop over ALL chunk pairs keeps n_chunks² of them alive ⇒ training peak =
+        # B²·R·4, INDEPENDENT of chunk size (the m² per block and the n_chunks²
+        # count cancel). Chunking cannot lower it — only B can — so we run a single
+        # chunk at the largest B that fits. Ceiling is log2(B) (diagonal-anchored).
+        # BIG-BATCH PATH: gradient checkpointing (recompute each block in backward)
+        # would drop the peak to one block, making this an m-sized chunked limit
+        # like collision. Not enabled yet — see compute_kt_entropy.
+        # SAFETY ≈ 3 covers the transient torch.log output + backward buffers.
+        SAFETY = 3
+        b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
+        b_train = min(stats_cap, b_cap)
+        collision_chunk_size = b_train              # single chunk; chunking is futile
     elif entropy_type in ("blocked", "blocked_corrected", "annealed", "blocked_to_corrected"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # One correlation-aware partition with ceil(R/block_size) blocks is

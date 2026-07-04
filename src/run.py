@@ -142,6 +142,7 @@ def resolve_batch_sizes(
     stats_cap = {
         "shannon":  max(B_min, 100 * (1 << n_receptors)),
         "collision": max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
+        "kt":        max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
         "blocked":              max(B_min, 100 * (1 << bin_dim)),
         "blocked_corrected":    max(B_min, 100 * (1 << bin_dim)),
         "annealed":             max(B_min, 100 * (1 << bin_dim)),
@@ -153,9 +154,12 @@ def resolve_batch_sizes(
         # Hard memory cap: soft_assign is (B, 2^R) float32; 4× safety for backward.
         entropy_cap = max(B_min, mem_budget_bytes // ((1 << n_receptors) * 4 * 4))
         b_train = min(b_train, entropy_cap)
-    elif entropy_type == "collision":
-        # Adaptive collision chunk: the binding tensor is (R, m, m) float32.
+    elif entropy_type in ("collision", "kt"):
+        # Adaptive chunk: the per-block tensor is (m, m, R) float32 (KT) or
+        # (R, m, m) (collision) — identical memory scaling.
         # SAFETY ≈ 3 covers forward matrix + backward graph.
+        # NB: KT eval time is O(B²·R) (quadratic in total batch), so very large
+        # eval batches cost quadratically even though they fit in memory.
         SAFETY = 3
         m_max = max(512, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
         collision_chunk_size = m_max

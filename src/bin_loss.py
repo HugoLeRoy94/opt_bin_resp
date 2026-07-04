@@ -4,9 +4,11 @@
 """
 bin_loss.py — Discrete joint entropy estimators for binary receptor arrays.
 
-Four estimators selectable via entropy_type in DiscreteExactLoss:
+Estimators selectable via entropy_type in DiscreteExactLoss:
   'shannon'   : exact enumeration, O(B·2^R) — only for R < ~15.
   'collision'  : exact collision H2 (was 'renyi'), O(B²·R) — default scalable choice.
+  'kt'        : Kolchinsky-Tracey Bhattacharyya LOWER bound on Shannon H(s),
+                O(B²·R) — certified lower bound, tight when components separate.
   'blocked'   : correlation-aware blocked Shannon, O(B·2^block_size + R²).
   'proxy'     : Σ H_r − cov_weight·penalty, O(B·R²) — fastest pairwise approximation.
 
@@ -114,6 +116,77 @@ def compute_collision_entropy(
     if return_collision_prob:
         return torch.exp(log_mean_coll_prob_nats)
     return -log_mean_coll_prob_nats / math.log(2)
+
+
+def compute_kt_entropy(
+    soft_assign: torch.Tensor,
+    chunk_size: int = 512,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Kolchinsky-Tracey Bhattacharyya LOWER bound on the joint Shannon entropy.
+
+    Certified lower bound on the SAME H(s) that compute_shannon_joint_entropy
+    computes exactly: the entropy of the uniform B-component mixture
+    p(s) = (1/B) Σ_b Π_r Bernoulli(A_br), s ∈ {0,1}^R, A_br = soft_assign[b,r,1].
+    Tight in the well-separated / noiseless regime.
+    Ref: Kolchinsky & Tracey, "Estimating Mixture Entropy with Pairwise
+    Distances", Entropy 2017 (Bhattacharyya-affinity pairwise bound).
+
+    Formula (bits):
+      h2(a)  = -a·log2(a) - (1-a)·log2(1-a)            binary Shannon entropy
+      H_cond = mean_b Σ_r h2(A_br)                     mean component entropy
+      logBC[i,j] = Σ_r log( √(A_i A_j) + √((1-A_i)(1-A_j)) )   (natural log)
+      H_lb   = H_cond - (1/B) Σ_i ( logsumexp_j logBC[i,:] - log B ) / log 2
+
+    BC[i,j] is the Bhattacharyya affinity between components i and j;
+    BC[i,i]=1, so the diagonal anchors the inner sum at 1/B and the
+    resolvable-entropy ceiling is log2(TOTAL batch B) — NOT log2(chunk).
+
+    ALL-PAIRS, DIAGONAL INCLUDED, NORMALIZED BY TOTAL B. The inner j-loop
+    spans the ENTIRE batch and the diagonal (logBC=0) is kept. This is NOT
+    the adjacent-chunk / diagonal-masked scheme of the collision estimator
+    (which caps its ceiling at log2(chunk)); collapsing KT to that would be
+    wrong. Peak memory O(chunk²·R); time O(B²·R/chunk), quadratic in B.
+
+    Args:
+        soft_assign: (B, R, 2) tensor; channel 1 is A_br, channel 0 is 1-A_br.
+        chunk_size:  edge length m of the (m, n) logBC blocks.
+        eps:         clamp A into [eps, 1-eps] for log/sqrt stability.
+
+    Returns:
+        Scalar lower bound in bits, differentiable w.r.t. soft_assign.
+    """
+    B, R, _ = soft_assign.shape
+    A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)   # (B, R)
+
+    # Conditional (mean per-component) entropy in bits.
+    h_cond = (-(A * torch.log2(A) + (1.0 - A) * torch.log2(1.0 - A))).sum(dim=1).mean()
+
+    sqrt_A  = torch.sqrt(A)                            # (B, R)
+    sqrt_1A = torch.sqrt(1.0 - A)                      # (B, R)
+    log_B = math.log(B)
+
+    # Σ_i ( logsumexp_j logBC[i,:] - log B ), all pairs, diagonal kept.
+    inter_nats = soft_assign.new_zeros(())
+    for i0 in range(0, B, chunk_size):
+        i1 = min(i0 + chunk_size, B)
+        sqrt_A_i  = sqrt_A[i0:i1].unsqueeze(1)        # (m, 1, R)
+        sqrt_1A_i = sqrt_1A[i0:i1].unsqueeze(1)       # (m, 1, R)
+
+        row_blocks = []
+        for j0 in range(0, B, chunk_size):
+            j1 = min(j0 + chunk_size, B)
+            sqrt_A_j  = sqrt_A[j0:j1].unsqueeze(0)    # (1, n, R)
+            sqrt_1A_j = sqrt_1A[j0:j1].unsqueeze(0)   # (1, n, R)
+            bc = sqrt_A_i * sqrt_A_j + sqrt_1A_i * sqrt_1A_j     # (m, n, R)
+            log_bc = torch.log(bc).sum(dim=2)                     # (m, n)
+            row_blocks.append(log_bc)
+
+        full_row = torch.cat(row_blocks, dim=1)                   # (m, B)
+        inter_nats = inter_nats + (torch.logsumexp(full_row, dim=1) - log_B).sum()
+
+    inter_bits = (inter_nats / B) / math.log(2)
+    return h_cond - inter_bits
 
 
 def compute_correlation_aware_partition(
@@ -346,6 +419,7 @@ class DiscreteExactLoss(nn.Module):
     entropy_type selects the estimator used for training:
       'shannon'   : exact enumeration         O(B · 2^R)            only for small R
       'collision' : collision H2              O(B² · R)             scalable, good gradients
+      'kt'        : Kolchinsky-Tracey lower bound  O(B² · R)        certified H(s) lower bound
       'blocked'   : correlation-aware blocked Shannon  O(B · 2^block_size)
       'proxy'     : Σ H_r − cov_weight·penalty  O(B · R²)           fast pairwise approximation
 
@@ -363,7 +437,7 @@ class DiscreteExactLoss(nn.Module):
     should pass ``use_cache=False`` to get a fresh partition for the eval
     batch without touching the training cache.
     """
-    _ENTROPY_FNS = ('shannon', 'collision', 'blocked', 'blocked_corrected', 'proxy')
+    _ENTROPY_FNS = ('shannon', 'collision', 'kt', 'blocked', 'blocked_corrected', 'proxy')
 
     def __init__(
         self,
@@ -444,6 +518,8 @@ class DiscreteExactLoss(nn.Module):
         elif etype == 'collision':
             return compute_collision_entropy(soft_assign,
                                              collision_chunk_size=self.collision_chunk_size)
+        elif etype == 'kt':
+            return compute_kt_entropy(soft_assign, chunk_size=self.collision_chunk_size)
         elif etype == 'blocked':
             return self._get_blocked_entropy(activity, soft_assign, use_cache)
         elif etype == 'blocked_corrected':
@@ -461,3 +537,77 @@ class DiscreteExactLoss(nn.Module):
 
 # backward-compat alias
 compute_renyi_joint_entropy = compute_collision_entropy
+
+
+def _kt_reference(soft_assign: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Un-chunked (single dense (B, B) block) KT lower bound — validation ref."""
+    B, R, _ = soft_assign.shape
+    A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)
+    h_cond = (-(A * torch.log2(A) + (1.0 - A) * torch.log2(1.0 - A))).sum(dim=1).mean()
+    sqrt_A, sqrt_1A = torch.sqrt(A), torch.sqrt(1.0 - A)
+    bc = (sqrt_A.unsqueeze(1) * sqrt_A.unsqueeze(0)
+          + sqrt_1A.unsqueeze(1) * sqrt_1A.unsqueeze(0))          # (B, B, R)
+    log_bc = torch.log(bc).sum(dim=2)                             # (B, B)
+    inter = (torch.logsumexp(log_bc, dim=1) - math.log(B)).mean() / math.log(2)
+    return h_cond - inter
+
+
+def _exact_mixture_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
+    """Exact H(s) by enumerating all 2^R states (small R only)."""
+    return compute_shannon_joint_entropy(soft_assign)
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    # 1) chunked vs un-chunked reference agree.
+    B, R = 300, 17
+    A = torch.rand(B, R)
+    sa = torch.stack([1 - A, A], dim=-1)
+    h_chunk = compute_kt_entropy(sa, chunk_size=64)
+    h_ref = _kt_reference(sa)
+    err = (h_chunk - h_ref).abs().item()
+    print(f"[1] chunked vs reference: |Δ|={err:.2e}  (chunk={h_chunk:.6f}, ref={h_ref:.6f})")
+    assert err < 1e-5, f"chunked mismatch {err}"
+
+    # 2) lower-bound property: KT <= exact H(s) over enumerated states.
+    for (bb, rr) in [(64, 12), (32, 10), (48, 8)]:
+        A2 = torch.rand(bb, rr)
+        sa2 = torch.stack([1 - A2, A2], dim=-1)
+        h_kt = compute_kt_entropy(sa2, chunk_size=16).item()
+        h_ex = _exact_mixture_entropy(sa2).item()
+        print(f"[2] B={bb} R={rr}: H_kt={h_kt:.4f} <= H_exact={h_ex:.4f}")
+        assert h_kt <= h_ex + 1e-4, f"lower-bound violated: {h_kt} > {h_ex}"
+
+    # 3a) B distinct near-deterministic codewords -> H_kt ≈ log2(B) (+ small H_cond).
+    Bd, Rd = 32, 12
+    codes = (torch.rand(Bd, Rd) > 0.5).float()
+    A3 = codes * (1 - 1e-3) + (1 - codes) * 1e-3      # near-deterministic distinct
+    sa3 = torch.stack([1 - A3, A3], dim=-1)
+    h3 = compute_kt_entropy(sa3, chunk_size=8).item()
+    # Well-separated: inter-term ≈ -log2(B), so H_kt ≈ log2(B) + small H_cond.
+    h_cond3 = (-(A3 * torch.log2(A3) + (1 - A3) * torch.log2(1 - A3))).sum(1).mean().item()
+    print(f"[3a] distinct codewords: H_kt={h3:.4f}  log2(B)+H_cond={math.log2(Bd)+h_cond3:.4f}")
+    assert abs(h3 - (math.log2(Bd) + h_cond3)) < 0.01, f"expected ≈log2(B)+H_cond, got {h3}"
+
+    # 3b) B identical sniffs at A=0.5 -> inter-term = 0 -> H_kt == R.
+    Bi, Ri = 40, 9
+    A4 = torch.full((Bi, Ri), 0.5)
+    sa4 = torch.stack([1 - A4, A4], dim=-1)
+    h4 = compute_kt_entropy(sa4, chunk_size=8).item()
+    print(f"[3b] identical A=0.5: H_kt={h4:.4f}  R={Ri}")
+    assert abs(h4 - Ri) < 1e-4, f"expected R={Ri}, got {h4}"
+
+    # 4) finite-difference gradcheck (float64) through compute_soft_assignment.
+    loss_mod = DiscreteExactLoss(entropy_type='kt', collision_chunk_size=8)
+
+    def _kt_from_activity(act):
+        sa_ = loss_mod.compute_soft_assignment(act)
+        return compute_kt_entropy(sa_, chunk_size=8)
+
+    act0 = torch.rand(20, 6, dtype=torch.float64, requires_grad=True)
+    ok = torch.autograd.gradcheck(_kt_from_activity, (act0,), eps=1e-6, atol=1e-4)
+    print(f"[4] gradcheck through compute_soft_assignment: {ok}")
+    assert ok
+
+    print("all KT self-tests passed.")

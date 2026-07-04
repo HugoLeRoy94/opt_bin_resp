@@ -11,7 +11,7 @@ services:
     volumes:
       #- ./unit_test:/app/unit_test/:z
       - ./src:/app/src:ro,z
-      - ./scripts:/app/scripts:z
+      - ./tasks:/app/tasks:z
       #- ./analysis:/app/analysis:z
       - /storage/leroy/data:/app/data:z 
     deploy:

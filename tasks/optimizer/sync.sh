@@ -9,4 +9,4 @@ LOCAL="$OPT_ROOT/data"
 rsync -avz --progress "${SERVER}:${REMOTE}/optimizer/" "${LOCAL}/optimizer/"
 
 cd "$OPT_ROOT"
-python -m src.db backfill "${LOCAL}/optimizer/runs.db"
+python3 -m src.db backfill "${LOCAL}/optimizer/runs.db"

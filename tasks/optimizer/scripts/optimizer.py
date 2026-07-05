@@ -9,7 +9,7 @@ IDENTICAL environments (receptor_sampling_seed is fixed too → identical recept
 indices). The only knob is --losses.
 
   conditions : (3,15), (15,45), (20,20)
-  losses     : collision / blocked / annealed / blocked_to_corrected  (default)
+  losses     : collision / kt / blocked / annealed / blocked_to_corrected  (default)
                shannon is excluded — its 100*2^R batch is infeasible for R > ~14,
                and every condition here has R >= 15.
 
@@ -29,7 +29,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 CONDITIONS = [(3, 15), (15, 45), (20, 20)]     # (n_genes, n_receptors)
-DEFAULT_LOSSES = ["collision", "blocked", "annealed", "blocked_to_corrected"]
+DEFAULT_LOSSES = ["collision", "blocked", "annealed", "blocked_to_corrected","kt"]
 N_RUNS = 1
 
 

@@ -10,5 +10,5 @@ rsync -avz --progress "${SERVER}:${REMOTE}/sweepD5/"  "${LOCAL}/sweepD5/"
 rsync -avz --progress "${SERVER}:${REMOTE}/sweepD10/" "${LOCAL}/sweepD10/"
 
 cd "$OPT_ROOT"
-python -m src.db backfill "${LOCAL}/sweepD5/runs.db"
-python -m src.db backfill "${LOCAL}/sweepD10/runs.db"
+python3 -m src.db backfill "${LOCAL}/sweepD5/runs.db"
+python3 -m src.db backfill "${LOCAL}/sweepD10/runs.db"

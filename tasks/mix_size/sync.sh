@@ -9,4 +9,4 @@ LOCAL="$OPT_ROOT/data"
 rsync -avz --progress "${SERVER}:${REMOTE}/mix_size/" "${LOCAL}/mix_size/"
 
 cd "$OPT_ROOT"
-python -m src.db backfill "${LOCAL}/mix_size/runs.db"
+python3 -m src.db backfill "${LOCAL}/mix_size/runs.db"

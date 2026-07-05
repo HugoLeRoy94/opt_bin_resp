@@ -9,4 +9,4 @@ LOCAL="$OPT_ROOT/data"
 rsync -avz --progress "${SERVER}:${REMOTE}/fig1_single_ligand/" "${LOCAL}/fig1_single_ligand/"
 
 cd "$OPT_ROOT"
-python -m src.db backfill "${LOCAL}/fig1_single_ligand/runs.db"
+python3 -m src.db backfill "${LOCAL}/fig1_single_ligand/runs.db"

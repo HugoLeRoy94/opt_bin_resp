@@ -9,4 +9,4 @@ LOCAL="$OPT_ROOT/data"
 rsync -avz --progress "${SERVER}:${REMOTE}/concentration_vs_family_spread/" "${LOCAL}/concentration_vs_family_spread/"
 
 cd "$OPT_ROOT"
-python -m src.db backfill "${LOCAL}/concentration_vs_family_spread/runs.db"
+python3 -m src.db backfill "${LOCAL}/concentration_vs_family_spread/runs.db"

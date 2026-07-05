@@ -22,6 +22,7 @@ via logsumexp, diagonal (self-collision) masked out before averaging.
 import torch
 import torch.nn as nn
 import math
+from torch.utils.checkpoint import checkpoint
 
 def compute_shannon_joint_entropy(soft_assign: torch.Tensor) -> torch.Tensor:
     """
@@ -255,6 +256,7 @@ def compute_blocked_entropy(
     soft_assign: torch.Tensor,
     block_size: int = 18,
     partition: list = None,
+    recompute: bool = False,
 ) -> torch.Tensor:
     """Approximates the joint Shannon entropy via correlation-aware blocking.
 
@@ -282,6 +284,12 @@ def compute_blocked_entropy(
         partition:   optional precomputed partition (list of LongTensor).
                      When ``None`` a fresh correlation-aware partition is
                      built from ``soft_assign[:, :, 1]`` (the activity).
+        recompute:   if True, wrap each block's Shannon term in gradient
+                     checkpointing so its (B, 2^block_size) joint tensor is
+                     recomputed in backward instead of retained. Trades ~one
+                     extra forward for a smaller peak → allows a larger B (see
+                     resolve_batch_sizes, recompute_backward). No effect on the
+                     value or gradients (checkpointing is exact).
     """
     if partition is None:
         activity_detached = soft_assign[:, :, 1].detach()
@@ -289,7 +297,11 @@ def compute_blocked_entropy(
 
     h = soft_assign.new_zeros(())
     for block_idx in partition:
-        h = h + compute_shannon_joint_entropy(soft_assign[:, block_idx, :])
+        sa = soft_assign[:, block_idx, :]
+        if recompute and sa.requires_grad:
+            h = h + checkpoint(compute_shannon_joint_entropy, sa, use_reentrant=False)
+        else:
+            h = h + compute_shannon_joint_entropy(sa)
     return h
 
 
@@ -333,6 +345,7 @@ def compute_blocked_corrected_entropy(
     soft_assign: torch.Tensor,
     block_size: int = 18,
     partition: list = None,
+    recompute: bool = False,
 ) -> torch.Tensor:
     """Corrected blocked Shannon: H_blocked - cross-block pairwise MI.
 
@@ -351,7 +364,7 @@ def compute_blocked_corrected_entropy(
     if partition is None:
         partition = compute_correlation_aware_partition(activity_detached, block_size)
 
-    h_blocked = compute_blocked_entropy(soft_assign, block_size, partition)
+    h_blocked = compute_blocked_entropy(soft_assign, block_size, partition, recompute=recompute)
 
     activity = soft_assign[:, :, 1]
     mi_matrix = compute_pairwise_mi(activity)
@@ -448,6 +461,7 @@ class DiscreteExactLoss(nn.Module):
         penalty_type: str   = 'covariance',
         block_refresh_interval: int = 50,
         collision_chunk_size: int = 2048,
+        recompute_backward: bool = False,
     ):
         super().__init__()
         if entropy_type not in self._ENTROPY_FNS:
@@ -461,6 +475,7 @@ class DiscreteExactLoss(nn.Module):
         self.penalty_type = penalty_type
         self.block_refresh_interval = block_refresh_interval
         self.collision_chunk_size = collision_chunk_size
+        self.recompute_backward = recompute_backward   # checkpoint blocked histogram
         self._cached_partition = None
         self._steps_since_refresh = 0
 
@@ -488,13 +503,15 @@ class DiscreteExactLoss(nn.Module):
     def _get_blocked_entropy(self, activity: torch.Tensor, soft_assign: torch.Tensor,
                              use_cache: bool) -> torch.Tensor:
         partition = self._refresh_partition(activity, use_cache)
-        return compute_blocked_entropy(soft_assign, self.block_size, partition)
+        return compute_blocked_entropy(soft_assign, self.block_size, partition,
+                                       recompute=self.recompute_backward)
 
     def _get_blocked_corrected_entropy(self, activity: torch.Tensor,
                                        soft_assign: torch.Tensor,
                                        use_cache: bool) -> torch.Tensor:
         partition = self._refresh_partition(activity, use_cache)
-        return compute_blocked_corrected_entropy(soft_assign, self.block_size, partition)
+        return compute_blocked_corrected_entropy(soft_assign, self.block_size, partition,
+                                                 recompute=self.recompute_backward)
 
     def compute_entropy(self, activity: torch.Tensor, entropy_type: str = None,
                         use_cache: bool = True) -> torch.Tensor:

@@ -24,7 +24,13 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import seaborn as sns
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
-from src.bin_loss import compute_shannon_joint_entropy, compute_collision_entropy, compute_blocked_entropy
+from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entropy,
+                          compute_blocked_entropy, compute_kt_entropy)
+
+# KT is an all-pairs O(B²·R) estimator; measuring it on the full test batch each
+# epoch is prohibitive at large R. Cap the subsample used for the KT measurement
+# (this also sets its ceiling at log2(KT_MEASURE_CAP) bits).
+KT_MEASURE_CAP = 4096
 
 
 @torch.no_grad()
@@ -528,44 +534,76 @@ def miller_madow_entropy(activity: torch.Tensor):
 
 
 @torch.no_grad()
-def full_array_entropy(activity, loss_fn):
-    """
-    Soft-assignment joint entropy of the full receptor array.
-
-    Returns a dict with keys:
-      'full_array_entropy'         — collision H2 (fast, used as training loss)
-      'full_array_entropy_blocked' — blocked Shannon approximation (more accurate)
-
-    Both estimators work on continuous soft probabilities, so they are not
-    limited by log₂(B). Add 'codeword_entropy' to measurement_fns for the
-    hard-codeword plug-in / Miller-Madow estimates.
-    """
-    act = activity.detach()
-
+def _measure_entropy(loss_fn, act, entropy_type):
+    """One entropy estimator on the soft joint activity (bits), or None if the loss
+    does not support it. ``entropy_type=None`` → the loss's NATIVE estimator (its
+    compute_entropy default: collision for a collision loss, blocked for annealed,
+    blocked_corrected for blocked_to_corrected, kt for a kt loss, …)."""
+    if entropy_type == 'kt':
+        # Not exposed via compute_entropy on every loss (AnnealedEntropyLoss rejects
+        # it), so go through the soft assignment. Subsampled — KT is all-pairs
+        # O(B²·R); see KT_MEASURE_CAP.
+        soft = loss_fn.compute_soft_assignment(act)
+        return compute_kt_entropy(soft[:KT_MEASURE_CAP]).item()
     if hasattr(loss_fn, 'compute_entropy'):
-        h_collision = loss_fn.compute_entropy(act, entropy_type='collision', use_cache=False).item()
-        h_blocked   = loss_fn.compute_entropy(act, entropy_type='blocked', use_cache=False).item()
-        result = {'full_array_entropy': h_collision, 'full_array_entropy_blocked': h_blocked}
-        try:
-            h_bc = loss_fn.compute_entropy(act, entropy_type='blocked_corrected', use_cache=False).item()
-            result['full_array_entropy_blocked_corrected'] = h_bc
-        except (ValueError, AttributeError):
-            pass
-        return result
-
-    # Legacy path for other loss types.
+        kw = {} if entropy_type is None else {'entropy_type': entropy_type}
+        return loss_fn.compute_entropy(act, use_cache=False, **kw).item()
+    # Legacy losses without compute_entropy: collision or shannon on the soft assign.
     if hasattr(loss_fn, 'compute_soft_assignment'):
-        soft_assign = loss_fn.compute_soft_assignment(act)
-        entropy_fn = (compute_collision_entropy
-                      if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                      else compute_shannon_joint_entropy)
-        h = entropy_fn(soft_assign).item()
-    elif hasattr(loss_fn, 'compute_knn_joint_entropy'):
-        h = loss_fn.compute_knn_joint_entropy(act, k=5).item()
-    else:
-        h = 0.0
+        soft = loss_fn.compute_soft_assignment(act)
+        fn = (compute_collision_entropy
+              if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
+              else compute_shannon_joint_entropy)
+        return fn(soft).item()
+    if hasattr(loss_fn, 'compute_knn_joint_entropy'):
+        return loss_fn.compute_knn_joint_entropy(act, k=5).item()
+    return None
 
-    return {'full_array_entropy': h, 'full_array_entropy_blocked': h}
+
+def full_array_entropy(activity, loss_fn):
+    """Native joint entropy of the array — the estimator the loss trains on.
+
+    Logs ONLY ``full_array_entropy`` (= ``loss_fn.compute_entropy`` with its default
+    type). To also record OTHER estimators as separate columns, add the opt-in
+    measurements ``entropy_collision`` / ``entropy_blocked`` /
+    ``entropy_blocked_corrected`` / ``entropy_kt`` to ``measurement_fns`` — each is a
+    full extra evaluation, so they are off by default. Add ``codeword_entropy`` for
+    the hard-codeword plug-in / Miller-Madow estimates.
+    """
+    val = _measure_entropy(loss_fn, activity.detach(), entropy_type=None)
+    return {'full_array_entropy': val if val is not None else 0.0}
+
+
+def _opt_entropy(activity, loss_fn, entropy_type, key):
+    """Body for the opt-in single-estimator measurements. Silent (empty dict) when
+    the estimator is unsupported for this loss, so it never breaks a run."""
+    try:
+        val = _measure_entropy(loss_fn, activity.detach(), entropy_type)
+    except (ValueError, AttributeError, RuntimeError):
+        val = None
+    return {key: val} if val is not None else {}
+
+
+def entropy_collision(activity, loss_fn):
+    """Opt-in: collision H2 (Rényi-2) of the joint activity → full_array_entropy_collision."""
+    return _opt_entropy(activity, loss_fn, 'collision', 'full_array_entropy_collision')
+
+
+def entropy_blocked(activity, loss_fn):
+    """Opt-in: blocked Shannon of the joint activity → full_array_entropy_blocked."""
+    return _opt_entropy(activity, loss_fn, 'blocked', 'full_array_entropy_blocked')
+
+
+def entropy_blocked_corrected(activity, loss_fn):
+    """Opt-in: blocked-corrected Shannon → full_array_entropy_blocked_corrected."""
+    return _opt_entropy(activity, loss_fn, 'blocked_corrected',
+                        'full_array_entropy_blocked_corrected')
+
+
+def entropy_kt(activity, loss_fn):
+    """Opt-in: Kolchinsky-Tracey lower bound on H(s) (KT_MEASURE_CAP subset)
+    → full_array_entropy_kt."""
+    return _opt_entropy(activity, loss_fn, 'kt', 'full_array_entropy_kt')
 
 
 @torch.no_grad()

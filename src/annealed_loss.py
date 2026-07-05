@@ -38,11 +38,12 @@ class AnnealedEntropyLoss(nn.Module):
     """
 
     def __init__(self, block_size: int = 18, n_partitions: int = 4,
-                 block_refresh_interval: int = 50):
+                 block_refresh_interval: int = 50, recompute_backward: bool = False):
         super().__init__()
         self.block_size = block_size
         self.n_partitions = n_partitions
         self.block_refresh_interval = block_refresh_interval
+        self.recompute_backward = recompute_backward   # checkpoint blocked histogram
         self._cached_partition = None
         self._steps_since_refresh = 0
 
@@ -64,7 +65,8 @@ class AnnealedEntropyLoss(nn.Module):
     def _get_blocked_entropy(self, activity: torch.Tensor, soft_assign: torch.Tensor,
                              use_cache: bool) -> torch.Tensor:
         partition = self._refresh_partition(activity, use_cache)
-        return compute_blocked_entropy(soft_assign, self.block_size, partition)
+        return compute_blocked_entropy(soft_assign, self.block_size, partition,
+                                       recompute=self.recompute_backward)
 
     def compute_entropy(
         self, activity: torch.Tensor, entropy_type: str = "blocked",
@@ -112,12 +114,14 @@ class BlockedToCorrectedLoss(nn.Module):
     """
 
     def __init__(self, block_size: int = 18, n_partitions: int = 4,
-                 block_refresh_interval: int = 50, lam_override: float = None):
+                 block_refresh_interval: int = 50, lam_override: float = None,
+                 recompute_backward: bool = False):
         super().__init__()
         self.block_size = block_size
         self.n_partitions = n_partitions
         self.block_refresh_interval = block_refresh_interval
         self.lam_override = lam_override
+        self.recompute_backward = recompute_backward   # checkpoint blocked histogram
         self._cached_partition = None
         self._steps_since_refresh = 0
 
@@ -158,7 +162,9 @@ class BlockedToCorrectedLoss(nn.Module):
     ) -> torch.Tensor:
         soft = self.compute_soft_assignment(activity)
         partition = self._refresh_partition(activity, use_cache=True)
-        h_blocked = compute_blocked_entropy(soft, self.block_size, partition)
-        h_corrected = compute_blocked_corrected_entropy(soft, self.block_size, partition)
+        h_blocked = compute_blocked_entropy(soft, self.block_size, partition,
+                                            recompute=self.recompute_backward)
+        h_corrected = compute_blocked_corrected_entropy(soft, self.block_size, partition,
+                                                        recompute=self.recompute_backward)
         lam = self.lam_override if self.lam_override is not None else (epoch / max(1, epochs))
         return -((1.0 - lam) * h_blocked + lam * h_corrected)

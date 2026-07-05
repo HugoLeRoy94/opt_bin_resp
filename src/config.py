@@ -86,6 +86,10 @@ class SingleRunConfig:
     initial_temperature: Union[float, str] = "auto"  # "auto" or explicit float
     block_size:       int = 18               # blocked estimator: receptors per block (2^block_size bins)
     n_partitions:     int = 4                # blocked estimator: number of random partitions averaged
+    # When True, gradient-checkpoint the blocked histogram (recompute in backward
+    # instead of retaining it): ~+20% step time for a larger auto batch. See
+    # resolve_batch_sizes. Blocked-family losses only; no effect on the result.
+    recompute_backward: bool = False
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
@@ -200,6 +204,7 @@ class RunConfig:
     eval_chunk_size: Union[Optional[int], List[Optional[int]]] = None
     block_size:      Union[int,           List[int]] = 18
     n_partitions:    Union[int,           List[int]] = 4
+    recompute_backward: Union[bool, List[bool]] = False  # checkpoint blocked histogram → larger batch
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False

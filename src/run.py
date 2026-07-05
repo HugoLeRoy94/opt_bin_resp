@@ -35,6 +35,10 @@ from src.physics import compute_initial_temperature
 
 from src.analysis_helper import (
     full_array_entropy,
+    entropy_collision,
+    entropy_blocked,
+    entropy_blocked_corrected,
+    entropy_kt,
     codeword_entropy,
     miller_madow_entropy,
     mean_receptor_distance,
@@ -65,6 +69,10 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
 MEASUREMENT_REGISTRY = {
     "full_array_entropy":                full_array_entropy,
+    "entropy_collision":                 entropy_collision,
+    "entropy_blocked":                   entropy_blocked,
+    "entropy_blocked_corrected":         entropy_blocked_corrected,
+    "entropy_kt":                        entropy_kt,
     "codeword_entropy":                  codeword_entropy,
     "mean_receptor_distance":            mean_receptor_distance,
     "conditional_entropy_ligand":        conditional_entropy_ligand,
@@ -102,6 +110,7 @@ def resolve_batch_sizes(
     mem_budget_bytes: Optional[int] = None,
     block_size: int = 15,
     n_partitions: int = 4,
+    recompute_backward: bool = False,
 ) -> tuple:
     """Returns (batch_size, test_batch_size, collision_chunk_size).
 
@@ -195,7 +204,13 @@ def resolve_batch_sizes(
         # retained for backward (no partition averaging).
         # Annealed shares the same batch since its Rényi term reuses the batch.
         n_blk = (n_receptors + block_size - 1) // block_size
-        blocked_mem_cap = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * 4))
+        # SAFETY=4 covers the histogram forward matrix + its retained backward graph.
+        # recompute_backward gradient-checkpoints the histogram (recomputed in
+        # backward, not retained), so the graph copy drops out → SAFETY≈2, ~2× the
+        # batch. NOT applied to 'annealed': it also holds an un-checkpointed collision
+        # (R,B,B) block that would then dominate and OOM at the larger B.
+        SAFETY = 2 if (recompute_backward and entropy_type != "annealed") else 4
+        blocked_mem_cap = max(B_min, mem_budget_bytes // ((1 << block_size) * n_blk * 4 * SAFETY))
         b_train = min(stats_cap, blocked_mem_cap)
     else:
         # proxy / mi_* : O(B·R²) or O(B·R), no exponential or B² memory term.
@@ -233,16 +248,19 @@ def _build_loss(cfg, collision_chunk_size: int = 2048) -> nn.Module:
             block_size=cfg.block_size,
             n_partitions=cfg.n_partitions,
             collision_chunk_size=collision_chunk_size,
+            recompute_backward=cfg.recompute_backward,
         )
     elif cfg.entropy == 'annealed':
         return AnnealedEntropyLoss(
             block_size=cfg.block_size,
             n_partitions=cfg.n_partitions,
+            recompute_backward=cfg.recompute_backward,
         )
     elif cfg.entropy == 'blocked_to_corrected':
         return BlockedToCorrectedLoss(
             block_size=cfg.block_size,
             n_partitions=cfg.n_partitions,
+            recompute_backward=cfg.recompute_backward,
         )
     elif cfg.entropy == 'mi_ligand':
         return MaximizeMutualInformationLigandLoss(entropy_type='collision')
@@ -294,6 +312,7 @@ class SimulationRunner:
             mem_budget_bytes=mem_budget,
             block_size=self.config.block_size,
             n_partitions=self.config.n_partitions,
+            recompute_backward=self.config.recompute_backward,
         )
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
             if self.config.batch_size == "auto":

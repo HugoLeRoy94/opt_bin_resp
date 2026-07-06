@@ -104,6 +104,7 @@ _CFG_COLS: list[tuple[str, str]] = [
     ("receptor_sampling_strategy", "TEXT"),
     ("receptor_sampling_seed",     "INTEGER"),
     ("use_interface_model",        "INTEGER"),
+    ("recompute_backward",         "INTEGER"),
 ]
 
 _ALL_BASE_COLS = _META_COLS + _CFG_COLS

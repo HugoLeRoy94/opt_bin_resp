@@ -25,7 +25,8 @@ import seaborn as sns
 
 from src.environment import LogNormalConcentration # Adjust import path as needed
 from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entropy,
-                          compute_blocked_entropy, compute_kt_entropy)
+                          compute_blocked_entropy, compute_kt_entropy,
+                          compute_kt_upper_entropy)
 
 # KT is an all-pairs O(B²·R) estimator; measuring it on the full test batch each
 # epoch is prohibitive at large R. Cap the subsample used for the KT measurement
@@ -545,6 +546,10 @@ def _measure_entropy(loss_fn, act, entropy_type):
         # O(B²·R); see KT_MEASURE_CAP.
         soft = loss_fn.compute_soft_assignment(act)
         return compute_kt_entropy(soft[:KT_MEASURE_CAP]).item()
+    if entropy_type == 'kt_upper':
+        # KT certified UPPER bound (KL kernel) — same all-pairs cost, subsampled.
+        soft = loss_fn.compute_soft_assignment(act)
+        return compute_kt_upper_entropy(soft[:KT_MEASURE_CAP]).item()
     if hasattr(loss_fn, 'compute_entropy'):
         kw = {} if entropy_type is None else {'entropy_type': entropy_type}
         return loss_fn.compute_entropy(act, use_cache=False, **kw).item()
@@ -604,6 +609,12 @@ def entropy_kt(activity, loss_fn):
     """Opt-in: Kolchinsky-Tracey lower bound on H(s) (KT_MEASURE_CAP subset)
     → full_array_entropy_kt."""
     return _opt_entropy(activity, loss_fn, 'kt', 'full_array_entropy_kt')
+
+
+def entropy_kt_upper(activity, loss_fn):
+    """Opt-in: Kolchinsky-Tracey UPPER bound on H(s) (KT_MEASURE_CAP subset)
+    → full_array_entropy_kt_upper. Pairs with entropy_kt to bracket H(s)."""
+    return _opt_entropy(activity, loss_fn, 'kt_upper', 'full_array_entropy_kt_upper')
 
 
 @torch.no_grad()

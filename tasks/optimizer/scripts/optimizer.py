@@ -34,14 +34,14 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 CONDITIONS = [(3, 15), (15, 45), (20, 20)]     # (n_genes, n_receptors)
-DEFAULT_LOSSES = ["collision", "blocked", "annealed", "blocked_to_corrected","kt"]
+DEFAULT_LOSSES = ["collision", "annealed","kt"]
 N_RUNS = 1
 
 # recompute_backward gradient-checkpoints the blocked histogram → a larger auto batch,
 # but ONLY for these histogram-only losses (collision/kt have no blocked term; annealed's
 # collision block keeps its batch). So we sweep recompute_backward=[False, True] just for
 # these — the same environment is reused for both, giving a matched batch-size comparison.
-RB_AFFECTED = {"blocked", "blocked_corrected", "blocked_to_corrected"}
+RB_AFFECTED = {}
 
 
 def parse_args():
@@ -127,7 +127,7 @@ def main():
         batch_size="auto", test_batch_size="auto",
         # native entropy of each loss + all other estimators (this task compares them)
         measurement_fns=("full_array_entropy", "entropy_collision", "entropy_blocked",
-                         "entropy_blocked_corrected", "entropy_kt"),
+                         "entropy_blocked_corrected", "entropy_kt", "entropy_kt_upper"),
 
         # --- Sweep ---
         n_genes                    = cols["n_genes"],

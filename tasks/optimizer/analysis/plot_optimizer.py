@@ -37,6 +37,7 @@ METRICS = {
     "full_array_entropy_blocked":           ("blocked (upper)",      "tab:blue",   "-"),
     "full_array_entropy_blocked_corrected": ("blocked corrected",    "tab:green",  "-."),
     "full_array_entropy_kt":                ("KT lower bound",       "tab:red",    ":"),
+    "full_array_entropy_kt_upper":          ("KT upper bound",       "tab:purple", ":"),
 }
 
 df = latest_sweep(load_runs(GOAL))     # complete runs, newest sweep per condition
@@ -48,6 +49,8 @@ def _as_bool(x):
 
 ep["_rb"] = (ep["recompute_backward"].map(_as_bool)
              if "recompute_backward" in ep.columns else False)
+df["_rb"] = (df["recompute_backward"].map(_as_bool)
+             if "recompute_backward" in df.columns else False)
 
 conditions = sorted(set(zip(df["n_genes"], df["n_receptors"])))   # rows
 optimizers = sorted(df["entropy"].unique())                        # cols
@@ -74,6 +77,20 @@ def _draw(ax, sub, metric, color, ls, **line_kw):
                         color=color, alpha=0.15)
 
 
+def _test_marker(ax, dsub, metric, color, x, alpha):
+    """Final test value (test_results.json → `<metric>_mean` column) as a marker at
+    the end of the training curve. The per-epoch curve is itself measured on
+    test_batch_size, so this should sit at the curve's endpoint (10x-averaged)."""
+    col = metric + "_mean"
+    if col not in dsub.columns:
+        return
+    v = dsub[col].dropna()
+    if v.empty:
+        return
+    ax.plot([x], [v.mean()], marker="o", color=color, ms=7, mec="k", mew=0.6,
+            alpha=alpha, ls="none", zorder=5)
+
+
 # %%
 fig, axes = plt.subplots(
     len(conditions), len(optimizers),
@@ -93,8 +110,13 @@ for r, (ng, nr) in enumerate(conditions):
             # one set of estimator lines per recompute_backward value (same env)
             for rb in sorted(sub["_rb"].unique()):
                 ssub = sub[sub["_rb"] == rb]
+                x_end = ssub["epoch"].max()
+                dsub = df[(df["n_genes"] == ng) & (df["n_receptors"] == nr) &
+                          (df["entropy"] == opt) & (df["_rb"] == rb)]
                 for metric, (_, color, ls) in METRICS.items():
                     _draw(ax, ssub, metric, color, ls, **RB_STYLE[bool(rb)])
+                    # final test value (o marker at the curve end)
+                    _test_marker(ax, dsub, metric, color, x_end, RB_STYLE[bool(rb)]["alpha"])
         ax.set_ylim(0, nr)                 # MI is capped at R = n_receptors bits
         if r == 0:
             ax.set_title(f"optimizer: {opt}", fontsize=10)
@@ -110,11 +132,13 @@ handles = [Line2D([0], [0], color=col, ls=ls, label=lab)
 if ep["_rb"].any():
     handles += [Line2D([0], [0], color="0.3", label="recompute off", **RB_STYLE[False]),
                 Line2D([0], [0], color="0.3", label="recompute on",  **RB_STYLE[True])]
+handles += [Line2D([0], [0], color="0.3", marker="o", mec="k", ls="none",
+                   label="final test value")]
 fig.legend(handles=handles, loc="upper center", ncol=len(handles), fontsize=9,
            bbox_to_anchor=(0.5, 1.0))
 fig.suptitle("Optimizer comparison — entropy estimators vs epoch", y=1.03)
 fig.tight_layout()
-#plt.savefig(FIGURES / "entropy_vs_epoch_by_optimizer_and_system.png",dpi=150, bbox_inches="tight")
-plt.show()
+plt.savefig(FIGURES / "entropy_vs_epoch_by_optimizer_and_system.svg", bbox_inches="tight")
+#plt.show()
 
 # %%

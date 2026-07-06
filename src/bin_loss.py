@@ -190,6 +190,68 @@ def compute_kt_entropy(
     return h_cond - inter_bits
 
 
+def compute_kt_upper_entropy(
+    soft_assign: torch.Tensor,
+    chunk_size: int = 512,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Kolchinsky-Tracey UPPER bound on the joint Shannon entropy H(s).
+
+    Companion to compute_kt_entropy (the Bhattacharyya LOWER bound): same
+    pairwise-distance structure, but the component affinity uses the KL divergence
+    instead of the Bhattacharyya coefficient, which flips the bound direction.
+
+        H(s) <= H_cond - (1/B) Sum_i log( (1/B) Sum_j exp(-KL(p_i || p_j)) )
+
+    For product-Bernoulli components (A_ir = P(receptor r active | sample i)):
+        KL(i||j) = Sum_r [ A_ir log(A_ir/A_jr) + (1-A_ir) log((1-A_ir)/(1-A_jr)) ]
+                 = ent_i - cross(i,j)
+    with the i-only self term  ent_i = Sum_r [A_ir log A_ir + (1-A_ir) log(1-A_ir)]
+    and the cross term  cross(i,j) = Sum_r [A_ir log A_jr + (1-A_ir) log(1-A_jr)].
+    The affinity kernel is -KL(i||j) = cross(i,j) - ent_i.
+
+    Certified upper bound (never below the true H(s)); tight in the well-separated
+    regime. The diagonal (i=j, KL=0) is kept and the sum normalised by the total
+    batch B, so the resolvable-entropy ceiling is log2(B) — same as the lower bound.
+    Peak memory O(chunk^2 * R); time O(B^2 * R / chunk), quadratic in B.
+
+    Args:
+        soft_assign: (B, R, 2); channel 1 is A_ir, channel 0 is 1-A_ir.
+        chunk_size:  edge length m of the (m, n) blocks.
+        eps:         clamp A into [eps, 1-eps] for log stability.
+    """
+    B, R, _ = soft_assign.shape
+    A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)            # (B, R)
+
+    h_cond = (-(A * torch.log2(A) + (1.0 - A) * torch.log2(1.0 - A))).sum(dim=1).mean()
+
+    log_A  = torch.log(A)                                     # (B, R)
+    log_1A = torch.log1p(-A)                                  # (B, R) = log(1-A)
+    ent    = (A * log_A + (1.0 - A) * log_1A).sum(dim=1)      # (B,)  self term (nats)
+    log_B  = math.log(B)
+
+    inter_nats = soft_assign.new_zeros(())
+    for i0 in range(0, B, chunk_size):
+        i1 = min(i0 + chunk_size, B)
+        A_i     = A[i0:i1].unsqueeze(1)                       # (m, 1, R)
+        one_A_i = (1.0 - A[i0:i1]).unsqueeze(1)               # (m, 1, R)
+        ent_i   = ent[i0:i1].unsqueeze(1)                     # (m, 1)
+        row_blocks = []
+        for j0 in range(0, B, chunk_size):
+            j1 = min(j0 + chunk_size, B)
+            log_A_j  = log_A[j0:j1].unsqueeze(0)              # (1, n, R)
+            log_1A_j = log_1A[j0:j1].unsqueeze(0)             # (1, n, R)
+            cross = (A_i * log_A_j + one_A_i * log_1A_j).sum(dim=2)   # (m, n)
+            row_blocks.append(cross - ent_i)                 # (m, n) = -KL(i||j)
+        full_row = torch.cat(row_blocks, dim=1)              # (m, B)
+        inter_nats = inter_nats + (torch.logsumexp(full_row, dim=1) - log_B).sum()
+
+    inter_bits = (inter_nats / B) / math.log(2)
+    # H(s) of R binary receptors is <= R bits, so clamp: min of two valid upper
+    # bounds is still an upper bound, and tighter in the overlapping regime.
+    return (h_cond - inter_bits).clamp(max=float(R))
+
+
 def compute_correlation_aware_partition(
     activity: torch.Tensor,
     block_size: int = 18,

@@ -28,11 +28,6 @@ from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entro
                           compute_blocked_entropy, compute_kt_entropy,
                           compute_kt_upper_entropy)
 
-# KT is an all-pairs O(B²·R) estimator; measuring it on the full test batch each
-# epoch is prohibitive at large R. Cap the subsample used for the KT measurement
-# (this also sets its ceiling at log2(KT_MEASURE_CAP) bits).
-KT_MEASURE_CAP = 4096
-
 
 @torch.no_grad()
 def plot_ligand_summary(env, physics, receptor_indices, n_points=200, axes=None):
@@ -542,14 +537,16 @@ def _measure_entropy(loss_fn, act, entropy_type):
     blocked_corrected for blocked_to_corrected, kt for a kt loss, …)."""
     if entropy_type == 'kt':
         # Not exposed via compute_entropy on every loss (AnnealedEntropyLoss rejects
-        # it), so go through the soft assignment. Subsampled — KT is all-pairs
-        # O(B²·R); see KT_MEASURE_CAP.
+        # it), so go through the soft assignment. Measured on ALL samples given (KT
+        # tiles internally, so its memory is bounded by chunk_size, not B); the
+        # sample count is chosen by the caller (_eval_stats measures on the full
+        # test_batch_size = min(2^R, memory)).
         soft = loss_fn.compute_soft_assignment(act)
-        return compute_kt_entropy(soft[:KT_MEASURE_CAP]).item()
+        return compute_kt_entropy(soft).item()
     if entropy_type == 'kt_upper':
-        # KT certified UPPER bound (KL kernel) — same all-pairs cost, subsampled.
+        # KT certified UPPER bound (KL kernel) — same all-pairs cost, all samples.
         soft = loss_fn.compute_soft_assignment(act)
-        return compute_kt_upper_entropy(soft[:KT_MEASURE_CAP]).item()
+        return compute_kt_upper_entropy(soft).item()
     if hasattr(loss_fn, 'compute_entropy'):
         kw = {} if entropy_type is None else {'entropy_type': entropy_type}
         return loss_fn.compute_entropy(act, use_cache=False, **kw).item()
@@ -606,13 +603,13 @@ def entropy_blocked_corrected(activity, loss_fn):
 
 
 def entropy_kt(activity, loss_fn):
-    """Opt-in: Kolchinsky-Tracey lower bound on H(s) (KT_MEASURE_CAP subset)
+    """Opt-in: Kolchinsky-Tracey lower bound on H(s) on all provided samples
     → full_array_entropy_kt."""
     return _opt_entropy(activity, loss_fn, 'kt', 'full_array_entropy_kt')
 
 
 def entropy_kt_upper(activity, loss_fn):
-    """Opt-in: Kolchinsky-Tracey UPPER bound on H(s) (KT_MEASURE_CAP subset)
+    """Opt-in: Kolchinsky-Tracey UPPER bound on H(s) on all provided samples
     → full_array_entropy_kt_upper. Pairs with entropy_kt to bracket H(s)."""
     return _opt_entropy(activity, loss_fn, 'kt_upper', 'full_array_entropy_kt_upper')
 

@@ -30,7 +30,7 @@ CONC = "concentration_channel_mean"
 MIL  = "mutual_information_ligand_mean"
 MIC  = "mutual_information_concentration_mean"
 
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/concentration_vs_family_spread/figures")
 FIGURES.mkdir(exist_ok=True)
 
 

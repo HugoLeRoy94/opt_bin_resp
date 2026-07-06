@@ -4,6 +4,7 @@
 Edit METRIC to switch what is plotted; everything else is generic.
 """
 import sys
+import inspect
 from pathlib import Path
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")  # exec dir
 
@@ -13,13 +14,13 @@ import matplotlib.pyplot as plt
 from src.plotlib import load_runs, load_epochs, plot_metric, latest_sweep, load_model
 from src.analysis_helper import plot_latent_umap
 
-GOAL      = "fig1"
+GOAL      = "fig1_2"
 METRIC    = "full_array_entropy_blocked_mean"   # upper bound on MI
-METRIC = "full_array_entropy_blocked_corrected_mean"
+#METRIC = "full_array_entropy_blocked_corrected_mean"
 METRIC_LO = "full_array_entropy_mean"           # lower bound on MI
 GENES     = [2,3, 5, 7, 10, 15,20, 25]
 
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/fig1/figures")
 FIGURES.mkdir(exist_ok=True)
 
 homo = load_runs(GOAL, receptor_type="homomer",   entropy="annealed")
@@ -186,7 +187,7 @@ ax.set_xticks([2,5,10,15])
 ax.set_yticks([2,5,10,15,20,25])
 fig.tight_layout()
 plt.subplots_adjust(right=0.8)
-plt.savefig(FIGURES / "impact_of_heteromerization.png", dpi=150, bbox_inches="tight")
+plt.savefig(FIGURES / "impact_of_heteromerization.svg", bbox_inches="tight")
 plt.show()
 
 # %%

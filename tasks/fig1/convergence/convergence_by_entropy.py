@@ -23,7 +23,7 @@ from src.plotlib import load_runs, load_epochs, latest_sweep
 
 GOAL = "fig1_1"
 
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/fig1/figures")
 FIGURES.mkdir(exist_ok=True)
 
 ENTROPY_TYPES = ["shannon", "collision", "blocked", "annealed"]

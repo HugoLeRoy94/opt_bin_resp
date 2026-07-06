@@ -59,7 +59,7 @@ from src.analysis_helper import (
     receptor_conditioned_entropy
 )
 
-from src.bin_loss import DiscreteExactLoss
+from src.bin_loss import DiscreteExactLoss, compute_kt_entropy, compute_kt_upper_entropy
 from src.annealed_loss import AnnealedEntropyLoss, BlockedToCorrectedLoss
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
@@ -233,7 +233,17 @@ def resolve_batch_sizes(
     physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 16))
     b_train = min(b_train, physics_cap)
 
-    return b_train, 4 * b_train, collision_chunk_size
+    # test / eval batch = the absolute maximum useful for MEASUREMENT: min of the
+    # state space (2^R — no point resolving more than R bits) and what memory fits.
+    # Evaluation runs under no_grad and the all-pairs estimators (KT) tile internally,
+    # so the binding tensor is the (EVAL_TILE, B) row buffer → B ≤ budget/(EVAL_TILE·4·4).
+    # Samples above the per-forward limit are generated in sub-batches, so this is a
+    # pure memory bound, not a per-forward one. No arbitrary multiple of B_train.
+    EVAL_TILE = 2048
+    eval_mem_cap = max(B_min, mem_budget_bytes // (EVAL_TILE * 4 * 4))
+    test_batch = max(b_train, min(1 << n_receptors, eval_mem_cap))
+
+    return b_train, test_batch, collision_chunk_size
 
 ENV_REGISTRY = {
     "asymmetric": LigandEnvironment,
@@ -459,6 +469,29 @@ class SimulationRunner:
                     'codeword_entropy_K_hat':  float(K_hat),
                     'codeword_entropy_K_frac': K_frac,
                 })
+
+            # --- KT on the full eval batch (overrides the chunk-based value above) ----
+            # KT is all-pairs O(B²·R); its resolvable-entropy ceiling is log2(B). We
+            # measure it on the WHOLE eval batch (batch_size = test_batch_size, itself
+            # min(2^R, memory)). Samples are generated in sub-batches and concatenated;
+            # KT tiles internally so peak memory is bounded by the tile (EVAL_TILE),
+            # not B. No cap on samples — only time grows (O(B²)).
+            kt_want = [f for f in ('entropy_kt', 'entropy_kt_upper')
+                       if f in self.config.measurement_fns]
+            if kt_want and batch_size > activity.shape[0]:
+                acts = [activity]
+                n_have = activity.shape[0]
+                while n_have < batch_size:
+                    this = min(chunk_size, batch_size - n_have)
+                    E_k, concs_k, _ = env.sample_batch(this, receptor_indices=ri_for_batch)
+                    acts.append(physics(E_k, concs_k, receptor_indices,
+                                        pre_gathered=env.use_interface_model))
+                    n_have += this
+                big_soft = loss_fn.compute_soft_assignment(torch.cat(acts, dim=0))
+                if 'entropy_kt' in kt_want:
+                    stat['full_array_entropy_kt'] = compute_kt_entropy(big_soft, chunk_size=2048).item()
+                if 'entropy_kt_upper' in kt_want:
+                    stat['full_array_entropy_kt_upper'] = compute_kt_upper_entropy(big_soft, chunk_size=2048).item()
 
         return stat
 

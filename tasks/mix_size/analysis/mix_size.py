@@ -11,7 +11,7 @@ METRIC = "full_array_entropy_blocked_mean"
 METRIC_LO = "full_array_entropy_mean"
 MIX_SIZE = np.arange(1,11,1)
 
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/mix_size/figures")
 FIGURES.mkdir(exist_ok=True)
 
 df = load_runs(GOAL)

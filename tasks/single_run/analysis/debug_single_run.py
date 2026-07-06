@@ -8,7 +8,7 @@ from src.plotlib import load_run, load_model, DATA_ROOT
 from src.analysis_helper import plot_latent_umap
 from src.IO import find_latest_sweep, SweepLoader
 
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/single_run/figures")
 FIGURES.mkdir(exist_ok=True)
 
 # Point at a single_run_* directory (no runs.db needed).

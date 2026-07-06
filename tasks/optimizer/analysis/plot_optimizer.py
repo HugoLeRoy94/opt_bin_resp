@@ -26,7 +26,7 @@ from matplotlib.lines import Line2D
 from src.plotlib import load_runs, load_epochs, latest_sweep
 
 GOAL = "optimizer"
-FIGURES = Path(__file__).resolve().parents[1] / "figures"
+FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/optimizer/figures")
 FIGURES.mkdir(exist_ok=True)
 
 # metric -> (legend label, colour, linestyle). Explicit per-estimator columns,

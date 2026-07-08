@@ -5,7 +5,8 @@ Grid layout:
   rows = system type   (the fixed (n_genes, n_receptors) conditions)
   cols = optimizer     (the loss the run was trained on: the `entropy` column)
 
-Each subplot overlays the three per-epoch entropy measurements (all in bits):
+Each subplot overlays the three per-epoch entropy measurements (all in 
+bits):
   full_array_entropy                    — plug-in / Shannon  (MI lower bound)
   full_array_entropy_blocked            — blocked            (MI upper bound)
   full_array_entropy_blocked_corrected  — Miller-Madow-corrected blocked
@@ -89,6 +90,59 @@ def _test_marker(ax, dsub, metric, color, x, alpha):
         return
     ax.plot([x], [v.mean()], marker="o", color=color, ms=7, mec="k", mew=0.6,
             alpha=alpha, ls="none", zorder=5)
+
+
+# %% ── FIRST PANEL: impact of the measurement sample count (few vs many) ────────
+# Only KT changes with the test-batch size (blocked/collision are read on the
+# unchanged eval chunk). The old sweeps measured KT on ~4096 samples (ceiling
+# ~12 bits); the new large-test-batch sweeps measure it on min(2^R, memory). Here
+# we overlay the KT bracket from a "few-sample" sweep vs a "many-sample" sweep.
+# NOTE: the two sweeps are different runs (different random environments), so this
+# shows the ceiling/resolution effect, not a same-environment delta.
+FEW_SWEEP, MANY_SWEEP = None, None       # sweep_folder; None → earliest / latest with KT
+CMP_OPT = "kt"                            # optimizer column to compare on
+KT_METRICS = {"full_array_entropy_kt":       ("KT lower", "tab:red"),
+              "full_array_entropy_kt_upper": ("KT upper", "tab:purple")}
+
+cmp_ep = load_epochs(load_runs(GOAL, complete=False))   # include the running sweep
+_kt = "full_array_entropy_kt"
+_avail = (sorted(cmp_ep.dropna(subset=[_kt])["sweep_folder"].unique())
+          if _kt in cmp_ep.columns else [])
+print("sweeps with KT data:", _avail)
+few  = FEW_SWEEP  or (_avail[0]  if _avail else None)
+many = MANY_SWEEP or (_avail[-1] if _avail else None)
+print(f"comparing  few={few}  vs  many={many}")
+
+if few and many and few != many:
+    fig0, ax0 = plt.subplots(1, len(conditions),
+                             figsize=(4.0 * len(conditions), 3.2), squeeze=False)
+    for c, (ng, nr) in enumerate(conditions):
+        ax = ax0[0][c]
+        for sweep, ls, lw in [(few, "--", 1.3), (many, "-", 2.4)]:
+            s = cmp_ep[(cmp_ep["n_genes"] == ng) & (cmp_ep["n_receptors"] == nr) &
+                       (cmp_ep["entropy"] == CMP_OPT) & (cmp_ep["sweep_folder"] == sweep)]
+            for metric, (_, color) in KT_METRICS.items():
+                if metric not in s.columns:
+                    continue
+                g = s.groupby("epoch")[metric].mean().dropna()
+                if g.empty:
+                    continue
+                ax.plot(g.index.values, g.values, color=color, ls=ls, lw=lw)
+        ax.set_ylim(0, nr)
+        ax.set_title(f"G={ng}, R={nr}")
+        ax.set_xlabel("epoch")
+        if c == 0:
+            ax.set_ylabel(f"KT entropy [bits]\noptimizer = {CMP_OPT}")
+    h0 = [Line2D([0], [0], color=col, label=lab) for lab, col in KT_METRICS.values()]
+    h0 += [Line2D([0], [0], color="0.3", ls="--", lw=1.3, label=f"few samples ({few[-6:]})"),
+           Line2D([0], [0], color="0.3", ls="-",  lw=2.4, label=f"many samples ({many[-6:]})")]
+    fig0.legend(handles=h0, loc="upper center", ncol=len(h0), fontsize=8,
+                bbox_to_anchor=(0.5, 1.12))
+    fig0.suptitle("Measurement sample count — KT bracket, few vs many samples", y=1.18)
+    fig0.tight_layout()
+    fig0.savefig(FIGURES / "kt_few_vs_many_samples.svg", bbox_inches="tight")
+else:
+    print("skipping few-vs-many panel: need two distinct sweeps with KT data")
 
 
 # %%

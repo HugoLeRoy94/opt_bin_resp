@@ -114,7 +114,7 @@ def resolve_batch_sizes(
     n_partitions: int = 4,
     recompute_backward: bool = False,
 ) -> tuple:
-    """Returns (batch_size, test_batch_size, collision_chunk_size).
+    """Returns (batch_size, test_perepoch, test_final, collision_chunk_size).
 
     collision_chunk_size is the largest collision-chunk m that fits in GPU
     memory (the binding tensor is (R, m, m) float32 with a 3× safety factor
@@ -138,7 +138,9 @@ def resolve_batch_sizes(
     block_size / n_partitions must match the DiscreteExactLoss config (defaults
     15 / 4) for the blocked cap to be correct.
 
-    test_batch_size = 4 × batch_size.
+    When test_batch_size == "auto": the per-epoch measurement uses test_perepoch
+    (4 × batch_size, capped at test_final) and the single final measurement uses
+    test_final (= min(2^R, memory)). An explicit test_batch_size is used for both.
     """
     B_min = 512
     collision_chunk_size = None
@@ -233,17 +235,22 @@ def resolve_batch_sizes(
     physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 16))
     b_train = min(b_train, physics_cap)
 
-    # test / eval batch = the absolute maximum useful for MEASUREMENT: min of the
-    # state space (2^R — no point resolving more than R bits) and what memory fits.
-    # Evaluation runs under no_grad and the all-pairs estimators (KT) tile internally,
-    # so the binding tensor is the (EVAL_TILE, B) row buffer → B ≤ budget/(EVAL_TILE·4·4).
-    # Samples above the per-forward limit are generated in sub-batches, so this is a
-    # pure memory bound, not a per-forward one. No arbitrary multiple of B_train.
+    # Two measurement batch sizes (both used only when test_batch_size == "auto"):
+    #   test_final   — the absolute maximum useful for the ONE final measurement:
+    #                  min(state space 2^R, what memory fits). Evaluation is no_grad
+    #                  and the all-pairs estimators (KT) tile internally, so the
+    #                  binding tensor is the (EVAL_TILE, B) row buffer →
+    #                  B ≤ budget/(EVAL_TILE·4·4); samples above the per-forward limit
+    #                  are generated in sub-batches, so this is a pure memory bound.
+    #   test_perepoch — a cheaper size (4× the training batch) used for the per-epoch
+    #                  convergence curve, so KT's O(B²) cost doesn't dominate every
+    #                  logged epoch. Capped at test_final.
     EVAL_TILE = 2048
-    eval_mem_cap = max(B_min, mem_budget_bytes // (EVAL_TILE * 4 * 4))
-    test_batch = max(b_train, min(1 << n_receptors, eval_mem_cap))
+    eval_mem_cap  = max(B_min, mem_budget_bytes // (EVAL_TILE * 4 * 4))
+    test_final    = max(b_train, min(1 << n_receptors, eval_mem_cap))
+    test_perepoch = min(4 * b_train, test_final)
 
-    return b_train, test_batch, collision_chunk_size
+    return b_train, test_perepoch, test_final, collision_chunk_size
 
 ENV_REGISTRY = {
     "asymmetric": LigandEnvironment,
@@ -317,7 +324,8 @@ class SimulationRunner:
             mem_budget = int(free_mem * 0.8)
         else:
             mem_budget = None
-        b_auto, b_eval_auto, collision_chunk_size = resolve_batch_sizes(
+        was_auto_test = self.config.test_batch_size == "auto"
+        b_auto, test_perepoch, test_final, collision_chunk_size = resolve_batch_sizes(
             n_r, self.config.entropy,
             n_ligands=self.config.n_ligands,
             k_sub=self.config.k_sub,
@@ -330,13 +338,17 @@ class SimulationRunner:
             if self.config.batch_size == "auto":
                 self.config.batch_size = b_auto
             if self.config.test_batch_size == "auto":
-                self.config.test_batch_size = b_eval_auto
+                self.config.test_batch_size = test_perepoch      # per-epoch curve (cheap)
             print(
                 f"[auto batch] R={n_r}  "
                 f"batch_size={self.config.batch_size}  "
                 f"test_batch_size={self.config.test_batch_size}"
                 + (f"  gpu_free={mem_budget//(1<<20)} MiB" if mem_budget is not None else "")
             )
+        # Final (one-shot) measurement batch: max memory when auto, else the explicit
+        # test_batch_size the user set. Used only by run()'s closing _test().
+        self._final_test_batch = (test_final if was_auto_test
+                                  else int(self.config.test_batch_size))
         if collision_chunk_size is not None:
             n_chunks = math.ceil(self.config.batch_size / collision_chunk_size)
             print(
@@ -576,7 +588,7 @@ class SimulationRunner:
         self.logger.save_checkpoint(self.config.epochs, env, physics, receptor_indices, is_best=True)
 
         test_results = self._test(env, physics, loss_fn, receptor_indices,
-                                   n_samples=self.config.test_batch_size)
+                                   n_samples=self._final_test_batch)
 
         import json as _json
         import os as _os
@@ -650,5 +662,19 @@ class SweepRunner:
                         )
                     except Exception:
                         pass
+
+                    # Release this run's GPU memory BEFORE the next run is sized.
+                    # The next SimulationRunner reads torch.cuda.mem_get_info() to pick
+                    # its batch; PyTorch's caching allocator otherwise holds this run's
+                    # freed tensors as a process-level cache that mem_get_info counts as
+                    # NOT free — so without this the reported free memory ratchets down
+                    # across the sweep and later runs get progressively tiny batches.
+                    if not self.config.warm_start:
+                        prev_env = None            # not chaining → drop the trained env
+                    del runner
+                    import gc as _gc
+                    _gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                     pbar.update(1)

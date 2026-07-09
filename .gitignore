@@ -5,3 +5,4 @@
 data/
 data_nested/
 old/
+gpu_mem_*.csv

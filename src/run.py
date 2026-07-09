@@ -189,19 +189,19 @@ def resolve_batch_sizes(
         # B = up to tc chunks (multiple of m_max so chunking wastes no samples).
         b_train = math.ceil(min(stats_cap, tc * m_max) / m_max) * m_max
     elif entropy_type == "kt":
-        # Per-block tensor (m,m,R) is likewise retained for backward, but the DOUBLE
-        # loop over ALL chunk pairs keeps n_chunks² of them alive ⇒ training peak =
-        # B²·R·4, INDEPENDENT of chunk size (the m² per block and the n_chunks²
-        # count cancel). Chunking cannot lower it — only B can — so we run a single
-        # chunk at the largest B that fits. Ceiling is log2(B) (diagonal-anchored).
-        # BIG-BATCH PATH: gradient checkpointing (recompute each block in backward)
-        # would drop the peak to one block, making this an m-sized chunked limit
-        # like collision. Not enabled yet — see compute_kt_entropy.
-        # SAFETY ≈ 3 covers the transient torch.log output + backward buffers.
+        # The DOUBLE loop over ALL chunk pairs keeps every (m,m,R) block alive for
+        # backward ⇒ the RETAINED graph is B²·R·4, independent of chunk size — that
+        # sets the batch: b_train = sqrt(mem_budget / (R·4·SAFETY)).  Ceiling log2(B).
         SAFETY = 3
         b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
         b_train = min(stats_cap, b_cap)
-        collision_chunk_size = b_train              # single chunk; chunking is futile
+        # But do NOT run a single b_train-sized chunk: that also materialises a
+        # full-size (B,B,R) torch.log transient AND its backward gradient (~3× the
+        # retained tensor → OOM). A modest fixed tile keeps those transients at m²·R
+        # while the retained B²·R (the real cost, already in b_cap) is unchanged.
+        collision_chunk_size = min(b_train, 2048)
+        # BIG-BATCH PATH: gradient checkpointing the blocks in backward would drop the
+        # retained term too, lifting b_train toward the physics cap. Not enabled yet.
     elif entropy_type in ("blocked", "blocked_corrected", "annealed", "blocked_to_corrected"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # One correlation-aware partition with ceil(R/block_size) blocks is

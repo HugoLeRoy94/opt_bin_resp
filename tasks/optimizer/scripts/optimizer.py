@@ -34,7 +34,7 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 CONDITIONS = [(3, 15), (15, 45), (20, 20)]     # (n_genes, n_receptors)
-DEFAULT_LOSSES = ["collision", "annealed","kt"]
+DEFAULT_LOSSES = ["kt"]
 N_RUNS = 1
 
 # recompute_backward gradient-checkpoints the blocked histogram → a larger auto batch,

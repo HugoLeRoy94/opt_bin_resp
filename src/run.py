@@ -349,6 +349,13 @@ class SimulationRunner:
         # test_batch_size the user set. Used only by run()'s closing _test().
         self._final_test_batch = (test_final if was_auto_test
                                   else int(self.config.test_batch_size))
+        # config.json was written with "auto" before this resolution; re-save it so
+        # the resolved batch_size / test_batch_size (the per-epoch measurement size)
+        # are persisted for analysis — e.g. the log2(sample_size) measurement ceilings.
+        try:
+            self.logger.save_config(self.config)
+        except Exception:
+            pass
         if collision_chunk_size is not None:
             n_chunks = math.ceil(self.config.batch_size / collision_chunk_size)
             print(

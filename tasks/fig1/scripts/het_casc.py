@@ -4,9 +4,20 @@
 Replaces the het_casc_ng{2,3,5,7,10,15,20,25,30,35}.py family: everything except
 n_genes and the receptor sweep was identical across all of them, so only those
 two are exposed as CLI arguments (everything else is fixed at the common values:
-5 random environments, mu in [20,30), annealed entropy). Each invocation draws
-random environments within the high-entropy regime (rho in [0.2,1], d_fam/lambda
-in [0.5,1.5]) and runs one sweep over n_receptors at fixed n_genes (no warm-start).
+5 random environments, mu in [20,30)). Each invocation draws random environments
+within the high-entropy regime (rho in [0.2,1], d_fam/lambda in [0.5,1.5]) and runs
+one sweep over n_receptors at fixed n_genes (no warm-start).
+
+Loss / measurement: the KT lower bound is the optimizer target, and the run logs the
+KT lower + upper BRACKET (full_array_entropy_kt / _kt_upper) — no annealed / native
+full_array_entropy. This feeds the impact_of_heteromerization figure (MI vs n_genes,
+one curve per R/n_genes ratio), bounded below/above by the bracket.
+
+Batch sizing: batch_size="auto" — KT is memory-bound at high R (uses the full GPU) and
+shrinks for small R/G (few states → small batch → fast), so the cost self-adapts.
+per_epoch_measure=False: the per-epoch curve is dropped (only the free training loss is
+logged) and the single FINAL test runs at 4×train — cheap. Re-measure the KT bracket at
+more samples from the saved checkpoint (best_model.pt) for points that aren't precise.
 
   # R = n_genes * [1,2,3,4,5] (default)
   python3 het_casc.py --n_genes 7
@@ -77,14 +88,16 @@ def main():
         # --- Physics ---
         k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
 
-        # --- Loss ---
-        entropy="annealed",
+        # --- Loss (KT lower bound is the optimizer target) ---
+        entropy="kt",
 
         # --- Training ---
         epochs=[int(170 * n + 500) for n in sweep] * N_RUNS,
         lr=0.05, use_scheduler=False,
         batch_size="auto", test_batch_size="auto",
-        measurement_fns=("full_array_entropy",),
+        per_epoch_measure=False,                # no per-epoch eval; final test at 4×train
+        # KT lower + upper bracket only (no annealed native full_array_entropy)
+        measurement_fns=("entropy_kt", "entropy_kt_upper"),
 
         # --- Sweep ---
         n_genes                    = args.n_genes,

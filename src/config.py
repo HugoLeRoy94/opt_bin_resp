@@ -90,6 +90,14 @@ class SingleRunConfig:
     # instead of retaining it): ~+20% step time for a larger auto batch. See
     # resolve_batch_sizes. Blocked-family losses only; no effect on the result.
     recompute_backward: bool = False
+    # Cap on the FINAL one-shot measurement batch when test_batch_size="auto" (the
+    # per-epoch curve stays 4×train). Bounds the O(B²) KT cost of the closing test at
+    # high R without shrinking training. None → no cap (auto uses min(2^R, memory)).
+    test_max_batch:   Optional[int] = None
+    # When False: skip the per-epoch _eval_stats measurement (log the training loss for
+    # free instead) AND run the final test at 4×train. Saves the per-epoch re-sampling
+    # cost; re-measure from the saved checkpoint if more samples are needed.
+    per_epoch_measure: bool = True
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
@@ -205,6 +213,8 @@ class RunConfig:
     block_size:      Union[int,           List[int]] = 18
     n_partitions:    Union[int,           List[int]] = 4
     recompute_backward: Union[bool, List[bool]] = False  # checkpoint blocked histogram → larger batch
+    test_max_batch: Union[Optional[int], List[Optional[int]]] = None  # cap the final auto measurement (O(B²) KT)
+    per_epoch_measure: Union[bool, List[bool]] = True  # False → skip per-epoch eval, final test at 4×train
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False

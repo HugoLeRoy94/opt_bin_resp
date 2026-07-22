@@ -24,6 +24,8 @@ Run on the cluster (split over GPUs to parallelise the 3 train sizes):
   ../run_remote.sh optimizer sample_limit.py 0 -- --train_batch auto
   ../run_remote.sh optimizer sample_limit.py 1 -- --train_batch 4096
   ../run_remote.sh optimizer sample_limit.py 2 -- --train_batch 1024
+  # recompute_backward on → the ~2x-larger compute-bound auto batch:
+  ../run_remote.sh optimizer sample_limit.py 0 -- --train_batch auto --recompute_backward
 """
 import argparse
 import time
@@ -48,6 +50,9 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--train_batch", nargs="+", default=DEFAULT_TRAIN_BATCH,
                    help=f"train batch sizes ('auto' or int). default: {DEFAULT_TRAIN_BATCH}")
+    p.add_argument("--recompute_backward", action="store_true",
+                   help="gradient-checkpoint the KT loss → larger auto batch (compute-"
+                        "bound, ~2x batch / ~4x step time). Off (default) = memory-bound.")
     return p.parse_args()
 
 
@@ -116,6 +121,7 @@ def main():
 
         # --- Loss (fixed: KT lower bound) ---
         entropy = "kt",
+        recompute_backward = args.recompute_backward,   # checkpoint KT → larger auto batch
 
         # --- Training ---
         epochs=cols["epochs"],

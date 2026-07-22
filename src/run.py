@@ -17,6 +17,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.profiler import record_function   # [profiling] inert unless a profiler is active
 import inspect
 from datetime import datetime
 from tqdm import tqdm
@@ -103,6 +104,16 @@ MEASUREMENT_REGISTRY = {
 # at the SAME peak memory. The knob to turn when you need larger collision batches.
 COLLISION_TARGET_CHUNKS = 4
 
+# KT with recompute_backward is COMPUTE-bound, not memory-bound: gradient
+# checkpointing drops the retained graph to O(B·R), but the O(B²·R) work is
+# unchanged. This caps the per-step work at KT_COMPUTE_BUDGET Bhattacharyya
+# pair-evaluations, so the auto batch is B = sqrt(KT_COMPUTE_BUDGET / R) — the
+# same sqrt(1/R) shape as the memory cap, just bounded by time instead of RAM.
+# Reference: the memory-bound work is B²·R = mem_budget/(4·SAFETY) ≈ 5.3e9 on an
+# 80 GiB A100 (R20≈16k / R45≈11k samples); 4× that ⇒ ~2× the batch, ~4× the step
+# time. Independent of GPU size (it is a time budget). Raise it for more samples.
+KT_COMPUTE_BUDGET = 4 * 5.3e9   # ≈ 2.1e10 pair-evaluations / training step
+
 
 def resolve_batch_sizes(
     n_receptors: int,
@@ -113,6 +124,7 @@ def resolve_batch_sizes(
     block_size: int = 15,
     n_partitions: int = 4,
     recompute_backward: bool = False,
+    test_max_batch: Optional[int] = None,
 ) -> tuple:
     """Returns (batch_size, test_perepoch, test_final, collision_chunk_size).
 
@@ -192,16 +204,20 @@ def resolve_batch_sizes(
         # The DOUBLE loop over ALL chunk pairs keeps every (m,m,R) block alive for
         # backward ⇒ the RETAINED graph is B²·R·4, independent of chunk size — that
         # sets the batch: b_train = sqrt(mem_budget / (R·4·SAFETY)).  Ceiling log2(B).
-        SAFETY = 3
-        b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
+        if recompute_backward:
+            # Checkpointing the inner loop drops the retained graph to O(B·R), so
+            # memory no longer binds — the O(B²·R) COMPUTE does. Cap the work instead
+            # (physics_cap below still guards forward memory). Same sqrt(1/R) shape.
+            b_cap = max(B_min, int(math.sqrt(KT_COMPUTE_BUDGET / n_receptors)))
+        else:
+            SAFETY = 3
+            b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
         b_train = min(stats_cap, b_cap)
         # But do NOT run a single b_train-sized chunk: that also materialises a
         # full-size (B,B,R) torch.log transient AND its backward gradient (~3× the
         # retained tensor → OOM). A modest fixed tile keeps those transients at m²·R
         # while the retained B²·R (the real cost, already in b_cap) is unchanged.
         collision_chunk_size = min(b_train, 2048)
-        # BIG-BATCH PATH: gradient checkpointing the blocks in backward would drop the
-        # retained term too, lifting b_train toward the physics cap. Not enabled yet.
     elif entropy_type in ("blocked", "blocked_corrected", "annealed", "blocked_to_corrected"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # One correlation-aware partition with ceil(R/block_size) blocks is
@@ -248,6 +264,10 @@ def resolve_batch_sizes(
     EVAL_TILE = 2048
     eval_mem_cap  = max(B_min, mem_budget_bytes // (EVAL_TILE * 4 * 4))
     test_final    = max(b_train, min(1 << n_receptors, eval_mem_cap))
+    # Optional user cap on the final measurement, to bound the O(B²) KT cost at high R
+    # (keep it ≥ b_train so the final is never smaller than a training batch).
+    if test_max_batch is not None:
+        test_final = max(b_train, min(test_final, int(test_max_batch)))
     test_perepoch = min(4 * b_train, test_final)
 
     return b_train, test_perepoch, test_final, collision_chunk_size
@@ -333,6 +353,7 @@ class SimulationRunner:
             block_size=self.config.block_size,
             n_partitions=self.config.n_partitions,
             recompute_backward=self.config.recompute_backward,
+            test_max_batch=self.config.test_max_batch,
         )
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
             if self.config.batch_size == "auto":
@@ -345,10 +366,14 @@ class SimulationRunner:
                 f"test_batch_size={self.config.test_batch_size}"
                 + (f"  gpu_free={mem_budget//(1<<20)} MiB" if mem_budget is not None else "")
             )
-        # Final (one-shot) measurement batch: max memory when auto, else the explicit
-        # test_batch_size the user set. Used only by run()'s closing _test().
-        self._final_test_batch = (test_final if was_auto_test
-                                  else int(self.config.test_batch_size))
+        # Final (one-shot) measurement batch. In light mode (per_epoch_measure=False)
+        # the closing test uses 4×train (user re-measures from the checkpoint if more
+        # samples are wanted). Otherwise: max memory when auto, else the explicit size.
+        if not self.config.per_epoch_measure:
+            self._final_test_batch = 4 * int(self.config.batch_size)
+        else:
+            self._final_test_batch = (test_final if was_auto_test
+                                      else int(self.config.test_batch_size))
         # config.json was written with "auto" before this resolution; re-save it so
         # the resolved batch_size / test_batch_size (the per-epoch measurement size)
         # are persisted for analysis — e.g. the log2(sample_size) measurement ceilings.
@@ -507,10 +532,13 @@ class SimulationRunner:
                                         pre_gathered=env.use_interface_model))
                     n_have += this
                 big_soft = loss_fn.compute_soft_assignment(torch.cat(acts, dim=0))
-                if 'entropy_kt' in kt_want:
-                    stat['full_array_entropy_kt'] = compute_kt_entropy(big_soft, chunk_size=2048).item()
-                if 'entropy_kt_upper' in kt_want:
-                    stat['full_array_entropy_kt_upper'] = compute_kt_upper_entropy(big_soft, chunk_size=2048).item()
+                # [profiling] label the O(B²) measurement KT so it is separable from the
+                # training-loss KT in the profiler trace. Inert when not profiling.
+                with record_function("prof:eval_kt"):
+                    if 'entropy_kt' in kt_want:
+                        stat['full_array_entropy_kt'] = compute_kt_entropy(big_soft, chunk_size=2048).item()
+                    if 'entropy_kt_upper' in kt_want:
+                        stat['full_array_entropy_kt_upper'] = compute_kt_upper_entropy(big_soft, chunk_size=2048).item()
 
         return stat
 
@@ -543,33 +571,45 @@ class SimulationRunner:
                 physics.temperature = current_temp
 
             ri_for_batch = receptor_indices if env.use_interface_model else None
-            energies, concs, masks = env.sample_batch(self.config.batch_size, receptor_indices=ri_for_batch)
-            activity = physics(energies, concs, receptor_indices, pre_gathered=env.use_interface_model)
+            # [profiling] record_function labels group ops in the torch.profiler trace /
+            # table (physics forward vs loss vs backward). Inert (~free) when no profiler
+            # is attached — see tasks/profiling/scripts/profile_run.py.
+            with record_function("prof:sample+physics_fwd"):
+                energies, concs, masks = env.sample_batch(self.config.batch_size, receptor_indices=ri_for_batch)
+                activity = physics(energies, concs, receptor_indices, pre_gathered=env.use_interface_model)
 
-            if isinstance(loss_fn, MaximizeMutualInformationLigandLoss):
-                loss = loss_fn(activity, mixture_masks=masks)
-            elif isinstance(loss_fn, MaximizeMutualInformationConcentrationLoss):
-                loss = loss_fn(activity, concs=concs)
-            elif isinstance(loss_fn, (AnnealedEntropyLoss, BlockedToCorrectedLoss)):
-                loss = loss_fn(activity, epoch, self.config.epochs)
-            else:
-                loss = loss_fn(activity)
+            with record_function("prof:loss_fwd"):
+                if isinstance(loss_fn, MaximizeMutualInformationLigandLoss):
+                    loss = loss_fn(activity, mixture_masks=masks)
+                elif isinstance(loss_fn, MaximizeMutualInformationConcentrationLoss):
+                    loss = loss_fn(activity, concs=concs)
+                elif isinstance(loss_fn, (AnnealedEntropyLoss, BlockedToCorrectedLoss)):
+                    loss = loss_fn(activity, epoch, self.config.epochs)
+                else:
+                    loss = loss_fn(activity)
 
-            loss.backward()
+            with record_function("prof:backward"):
+                loss.backward()
             optimizer.step()
             if scheduler:
                 scheduler.step()
 
             if epoch % max(1, self.config.epochs // 100) == 0:
-                if hasattr(physics, "temperature"):
-                    physics.temperature = end_temp
-                stat = self._eval_stats(
-                    env, physics, loss_fn, receptor_indices,
-                    self.config.test_batch_size, epoch
-                )
+                if self.config.per_epoch_measure:
+                    if hasattr(physics, "temperature"):
+                        physics.temperature = end_temp
+                    stat = self._eval_stats(
+                        env, physics, loss_fn, receptor_indices,
+                        self.config.test_batch_size, epoch
+                    )
+                    if hasattr(physics, "temperature"):
+                        physics.temperature = current_temp
+                else:
+                    # Free: reuse the training objective already computed for the
+                    # gradient step — no extra sampling / eval. For entropy-maximising
+                    # losses (kt, collision, …) the native entropy is -loss.
+                    stat = {"loss": float(loss.item()), "train_entropy": float(-loss.item())}
                 stat["lr"] = optimizer.param_groups[0]["lr"]
-                if hasattr(physics, "temperature"):
-                    physics.temperature = current_temp
                 stats.append(stat)
 
         return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}

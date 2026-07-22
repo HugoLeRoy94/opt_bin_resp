@@ -56,7 +56,7 @@ for c, (ng, nr) in enumerate(conditions):
         ax.plot(d["test_size"], d["kt_upper"], "--", color=col[b], lw=1.2, alpha=0.8)
         ax.axvline(b, color=col[b], ls=":", lw=0.9, alpha=0.6)  # train-batch marker
     ax.set_xscale("log", base=2)
-    ax.set_ylim(0, nr)
+    #ax.set_ylim(0, nr)
     ax.set_title(f"G={ng}, R={nr}")
     ax.set_xlabel("test sample size")
     if c == 0:
@@ -102,6 +102,34 @@ fig2.legend(handles=handles2, loc="upper center", ncol=len(handles2), fontsize=8
             bbox_to_anchor=(0.5, 1.10))
 fig2.suptitle("Am I reaching the sample ceiling?  (on y=x → sample-limited)", y=1.14)
 fig2.tight_layout()
+
+# %% ── Figure 3: GPU memory / util traces ──────────────────────────────────
+# nvidia-smi traces from monitor_gpu.sh. The old ones sit loose in the task root
+# (pre finalize_run.sh, so unlinked to a sweep); newer runs land theirs inside the
+# sweep folder. We just plot every trace we can find, one line per file, on a shared
+# elapsed-time axis (each file zeroed at its own first sample — they are NOT aligned).
+gpu_csvs = sorted(glob.glob(str(DATA_ROOT / "optimizer" / "gpu_mem_*.csv")) +
+                  glob.glob(str(DATA_ROOT / "optimizer" / "*" / "gpu_mem_*.csv")))
+if gpu_csvs:
+    cmap3 = plt.colormaps["turbo"]
+    fig3, (axm, axu) = plt.subplots(1, 2, figsize=(11, 4))
+    for i, path in enumerate(gpu_csvs):
+        g = pd.read_csv(path, skipinitialspace=True)
+        t = pd.to_datetime(g["timestamp"], format="%Y/%m/%d %H:%M:%S.%f", errors="coerce")
+        mins = (t - t.iloc[0]).dt.total_seconds() / 60.0
+        lab = os.path.relpath(path, DATA_ROOT / "optimizer")[:-4].replace("gpu_mem_", "")
+        c = cmap3(i / max(1, len(gpu_csvs) - 1))
+        axm.plot(mins, g["mem_used_MiB"] / 1024.0, color=c, lw=1.3, label=lab)
+        axu.plot(mins, g["gpu_util_pct"], color=c, lw=1.0)
+    axm.set_xlabel("elapsed [min]"); axm.set_ylabel("GPU memory used [GiB]")
+    axm.set_xscale('log')
+    axu.set_xlabel("elapsed [min]"); axu.set_ylabel("GPU util [%]"); axu.set_ylim(0, 105)
+    fig3.legend(loc="upper center", ncol=min(3, len(gpu_csvs)), fontsize=7,
+                bbox_to_anchor=(0.5, 1.06))
+    fig3.suptitle("GPU memory / utilisation traces", y=1.12)
+    fig3.tight_layout()
+else:
+    print("no gpu_mem_*.csv found under data/optimizer/")
 
 plt.show()
 # %%

@@ -119,10 +119,31 @@ def compute_collision_entropy(
     return -log_mean_coll_prob_nats / math.log(2)
 
 
+def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size):
+    """Sum over the rows in one i-chunk of ( logsumexp_j logBC[i,:] - log_B ).
+
+    Factored out of compute_kt_entropy so it can be gradient-checkpointed: its
+    (m, n, R) Bhattacharyya blocks and (m, B) row are the memory bottleneck, and
+    when wrapped in torch.utils.checkpoint they are recomputed in backward instead
+    of retained — dropping the retained graph from O(B²·R) to O(B·R).
+    sqrt_A_i / sqrt_1A_i are (m, R); sqrt_A / sqrt_1A are the full (B, R).
+    """
+    B = sqrt_A.shape[0]
+    row_blocks = []
+    for j0 in range(0, B, chunk_size):
+        j1 = min(j0 + chunk_size, B)
+        bc = (sqrt_A_i.unsqueeze(1) * sqrt_A[j0:j1].unsqueeze(0)
+              + sqrt_1A_i.unsqueeze(1) * sqrt_1A[j0:j1].unsqueeze(0))   # (m, n, R)
+        row_blocks.append(torch.log(bc).sum(dim=2))                     # (m, n)
+    full_row = torch.cat(row_blocks, dim=1)                            # (m, B)
+    return (torch.logsumexp(full_row, dim=1) - log_B).sum()
+
+
 def compute_kt_entropy(
     soft_assign: torch.Tensor,
     chunk_size: int = 512,
     eps: float = 1e-6,
+    recompute: bool = False,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey Bhattacharyya LOWER bound on the joint Shannon entropy.
 
@@ -153,6 +174,12 @@ def compute_kt_entropy(
         soft_assign: (B, R, 2) tensor; channel 1 is A_br, channel 0 is 1-A_br.
         chunk_size:  edge length m of the (m, n) logBC blocks.
         eps:         clamp A into [eps, 1-eps] for log/sqrt stability.
+        recompute:   if True, gradient-checkpoint each i-chunk's contribution so its
+                     (m, n, R) / (m, B) tensors are recomputed in backward instead of
+                     retained. Retained graph drops O(B²·R) → O(B·R), so the training
+                     batch is bounded by compute, not memory (see resolve_batch_sizes,
+                     KT_COMPUTE_BUDGET). Exact — no effect on value or gradients.
+                     Costs ~one extra forward of the inner loop in backward.
 
     Returns:
         Scalar lower bound in bits, differentiable w.r.t. soft_assign.
@@ -168,23 +195,18 @@ def compute_kt_entropy(
     log_B = math.log(B)
 
     # Σ_i ( logsumexp_j logBC[i,:] - log B ), all pairs, diagonal kept.
+    # Per i-chunk contribution is optionally gradient-checkpointed (recompute).
+    do_ckpt = recompute and soft_assign.requires_grad
     inter_nats = soft_assign.new_zeros(())
     for i0 in range(0, B, chunk_size):
         i1 = min(i0 + chunk_size, B)
-        sqrt_A_i  = sqrt_A[i0:i1].unsqueeze(1)        # (m, 1, R)
-        sqrt_1A_i = sqrt_1A[i0:i1].unsqueeze(1)       # (m, 1, R)
-
-        row_blocks = []
-        for j0 in range(0, B, chunk_size):
-            j1 = min(j0 + chunk_size, B)
-            sqrt_A_j  = sqrt_A[j0:j1].unsqueeze(0)    # (1, n, R)
-            sqrt_1A_j = sqrt_1A[j0:j1].unsqueeze(0)   # (1, n, R)
-            bc = sqrt_A_i * sqrt_A_j + sqrt_1A_i * sqrt_1A_j     # (m, n, R)
-            log_bc = torch.log(bc).sum(dim=2)                     # (m, n)
-            row_blocks.append(log_bc)
-
-        full_row = torch.cat(row_blocks, dim=1)                   # (m, B)
-        inter_nats = inter_nats + (torch.logsumexp(full_row, dim=1) - log_B).sum()
+        sa_i, s1a_i = sqrt_A[i0:i1], sqrt_1A[i0:i1]   # (m, R)
+        if do_ckpt:
+            contrib = checkpoint(_kt_row_contribution, sa_i, s1a_i, sqrt_A, sqrt_1A,
+                                 log_B, chunk_size, use_reentrant=False)
+        else:
+            contrib = _kt_row_contribution(sa_i, s1a_i, sqrt_A, sqrt_1A, log_B, chunk_size)
+        inter_nats = inter_nats + contrib
 
     inter_bits = (inter_nats / B) / math.log(2)
     return h_cond - inter_bits
@@ -598,7 +620,8 @@ class DiscreteExactLoss(nn.Module):
             return compute_collision_entropy(soft_assign,
                                              collision_chunk_size=self.collision_chunk_size)
         elif etype == 'kt':
-            return compute_kt_entropy(soft_assign, chunk_size=self.collision_chunk_size)
+            return compute_kt_entropy(soft_assign, chunk_size=self.collision_chunk_size,
+                                      recompute=self.recompute_backward)
         elif etype == 'blocked':
             return self._get_blocked_entropy(activity, soft_assign, use_cache)
         elif etype == 'blocked_corrected':

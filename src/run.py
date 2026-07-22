@@ -114,6 +114,15 @@ COLLISION_TARGET_CHUNKS = 4
 # time. Independent of GPU size (it is a time budget). Raise it for more samples.
 KT_COMPUTE_BUDGET = 4 * 5.3e9   # ≈ 2.1e10 pair-evaluations / training step
 
+# KT training tile (edge length m of the (m,n,R) Bhattacharyya block). During training
+# the retained graph is B²·R regardless of m (all tiles kept for backward), so m only
+# sets the TRANSIENT (torch.log output + its backward grad) at m²·R — which rides under
+# the already-present B²·R. A bigger tile ⇒ fewer, larger (fused) kernels ⇒ fewer launches
+# (KT is launch-bound), for a small transient-memory cost. 4096 quarters the tile count
+# vs 2048 for ~1 GB extra at R=20. NOT used for eval, where the (m,B) row buffer scales
+# with the (huge) eval B — eval keeps its own 2048 tile (see EVAL_TILE / _eval_stats).
+KT_TRAIN_TILE = 4096
+
 
 def resolve_batch_sizes(
     n_receptors: int,
@@ -217,7 +226,7 @@ def resolve_batch_sizes(
         # full-size (B,B,R) torch.log transient AND its backward gradient (~3× the
         # retained tensor → OOM). A modest fixed tile keeps those transients at m²·R
         # while the retained B²·R (the real cost, already in b_cap) is unchanged.
-        collision_chunk_size = min(b_train, 2048)
+        collision_chunk_size = min(b_train, KT_TRAIN_TILE)
     elif entropy_type in ("blocked", "blocked_corrected", "annealed", "blocked_to_corrected"):
         # Blocked Shannon builds (B, 2^block_size) histograms — NOT (B, 2^R).
         # One correlation-aware partition with ceil(R/block_size) blocks is

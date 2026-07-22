@@ -96,6 +96,7 @@ def main():
         lr=0.05, use_scheduler=False,
         batch_size="auto", test_batch_size="auto",
         per_epoch_measure=False,                # no per-epoch eval; final test at 4×train
+        compile_kt=True,                        # fuse the KT tile kernel (~36% less GPU, 66% less launch CPU)
         # KT lower + upper bracket only (no annealed native full_array_entropy)
         measurement_fns=("entropy_kt", "entropy_kt_upper"),
 

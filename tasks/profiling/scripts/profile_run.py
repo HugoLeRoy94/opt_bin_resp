@@ -27,9 +27,14 @@ Open the artifacts:
   data/profiling/cprofile.prof -> snakeviz cprofile.prof
                                -> pyprof2calltree -i cprofile.prof -o out.callgrind; kcachegrind out.callgrind
 
+--target separates the two phases (a short lumped run is dominated by the O(B²) final
+KT test, NOT the training loop): use --target train for the training breakdown (no KT
+eval → training dominates), --target measure to profile the final KT test.
+
 Run on the cluster:
-  ../run_remote.sh profiling profile_run.py 0 -- --mode torch
-  ../run_remote.sh profiling profile_run.py 0 -- --mode cprofile
+  ../run_remote.sh profiling profile_run.py 0 -- --mode torch --target train
+  ../run_remote.sh profiling profile_run.py 0 -- --mode torch --target measure
+  ../run_remote.sh profiling profile_run.py 0 -- --mode cprofile --target train
   ../run_remote.sh profiling profile_run.py 0 -- --mode cprofile --blocking
 """
 import os
@@ -57,19 +62,33 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", choices=["torch", "cprofile"], default="torch")
+    p.add_argument("--target", choices=["train", "measure", "both"], default="train",
+                   help="train: no KT eval, so the training loop dominates (representative "
+                        "of a real multi-epoch run). measure: profile the O(B²) final KT "
+                        "test. both: lumps them (the final test will dominate a short run).")
     p.add_argument("--blocking", action="store_true",
                    help="cprofile only: CUDA_LAUNCH_BLOCKING=1 (see module docstring).")
+    p.add_argument("--stack", action="store_true",
+                   help="torch: with_stack=True (Python-line attribution). WARNING: bloats "
+                        "the trace to GBs and can make trace.json invalid JSON for perfetto — "
+                        "use cProfile/kcachegrind for Python attribution instead.")
     p.add_argument("--n_genes", type=int, default=10)
     p.add_argument("--n_receptors", type=int, default=20)
     p.add_argument("--n_ligands", type=int, default=200)
-    p.add_argument("--epochs", type=int, default=40, help="tiny — keeps the trace small.")
+    p.add_argument("--epochs", type=int, default=25, help="tiny — keeps the trace small.")
     p.add_argument("--batch_size", default="auto", help="'auto' (realistic) or an int.")
     return p.parse_args()
 
 
 def build_config(a):
-    """A single small kt run exercising the real interface-model + KT path."""
+    """A single small kt run exercising the real interface-model + KT path.
+
+    target="train" drops the KT eval (measurement_fns=()) so the final test is cheap and
+    the training loop (physics_fwd / loss_fwd / backward) dominates — representative of a
+    real run. target="measure"/"both" keep the KT bracket so the O(B²) final test shows.
+    """
     bs = a.batch_size if a.batch_size == "auto" else int(a.batch_size)
+    meas = () if a.target == "train" else ("entropy_kt", "entropy_kt_upper")
     return RunConfig(
         n_families=6, n_ligands=a.n_ligands, latent_dim=8,
         family_spread=0.3, average_family_distance=1.0,
@@ -83,23 +102,30 @@ def build_config(a):
         k_sub=5, temperature=0.1, affinity_kernel="gaussian", kernel_params=(1.0,),
         entropy="kt", epochs=a.epochs, lr=0.05, use_scheduler=False,
         batch_size=bs, test_batch_size="auto", per_epoch_measure=False,
-        measurement_fns=("entropy_kt", "entropy_kt_upper"),
+        measurement_fns=meas,
         n_genes=a.n_genes, n_receptors=a.n_receptors,
         receptor_sampling_strategy="cascading", receptor_sampling_seed=0,
         sweep_name="profile", base_folder=str(OUT), warm_start=False,
     )
 
 
-def run_torch(cfg):
-    """ASYNC torch.profiler — real GPU kernel timing (CUDA events, incl. overlap)."""
+def run_torch(cfg, with_stack=False):
+    """ASYNC torch.profiler — real GPU kernel timing (CUDA events, incl. overlap).
+
+    with_stack defaults OFF: with_stack=True embeds Python source lines into event names,
+    which bloats trace.json to GBs AND can make it invalid JSON for perfetto's strict
+    parser. Op names + the record_function("prof:*") labels are enough for the GPU
+    breakdown; use cProfile/kcachegrind for Python-line attribution.
+    """
     acts = [ProfilerActivity.CPU]
     if torch.cuda.is_available():
         acts.append(ProfilerActivity.CUDA)
-    with profile(activities=acts, record_shapes=True, with_stack=True,
+    with profile(activities=acts, record_shapes=True, with_stack=with_stack,
                  profile_memory=True) as prof:
         SweepRunner(cfg).execute()
     sort = "self_cuda_time_total" if torch.cuda.is_available() else "self_cpu_time_total"
-    table = prof.key_averages(group_by_stack_n=5).table(sort_by=sort, row_limit=30)
+    kw = dict(group_by_stack_n=5) if with_stack else {}
+    table = prof.key_averages(**kw).table(sort_by=sort, row_limit=30)
     print(table)
     (OUT / "torch_table.txt").write_text(table)
     prof.export_chrome_trace(str(OUT / "trace.json"))
@@ -129,10 +155,10 @@ def main():
     a = parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     cfg = build_config(a)
-    print(f"[profiling] mode={a.mode} blocking={a.blocking} "
+    print(f"[profiling] mode={a.mode} target={a.target} blocking={a.blocking} "
           f"G={a.n_genes} R={a.n_receptors} epochs={a.epochs} batch={a.batch_size}")
     if a.mode == "torch":
-        run_torch(cfg)
+        run_torch(cfg, with_stack=a.stack)
     else:
         run_cprofile(cfg, a.blocking)
 

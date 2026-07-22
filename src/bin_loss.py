@@ -119,7 +119,37 @@ def compute_collision_entropy(
     return -log_mean_coll_prob_nats / math.log(2)
 
 
-def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size):
+def _kt_logbc_tile(sqrt_A_i, sqrt_1A_i, sqrt_A_j, sqrt_1A_j):
+    """One (m,n) tile of log-Bhattacharyya: Σ_R log( √(A_iA_j) + √((1-A_i)(1-A_j)) ).
+
+    Inputs (m,R) and (n,R); output (m,n). This is a pure elementwise+reduction chain
+    (mul, mul, add, log, sum over R) — the ideal torch.compile target: Inductor fuses
+    it into ~1 kernel AND can avoid materialising the (m,n,R) intermediate, which cuts
+    both the kernel-launch count and the memory traffic that dominate KT (see the
+    profiling task). Eager and compiled give identical values/gradients.
+    """
+    bc = (sqrt_A_i.unsqueeze(1) * sqrt_A_j.unsqueeze(0)
+          + sqrt_1A_i.unsqueeze(1) * sqrt_1A_j.unsqueeze(0))   # (m, n, R)
+    return torch.log(bc).sum(dim=2)                            # (m, n)
+
+
+_kt_tile_compiled = None   # module-level cache for the torch.compile'd tile kernel
+
+
+def _kt_tile_fn(use_compile: bool):
+    """Return the tile kernel, lazily torch.compile-ing it once when requested."""
+    global _kt_tile_compiled
+    if not use_compile:
+        return _kt_logbc_tile
+    if _kt_tile_compiled is None:
+        # dynamic=True: the trailing j/i chunk is smaller (n varies), so mark shapes
+        # dynamic to avoid a fresh compile per edge-tile size.
+        _kt_tile_compiled = torch.compile(_kt_logbc_tile, dynamic=True)
+    return _kt_tile_compiled
+
+
+def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size,
+                         tile_fn=_kt_logbc_tile):
     """Sum over the rows in one i-chunk of ( logsumexp_j logBC[i,:] - log_B ).
 
     Factored out of compute_kt_entropy so it can be gradient-checkpointed: its
@@ -127,14 +157,13 @@ def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size
     when wrapped in torch.utils.checkpoint they are recomputed in backward instead
     of retained — dropping the retained graph from O(B²·R) to O(B·R).
     sqrt_A_i / sqrt_1A_i are (m, R); sqrt_A / sqrt_1A are the full (B, R).
+    tile_fn is _kt_logbc_tile (eager) or its torch.compile'd version.
     """
     B = sqrt_A.shape[0]
     row_blocks = []
     for j0 in range(0, B, chunk_size):
         j1 = min(j0 + chunk_size, B)
-        bc = (sqrt_A_i.unsqueeze(1) * sqrt_A[j0:j1].unsqueeze(0)
-              + sqrt_1A_i.unsqueeze(1) * sqrt_1A[j0:j1].unsqueeze(0))   # (m, n, R)
-        row_blocks.append(torch.log(bc).sum(dim=2))                     # (m, n)
+        row_blocks.append(tile_fn(sqrt_A_i, sqrt_1A_i, sqrt_A[j0:j1], sqrt_1A[j0:j1]))  # (m, n)
     full_row = torch.cat(row_blocks, dim=1)                            # (m, B)
     return (torch.logsumexp(full_row, dim=1) - log_B).sum()
 
@@ -144,6 +173,7 @@ def compute_kt_entropy(
     chunk_size: int = 512,
     eps: float = 1e-6,
     recompute: bool = False,
+    use_compile: bool = False,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey Bhattacharyya LOWER bound on the joint Shannon entropy.
 
@@ -195,17 +225,19 @@ def compute_kt_entropy(
     log_B = math.log(B)
 
     # Σ_i ( logsumexp_j logBC[i,:] - log B ), all pairs, diagonal kept.
-    # Per i-chunk contribution is optionally gradient-checkpointed (recompute).
+    # Per i-chunk contribution is optionally gradient-checkpointed (recompute) and the
+    # per-tile kernel is optionally torch.compile'd (use_compile) to fuse launches.
     do_ckpt = recompute and soft_assign.requires_grad
+    tile_fn = _kt_tile_fn(use_compile)
     inter_nats = soft_assign.new_zeros(())
     for i0 in range(0, B, chunk_size):
         i1 = min(i0 + chunk_size, B)
         sa_i, s1a_i = sqrt_A[i0:i1], sqrt_1A[i0:i1]   # (m, R)
         if do_ckpt:
             contrib = checkpoint(_kt_row_contribution, sa_i, s1a_i, sqrt_A, sqrt_1A,
-                                 log_B, chunk_size, use_reentrant=False)
+                                 log_B, chunk_size, tile_fn, use_reentrant=False)
         else:
-            contrib = _kt_row_contribution(sa_i, s1a_i, sqrt_A, sqrt_1A, log_B, chunk_size)
+            contrib = _kt_row_contribution(sa_i, s1a_i, sqrt_A, sqrt_1A, log_B, chunk_size, tile_fn)
         inter_nats = inter_nats + contrib
 
     inter_bits = (inter_nats / B) / math.log(2)
@@ -546,6 +578,7 @@ class DiscreteExactLoss(nn.Module):
         block_refresh_interval: int = 50,
         collision_chunk_size: int = 2048,
         recompute_backward: bool = False,
+        compile_kt: bool = False,
     ):
         super().__init__()
         if entropy_type not in self._ENTROPY_FNS:
@@ -560,6 +593,7 @@ class DiscreteExactLoss(nn.Module):
         self.block_refresh_interval = block_refresh_interval
         self.collision_chunk_size = collision_chunk_size
         self.recompute_backward = recompute_backward   # checkpoint blocked histogram
+        self.compile_kt = compile_kt                   # torch.compile the KT tile kernel
         self._cached_partition = None
         self._steps_since_refresh = 0
 
@@ -621,7 +655,8 @@ class DiscreteExactLoss(nn.Module):
                                              collision_chunk_size=self.collision_chunk_size)
         elif etype == 'kt':
             return compute_kt_entropy(soft_assign, chunk_size=self.collision_chunk_size,
-                                      recompute=self.recompute_backward)
+                                      recompute=self.recompute_backward,
+                                      use_compile=self.compile_kt)
         elif etype == 'blocked':
             return self._get_blocked_entropy(activity, soft_assign, use_cache)
         elif etype == 'blocked_corrected':

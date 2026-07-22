@@ -98,6 +98,8 @@ class SingleRunConfig:
     # free instead) AND run the final test at 4×train. Saves the per-epoch re-sampling
     # cost; re-measure from the saved checkpoint if more samples are needed.
     per_epoch_measure: bool = True
+    # torch.compile the KT per-tile kernel (fuses the launch-heavy elementwise loop).
+    compile_kt: bool = False
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
@@ -215,6 +217,7 @@ class RunConfig:
     recompute_backward: Union[bool, List[bool]] = False  # checkpoint blocked histogram → larger batch
     test_max_batch: Union[Optional[int], List[Optional[int]]] = None  # cap the final auto measurement (O(B²) KT)
     per_epoch_measure: Union[bool, List[bool]] = True  # False → skip per-epoch eval, final test at 4×train
+    compile_kt: Union[bool, List[bool]] = False  # torch.compile the KT tile kernel
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False

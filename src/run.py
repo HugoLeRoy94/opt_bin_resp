@@ -288,6 +288,7 @@ def _build_loss(cfg, collision_chunk_size: int = 2048) -> nn.Module:
             n_partitions=cfg.n_partitions,
             collision_chunk_size=collision_chunk_size,
             recompute_backward=cfg.recompute_backward,
+            compile_kt=cfg.compile_kt,
         )
     elif cfg.entropy == 'annealed':
         return AnnealedEntropyLoss(
@@ -535,8 +536,10 @@ class SimulationRunner:
                 # [profiling] label the O(B²) measurement KT so it is separable from the
                 # training-loss KT in the profiler trace. Inert when not profiling.
                 with record_function("prof:eval_kt"):
+                    _compile_kt = getattr(loss_fn, "compile_kt", False)
                     if 'entropy_kt' in kt_want:
-                        stat['full_array_entropy_kt'] = compute_kt_entropy(big_soft, chunk_size=2048).item()
+                        stat['full_array_entropy_kt'] = compute_kt_entropy(
+                            big_soft, chunk_size=2048, use_compile=_compile_kt).item()
                     if 'entropy_kt_upper' in kt_want:
                         stat['full_array_entropy_kt_upper'] = compute_kt_upper_entropy(big_soft, chunk_size=2048).item()
 

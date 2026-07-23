@@ -58,5 +58,8 @@ ssh "$SERVER" tmux new-session -d -s "$SESSION" "bash -lc \"$RUN\""
 echo "launched tmux session: $SESSION"
 echo "  attach:   ssh -t $SERVER tmux attach -t $SESSION"
 echo "  list:     ssh -t $SERVER tmux ls"
+# Kill ONE run with kill-session — NEVER 'tmux kill-server', which nukes every session
+# (interactive + all sweeps) on the shared server at once.
+echo "  kill:     ssh -t $SERVER tmux kill-session -t $SESSION"
 echo "  run log:  $SERVER:$RUN_LOG"
 echo "  gpu log:  $SERVER:$MEM_LOG"

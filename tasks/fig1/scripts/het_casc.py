@@ -24,8 +24,16 @@ more samples from the saved checkpoint (best_model.pt) for points that aren't pr
   # explicit receptor list
   python3 het_casc.py --n_genes 25 --n_receptors 25 27 29 31 33
 
-Run on the cluster:
-  ../run_remote.sh fig1 het_casc.py 0 -- --n_genes 7
+Run on the cluster — full impact_of_heteromerization figure (MI vs n_genes, one curve per
+ratio R/n_genes = 1..5). Each invocation sweeps R = n_genes*[1,2,3,4,5], so the figure's
+x-axis n_genes ∈ {2,3,5,7,10,15} needs one run each (spread over GPUs 0-3):
+  ../run_remote.sh fig1 het_casc.py 0 -- --n_genes 2
+  ../run_remote.sh fig1 het_casc.py 1 -- --n_genes 3
+  ../run_remote.sh fig1 het_casc.py 2 -- --n_genes 5
+  ../run_remote.sh fig1 het_casc.py 3 -- --n_genes 7
+  ../run_remote.sh fig1 het_casc.py 0 -- --n_genes 10    # reuse GPU 0 once it frees
+  ../run_remote.sh fig1 het_casc.py 1 -- --n_genes 15    # R up to 75 — the longest run
+Then plot with analysis/impact_of_heteromerization_kt.py (reads GOAL="fig1").
 """
 import argparse
 import time

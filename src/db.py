@@ -298,6 +298,9 @@ def add_run(run_dir: str, db_path: str) -> None:
 
 def backfill(db_path: str) -> None:
     """Crawl the directory containing runs.db and upsert every discovered run."""
+    init(db_path)   # ensure the base `runs` table exists (idempotent) so a fresh
+                    # db works without a separate `init` call — _ensure_schema_cols
+                    # below only ALTERs, it does not CREATE.
     data_root = os.path.dirname(os.path.abspath(db_path))
     print(f"Scanning: {data_root}")
     count = skipped = 0

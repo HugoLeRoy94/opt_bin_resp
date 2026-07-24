@@ -48,9 +48,12 @@ MON="mkdir -p $REMOTE_DATA/$TASK; $REMOTE_ROOT/tasks/monitor_gpu.sh $GPU 5 $MEM_
 # python3 -u: without a TTY, Python block-buffers stdout, so prints never reach the
 # pane/log until the buffer fills — -u forces unbuffered so output streams live.
 SIM="MY_GPU=$GPU docker compose -f $COMPOSE run --rm -T gpu-runner python3 -u $REMOTE_SCRIPT $ARGS 2>&1 | tee -a $RUN_LOG"
-# On exit: stop the monitor, then move the gpu trace + run log into the sweep folder
-# the run created (parsed from its "Initiating sweep:" line by finalize_run.sh).
-FIN="pkill -f '$MEM_LOG' 2>/dev/null; $REMOTE_ROOT/tasks/finalize_run.sh '$RUN_LOG' '$MEM_LOG' '$REMOTE_DATA'; echo; echo '=== run finished (Ctrl-b d to detach) ==='; exec bash"
+# On exit: finalize_run.sh stops the GPU monitor (by its recorded PID) and moves the
+# gpu trace + run log into the sweep folder. NO pattern-based pkill here — it would
+# also match this tmux session's own shell (its command line contains $MEM_LOG) and
+# kill the session, discarding any crash output. `exec bash` keeps the pane open so a
+# crashed run's error stays visible for inspection.
+FIN="$REMOTE_ROOT/tasks/finalize_run.sh '$RUN_LOG' '$MEM_LOG' '$REMOTE_DATA'; echo; echo '=== run finished (Ctrl-b d to detach) ==='; exec bash"
 RUN="$MON $SIM; $FIN"
 
 ssh "$SERVER" tmux new-session -d -s "$SESSION" "bash -lc \"$RUN\""

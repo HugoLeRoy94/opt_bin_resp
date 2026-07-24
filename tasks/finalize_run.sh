@@ -11,6 +11,12 @@
 set -u
 RUN_LOG="$1"; MEM_LOG="$2"; REMOTE_DATA="$3"
 
+# Stop the GPU monitor by the PID it recorded (see monitor_gpu.sh). Done here — a real
+# script with literal args — so there is no pattern match that could hit the tmux shell.
+mon_pid=$(cat "$MEM_LOG.pid" 2>/dev/null || true)
+[ -n "$mon_pid" ] && kill "$mon_pid" 2>/dev/null || true
+rm -f "$MEM_LOG.pid"
+
 sweep_c=$(grep -m1 'Initiating sweep:' "$RUN_LOG" 2>/dev/null | awk '{print $NF}')
 [ -z "$sweep_c" ] && exit 0                       # no sweep created → leave at root
 

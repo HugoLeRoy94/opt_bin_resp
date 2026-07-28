@@ -83,7 +83,7 @@ handles = [
 fig.legend(handles=handles, loc="upper right", fontsize=9)
 fig.suptitle("Convergence by entropy loss type — fig1_1", fontsize=13)
 fig.tight_layout()
-plt.savefig(FIGURES / "convergence_by_entropy_type.png", dpi=150, bbox_inches="tight")
+#plt.savefig(FIGURES / "convergence_by_entropy_type.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%

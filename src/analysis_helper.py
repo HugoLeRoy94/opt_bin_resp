@@ -224,6 +224,50 @@ def evaluate_model(env,physics,receptor_indices,loss_fn,n_samples=2000):
     return val.item() if isinstance(val, torch.Tensor) else val
 
 
+# ── Post-hoc measurement from a reloaded checkpoint ──────────────────────────
+# Drive a FROZEN (env, physics) — e.g. reconstructed via plotlib.load_model — to
+# produce fresh samples and measure entropy WITHOUT retraining. Reusable by any
+# post-hoc analysis (test-size scaling, extra estimators, resampling, …): the sampler
+# is estimator-agnostic, so a script picks whatever estimator it wants on the result.
+EVAL_TILE = 2048     # KT internal tile (also the eval memory-cap denominator)
+FWD_CHUNK = 16384    # forward sub-batch (no_grad) — bounds the sampling forward pass
+
+
+@torch.no_grad()
+def sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk=FWD_CHUNK):
+    """Generate `n_samples` of receptor activity from a (reloaded) env + physics.
+
+    Samples are drawn in `fwd_chunk` sub-batches and concatenated, so the forward-pass
+    memory stays bounded regardless of `n_samples`. Interface-model-aware. Returns a
+    (n_samples, R) tensor; apply any estimator to it (KT, collision, codeword, …).
+    """
+    ri_fwd = receptor_indices if env.use_interface_model else None
+    acts, n = [], 0
+    while n < n_samples:
+        b = min(fwd_chunk, n_samples - n)
+        E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
+        acts.append(physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model))
+        n += b
+    return torch.cat(acts, dim=0)
+
+
+@torch.no_grad()
+def kt_bracket(env, physics, receptor_indices, n_samples, tile=EVAL_TILE, fwd_chunk=FWD_CHUNK):
+    """(kt_lower, kt_upper) in bits on `n_samples` fresh samples from a reloaded model.
+
+    Both are certified bounds on the joint entropy H(s). KT tiles internally at `tile`,
+    so peak memory is bounded by the tile, not `n_samples` (time is O(n_samples²))."""
+    activity = sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk)
+    soft = torch.stack([1.0 - activity, activity], dim=-1)
+    return (compute_kt_entropy(soft, chunk_size=tile).item(),
+            compute_kt_upper_entropy(soft, chunk_size=tile).item())
+
+
+def eval_batch_cap(mem_free_bytes, tile=EVAL_TILE):
+    """Largest test batch whose (tile, B) KT row buffer fits ~80% of free GPU memory."""
+    return max(tile, int(mem_free_bytes * 0.8) // (tile * 4 * 4))
+
+
 @torch.no_grad()
 def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, family_names=None, ax=None):
     """

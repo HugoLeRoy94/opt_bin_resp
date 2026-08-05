@@ -2,14 +2,18 @@
 """Prototype: two ways to draw the KT bracket + environmental std on the
 impact_of_heteromerization figure (MI vs n_genes, one series per ratio R/n_genes).
 
-
   - KT bracket (lower→upper) = certified methodological bound  -> a filled band
   - std across environments   = statistical spread             -> caps / thin band
 
 A) single axes: bracket fill + error-bar caps (±std) on the LOWER bound (reported MI).
 B) small multiples: one panel per ratio, bracket fill + std bands on BOTH bounds.
+
+Data source: the KT bracket is read from the post-hoc test-scaling CSVs
+(data/fig1/ng*/test_scaling.csv, produced by scripts/test_scaling.py), taking each run's
+LARGEST measured test size — i.e. the most-converged (plateau) estimate, not the run's
+4×train final test. Only conditions already measured appear; run test_scaling.py + sync.
 """
-import sys, os
+import sys, os, glob
 from pathlib import Path
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
 
@@ -18,17 +22,27 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from src.plotlib import load_runs, latest_sweep
+from src.plotlib import DATA_ROOT
 
-GOAL  = "fig1"
-KT_LO = "full_array_entropy_kt_mean"
-KT_UP = "full_array_entropy_kt_upper_mean"
+GOAL   = "fig1"
 RATIOS = range(1, 6)
 SAVE = Path(os.environ.get("SAVE_DIR", "."))   # PNGs for inspection
 
-hete = latest_sweep(load_runs(GOAL, receptor_type="heteromer")).copy()
-hete["het_ratio"] = (hete["R"] / hete["n_genes"]).round().astype(int)
-levels = sorted(r for r in hete["het_ratio"].unique() if r in RATIOS)
+# Read the test-scaling CSVs and keep, per run, the row with the LARGEST test size.
+csvs = sorted(glob.glob(str(DATA_ROOT / GOAL / "ng*" / "test_scaling.csv")))
+if not csvs:
+    raise SystemExit("no data/fig1/ng*/test_scaling.csv — run scripts/test_scaling.py "
+                     "(one --sweep_glob 'ngN_*' per n_genes) and sync first")
+_ts = pd.concat([pd.read_csv(c) for c in csvs], ignore_index=True)
+# keep only the latest sweep per n_genes (match impact_of_heteromerization_kt.py's latest_sweep)
+_ts = _ts[_ts["sweep_folder"] == _ts.groupby("n_genes")["sweep_folder"].transform("max")]
+_big = _ts.loc[_ts.groupby(["sweep_folder", "run_dir"])["test_size"].idxmax()].copy()
+_big["het_ratio"] = (_big["n_receptors"] / _big["n_genes"]).round().astype(int)
+print("largest test size measured per run:",
+      f"{int(_big['test_size'].min())}–{int(_big['test_size'].max())} samples "
+      f"({_big['run_dir'].nunique()} runs, {len(csvs)} sweeps)")
+
+levels = sorted(r for r in _big["het_ratio"].unique() if r in RATIOS)
 cmap = plt.colormaps["viridis"]
 
 
@@ -40,10 +54,11 @@ def col(ratio):
 
 
 def agg(ratio):
-    """Per-n_genes mean/std of lower and upper bound across the environment runs."""
-    s = hete[hete["het_ratio"] == ratio]
-    g = s.groupby("n_genes").agg(lo=(KT_LO, "mean"), lo_sd=(KT_LO, "std"),
-                                 up=(KT_UP, "mean"), up_sd=(KT_UP, "std")).sort_index()
+    """Per-n_genes mean/std of lower and upper KT bound across the environment runs,
+    each at its own largest measured test size."""
+    s = _big[_big["het_ratio"] == ratio]
+    g = s.groupby("n_genes").agg(lo=("kt_lower", "mean"), lo_sd=("kt_lower", "std"),
+                                 up=("kt_upper", "mean"), up_sd=("kt_upper", "std")).sort_index()
     return g.fillna(0.0)
 
 

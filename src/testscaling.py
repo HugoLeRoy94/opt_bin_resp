@@ -35,6 +35,9 @@ def build_parser(description, data_default, sweep_default, mult_default=None):
                    help="explicit absolute test batch sizes (highest priority)")
     p.add_argument("--mult", type=float, nargs="+", default=mult_default,
                    help="per-run multiples of the train batch B (e.g. 1 2 4 8 16 → B,2B,4B,8B,16B)")
+    p.add_argument("--largest", type=float, default=None,
+                   help="measure a SINGLE size = min(largest×B, memory cap) per run — the "
+                        "largest feasible test batch, for the final all-env figure values")
     p.add_argument("--n_test", type=int, default=5, help="auto ladder: number of sizes (×4 apart)")
     p.add_argument("--n_receptors", type=int, nargs="+", default=None,
                    help="only measure runs with these R (default: all)")
@@ -46,10 +49,12 @@ def build_parser(description, data_default, sweep_default, mult_default=None):
 def sizes_from_args(args):
     """Return a sizes_for(cfg, mem_free) -> list[int] callable per the chosen strategy."""
     def sizes_for(cfg, mem_free):
+        b = cfg.batch_size if isinstance(cfg.batch_size, int) else 0
         if args.test_sizes:
             return list(args.test_sizes)
+        if getattr(args, "largest", None) is not None:                  # single largest feasible
+            return [min(int(round(args.largest * b)), eval_batch_cap(mem_free))]
         if args.mult:
-            b = cfg.batch_size if isinstance(cfg.batch_size, int) else 0
             return [int(round(m * b)) for m in args.mult]
         top = min(1 << cfg.n_receptors, eval_batch_cap(mem_free))       # auto ladder
         return [int(top // (4 ** k)) for k in range(args.n_test)]

@@ -266,6 +266,10 @@ class LigandEnvironment(nn.Module):
         self.affinity_kernel = affinity_kernel
         self.kernel_params = kernel_params if kernel_params is not None else []
         self.use_interface_model = use_interface_model
+        # Composition binding (see bind_receptors). None → the original gather path.
+        self.composition = None        # (n_sources, R)
+        self.pocket_pairs = None       # (P, 2) interface only: distinct (+face, -face) genes
+        self._bound_receptors = None
         self.n_presence_blocks = n_presence_blocks
         self.block_shared_conc_mean = block_shared_conc_mean
 
@@ -641,6 +645,94 @@ class LigandEnvironment(nn.Module):
         dummy    = (sparse_idx == self.n_ligands).unsqueeze(-1)               # (B, S, 1)
         return (base + noise).masked_fill(dummy, 0.0)                         # (B, S, D)
 
+    # ------------------------------------------------------------------
+    # Composition binding — the "compute each distinct thing once" fast path
+    # ------------------------------------------------------------------
+
+    def bind_receptors(self, receptor_indices: torch.Tensor):
+        """Precompute the (n_sources, R) composition matrix for a receptor array.
+
+        A "source" is a distinct thing whose interaction energy has to be computed:
+
+          classic model    → a GENE.  n_sources = n_genes.  composition[u, r] is the
+                             number of receptor r's k_sub slots filled by gene u.
+          interface model  → a POCKET, identified by the (plus-face gene, minus-face
+                             gene) pair straddling it.  A pocket's energy depends ONLY
+                             on that pair — not on which receptor it sits in, nor on
+                             its position in the ring — so there are at most n_genes^2
+                             distinct pockets no matter how large the array is.
+                             composition[p, r] counts how often pocket p occurs in r.
+
+        Binding lets sample_batch() evaluate each distinct source once and lets
+        physics turn (B, L, n_sources) into (B, L, R) with a single matmul.  In the
+        interface model the redundancy removed is large: a pool of 53k receptors uses
+        267k pocket slots drawn from only ~644 distinct pockets (~400x).
+
+        Sets self.composition and (interface only) self.pocket_pairs, and returns the
+        composition matrix.  Call unbind() to restore the original gather path.
+        """
+        ref = (self.unit_latent_plus if self.use_interface_model else self.unit_latent)
+        ri = receptor_indices.to(ref.device)
+        R, k = ri.shape
+
+        if not self.use_interface_model:
+            n_sources = self.n_genes
+            src = ri.reshape(-1)                                        # (R*k,)
+            self.pocket_pairs = None
+        else:
+            idx_i = ri                                                  # (R, k)
+            idx_j = ri.roll(-1, dims=1)                                 # (R, k) cyclic
+            pair_id = (idx_i * self.n_genes + idx_j).reshape(-1)        # (R*k,)
+            uniq, inverse = torch.unique(pair_id, return_inverse=True)
+            n_sources = uniq.numel()
+            src = inverse                                               # (R*k,)
+            self.pocket_pairs = torch.stack(
+                [uniq // self.n_genes, uniq % self.n_genes], dim=1)     # (P, 2)
+
+        cols = torch.arange(R, device=ri.device).unsqueeze(1).expand(R, k).reshape(-1)
+        comp = torch.zeros(n_sources, R, device=ri.device, dtype=torch.float32)
+        comp.index_put_((src, cols),
+                        torch.ones(src.numel(), device=ri.device), accumulate=True)
+        self.composition = comp
+        self._bound_receptors = ri
+        return comp
+
+    def unbind(self):
+        """Drop the composition binding; _compute_energies reverts to the gather path."""
+        self.composition = None
+        self.pocket_pairs = None
+        self._bound_receptors = None
+
+    def _compute_pocket_energies(self, v_ligands: torch.Tensor) -> torch.Tensor:
+        """(B, L, P) — one energy per DISTINCT pocket, for the bound receptor array.
+
+        Same formula as the interface branch of _compute_energies, evaluated on the
+        deduplicated (plus-face, minus-face) gene pairs instead of on every (receptor,
+        ring position) slot.  Bit-for-bit the same values, ~n_genes^2/(R*k_sub) of the work.
+        """
+        idx_i = self.pocket_pairs[:, 0]                                  # (P,)
+        idx_j = self.pocket_pairs[:, 1]                                  # (P,)
+
+        v_pocket = 0.5 * (self.unit_latent_plus[idx_i]
+                          + self.unit_latent_minus[idx_j])               # (P, D)
+        E_base   = 0.5 * (self.base_energy_u_plus[idx_i]
+                          + self.base_energy_u_minus[idx_j])             # (P,)
+
+        a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)             # (B, L, 1)
+        b_sq    = (v_pocket ** 2).sum(dim=-1)                            # (P,)
+        ab      = torch.einsum('bld,pd->blp', v_ligands, v_pocket)       # (B, L, P)
+        dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0) # (B, L, P)
+
+        if self.affinity_kernel == "gaussian":
+            E_max = 0.5 * (F.softplus(self.max_energy_u_raw_plus[idx_i])
+                           + F.softplus(self.max_energy_u_raw_minus[idx_j]))   # (P,)
+            lambda_sq = self.kernel_params[0] ** 2
+            return (E_base[None, None, :]
+                    + E_max[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+        E_slope = 0.5 * (F.softplus(self.energy_slope_raw_plus[idx_i])
+                         + F.softplus(self.energy_slope_raw_minus[idx_j]))      # (P,)
+        return E_base[None, None, :] + E_slope[None, None, :] * dist_sq
+
     def _compute_energies(
         self,
         v_ligands: torch.Tensor,
@@ -672,8 +764,14 @@ class LigandEnvironment(nn.Module):
                 return self.base_energy_u[None, None, :] + dE[None, None, :] * dist_sq
 
         # ----------------------------------------------------------------------
-        # Interface path: (B, L, R, k_sub)
+        # Interface path
         # ----------------------------------------------------------------------
+        # Bound: evaluate the ~n_genes^2 DISTINCT pockets once → (B, L, P).
+        # physics then contracts with the (P, R) composition. Unbound: the original
+        # per-slot path → (B, L, R, k_sub).
+        if self.composition is not None and self.pocket_pairs is not None:
+            return self._compute_pocket_energies(v_ligands)
+
         if receptor_indices is None:
             raise ValueError(
                 "receptor_indices must be supplied to _compute_energies() "

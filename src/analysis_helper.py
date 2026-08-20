@@ -234,30 +234,45 @@ FWD_CHUNK = 16384    # forward sub-batch (no_grad) — bounds the sampling forwa
 
 
 @torch.no_grad()
-def sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk=FWD_CHUNK):
+def sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk=FWD_CHUNK,
+                    readout=None, pool_chunk=None):
     """Generate `n_samples` of receptor activity from a (reloaded) env + physics.
 
     Samples are drawn in `fwd_chunk` sub-batches and concatenated, so the forward-pass
     memory stays bounded regardless of `n_samples`. Interface-model-aware. Returns a
     (n_samples, R) tensor; apply any estimator to it (KT, collision, codeword, …).
+
+    readout: a CellReadout (src/cells.py) reloaded from the checkpoint. When given,
+    the receptor pool is pooled into cells and the result is (n_samples, C) instead;
+    every downstream estimator is agnostic to which of the two it receives.
+    pool_chunk bounds the receptor-pool axis per forward pass (None → one pass).
     """
     ri_fwd = receptor_indices if env.use_interface_model else None
     acts, n = [], 0
     while n < n_samples:
         b = min(fwd_chunk, n_samples - n)
         E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
-        acts.append(physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model))
+        if readout is None:
+            acts.append(physics(E, concs, receptor_indices,
+                                pre_gathered=env.use_interface_model))
+        else:
+            from src.cells import cell_activity
+            acts.append(cell_activity(physics, readout, E, concs, receptor_indices,
+                                      pre_gathered=env.use_interface_model,
+                                      chunk_size=pool_chunk))
         n += b
     return torch.cat(acts, dim=0)
 
 
 @torch.no_grad()
-def kt_bracket(env, physics, receptor_indices, n_samples, tile=EVAL_TILE, fwd_chunk=FWD_CHUNK):
+def kt_bracket(env, physics, receptor_indices, n_samples, tile=EVAL_TILE, fwd_chunk=FWD_CHUNK,
+               readout=None, pool_chunk=None):
     """(kt_lower, kt_upper) in bits on `n_samples` fresh samples from a reloaded model.
 
     Both are certified bounds on the joint entropy H(s). KT tiles internally at `tile`,
     so peak memory is bounded by the tile, not `n_samples` (time is O(n_samples²))."""
-    activity = sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk)
+    activity = sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk,
+                               readout=readout, pool_chunk=pool_chunk)
     soft = torch.stack([1.0 - activity, activity], dim=-1)
     return (compute_kt_entropy(soft, chunk_size=tile).item(),
             compute_kt_upper_entropy(soft, chunk_size=tile).item())

@@ -82,7 +82,8 @@ class ExperimentLogger:
                 writer.writeheader()
             writer.writerow(stats)
 
-    def save_checkpoint(self, epoch: int, env, physics, receptor_indices, is_best: bool = False):
+    def save_checkpoint(self, epoch: int, env, physics, receptor_indices, is_best: bool = False,
+                        readout=None):
         checkpoint = {
             "epoch": epoch,
             "env_state":    env.state_dict(),
@@ -93,6 +94,12 @@ class ExperimentLogger:
                 else receptor_indices
             ),
         }
+        if readout is not None:
+            # Cell mode: W, theta (buffers) plus the calibrated T_cell, which is a
+            # plain attribute and so absent from state_dict.
+            checkpoint["readout_state"] = {k: v.cpu() for k, v in readout.state_dict().items()}
+            checkpoint["readout_mode"]  = readout.mode
+            checkpoint["readout_temperature"] = readout.temperature
         path = os.path.join(self.ckpt_dir, f"checkpoint_epoch_{epoch:04d}.pt")
         torch.save(checkpoint, path)
         if is_best:

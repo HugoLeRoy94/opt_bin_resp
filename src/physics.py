@@ -45,11 +45,23 @@ class BaseReceptor(nn.Module, ABC):
         """
         pass
 
+    def _forward_composition(self, energies, concentrations, composition) -> torch.Tensor:
+        """Fast path: per-source energies (B, L, S) + (S, R) composition → p_open (B, R).
+
+        Only meaningful for models whose ln EC50 is LINEAR in the subunit energies.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support the composition fast path; "
+            f"its ln EC50 is not linear in the per-source energies. Call forward() "
+            f"without `composition`."
+        )
+
     def forward(self,
                 energies: torch.Tensor,
                 concentrations: torch.Tensor,
                 receptor_indices: torch.Tensor,
-                pre_gathered: bool = False) -> torch.Tensor:
+                pre_gathered: bool = False,
+                composition: torch.Tensor = None) -> torch.Tensor:
         """
         Args:
             energies: Sampled interaction energies.
@@ -57,13 +69,26 @@ class BaseReceptor(nn.Module, ABC):
                                      (Batch, L, n_genes, 2) for MWC.
                       Interface model: (Batch, L, N_Receptors, k_sub) — already
                                        gathered per receptor (pass pre_gathered=True).
+                      With `composition`: (Batch, L, n_sources) — one energy per
+                                       distinct energy SOURCE (gene, or unique pocket).
             concentrations: (Batch, L) - Sampled concentrations for the mixture
             receptor_indices: (N_Receptors, k_sub) - Receptor layout (needed for
                               n_receptors count even when pre_gathered=True).
             pre_gathered: When True, skip the index-gather step.  The energies
                           tensor is assumed to already have shape
                           (Batch, L, N_Receptors, k_sub).
+            composition: Optional (n_sources, N_Receptors) float matrix counting how
+                          many of receptor r's k_sub slots draw on source s.  When
+                          given, ln EC50 is obtained by a single matmul instead of
+                          gathering k_sub values per receptor and averaging them
+                          away — the (B, L, R, k_sub) intermediate is never built,
+                          cutting peak memory by k_sub.  See doc/theory/06 and
+                          LigandEnvironment.bind_receptors.
         """
+        if composition is not None:
+            return torch.clamp(
+                self._forward_composition(energies, concentrations, composition), 0.0, 1.0)
+
         batch_size  = energies.shape[0]
         n_ligands   = energies.shape[1]
         n_receptors = receptor_indices.shape[0]
@@ -211,10 +236,16 @@ def compute_initial_temperature(env, receptor_indices: torch.Tensor, calibration
     Returns:
         Scalar float T_init >= 1e-3.
     """
-    if getattr(env, 'use_interface_model', False):
+    composition = getattr(env, 'composition', None)
+    if composition is not None:
+        # Bound: energies are per distinct source; contract with the composition matrix.
+        E_open, concs, _ = env.sample_batch(calibration_batch_size,
+                                            receptor_indices=receptor_indices)
+        log_ec50 = torch.matmul(E_open, composition) / receptor_indices.shape[1]  # (B, L, R)
+    elif getattr(env, 'use_interface_model', False):
         # Interface model: sample_batch returns (B, L, R, k_sub) — already gathered.
         E_open, concs, _ = env.sample_batch(calibration_batch_size, receptor_indices=receptor_indices)
-        energies_k = E_open  # (B, L, R, k_sub)
+        log_ec50 = E_open.mean(dim=-1)                                     # (B, L, R)
     else:
         E_open, concs, _ = env.sample_batch(calibration_batch_size)
         batch_size  = E_open.shape[0]
@@ -224,8 +255,8 @@ def compute_initial_temperature(env, receptor_indices: torch.Tensor, calibration
         flat_indices = receptor_indices.view(-1)
         gathered     = E_open[:, :, flat_indices]                          # (B, L, R*k_sub)
         energies_k   = gathered.view(batch_size, n_ligands, n_receptors, k_sub)
+        log_ec50     = energies_k.mean(dim=-1)                             # (B, L, R)
 
-    log_ec50     = energies_k.mean(dim=-1)                                 # (B, L, R)
     ln_c         = torch.log(concs.unsqueeze(-1) + 1e-12)                  # (B, L, 1)
     log_terms    = ln_c - log_ec50                                         # (B, L, R)
     ln_sum_terms = torch.logsumexp(log_terms, dim=1)                       # (B, R)
@@ -280,17 +311,35 @@ class BinaryReceptor(BaseReceptor):
     def p_open(self, c_reshaped: torch.Tensor, energies_k: torch.Tensor):
         # ln(EC50) is the simple average of the subunit open energies
         log_ec50 = energies_k.mean(dim=-1) # Shape: (Batch, L, R)
-        
+        return self._p_open_from_log_ec50(c_reshaped, log_ec50)
+
+    def _p_open_from_log_ec50(self, c_reshaped: torch.Tensor, log_ec50: torch.Tensor):
+        """Mixture aggregation + threshold, given ln EC50 of shape (Batch, L, R)."""
         ln_c = torch.log(c_reshaped + 1e-12) # Shape: (Batch, L, 1)
-        
+
         # Effective binding term per ligand: ln(c) - log_ec50
         log_terms = ln_c - log_ec50 # Shape: (Batch, L, R)
-        
+
         # Sum competing ligands in the mixture
         ln_sum_terms = torch.logsumexp(log_terms, dim=1) # Shape: (Batch, R)
-        
+
         # Temperature-Scaled Binary Activation
         return torch.sigmoid(ln_sum_terms / self.temperature)
+
+    def _forward_composition(self, energies, concentrations, composition):
+        """ln EC50 = (1/k_sub) * sum_s composition[s, r] * energies[..., s].
+
+        Exactly equal to gathering each receptor's k_sub subunit energies and
+        averaging them (verified to float precision in the self-tests), but the
+        (B, L, R, k_sub) intermediate is never materialised — the matmul writes
+        (B, L, R) directly.  Also runs on tensor cores, which the gather cannot.
+        """
+        # float32 accumulation is kept even under autocast: log_ec50 feeds a
+        # logsumexp whose result is exponentiated, so a bf16 rounding here would
+        # move EC50 by a few percent.
+        log_ec50 = torch.matmul(energies, composition) / self.k_sub   # (B, L, R)
+        c_reshaped = concentrations.view(concentrations.shape[0], concentrations.shape[1], 1)
+        return self._p_open_from_log_ec50(c_reshaped, log_ec50)
 
     def _extract_mean_energies(self, env, receptor_indices, ligand_id, n_points):
         N_Receptors = receptor_indices.shape[0]

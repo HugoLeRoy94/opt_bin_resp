@@ -20,7 +20,12 @@ _SWEEP_CONTROL_FIELDS = frozenset({"sweep_name", "base_folder", "warm_start"})
 
 # Fields whose values are arrays (tuple = fixed, list-of-tuples = axis).
 # Used when converting RunConfig values to lists for SingleRunConfig.
-_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "conc_std"})
+_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "conc_std",
+                           "cell_gene_probs", "cell_size_pmf"})
+
+# cell_gene_sets is nested one level deeper (a tuple of gene tuples), so it needs
+# its own round-trip handling rather than the flat _TUPLE_FIELDS rule.
+_NESTED_TUPLE_FIELDS = frozenset({"cell_gene_sets"})
 
 
 @dataclass
@@ -111,7 +116,75 @@ class SingleRunConfig:
     # When True, use the per-interface biophysics model (dual-face units, ordered ring).
     use_interface_model: bool = False
 
+    # --- Performance (exact / near-exact; no effect on the model) ---
+    # Evaluate each DISTINCT energy source (gene, or unique +/- face pocket) once and
+    # contract to receptors with one matmul, instead of gathering k_sub values per
+    # receptor. Exact. Removes the (B, L, R, k_sub) intermediate (k_sub x memory) and,
+    # in the interface model, ~n_genes^2/(R*k_sub) redundant pocket evaluations.
+    use_composition: bool = True
+    # Run the energy/EC50 matmuls under torch.autocast(bfloat16). ~2x on the dominant
+    # tensors. NOT exact: bf16 has ~3 decimal digits, so entropies shift slightly.
+    use_amp: bool = False
+
+    # --- Cell mode (see src/cells.py) ---
+    # Setting cell_gene_sets or n_cells switches the array from receptors to CELLS:
+    # each cell expresses a set of genes and assembles every receptor those genes
+    # allow.  receptor_indices is then DERIVED (the deduplicated union of all cells'
+    # repertoires) and the entropy is computed over the C cells, not the R_pool
+    # receptors.  Leave both None for the original receptor-array behaviour.
+    cell_gene_sets:  Optional[List[List[int]]] = None   # explicit gene set per cell
+    n_cells:         Optional[int]   = None             # sample this many gene sets
+    cell_sampling_strategy: str      = "bernoulli"      # "bernoulli" or "size_pmf"
+    cell_gene_probs: Optional[List[float]] = None       # bernoulli: P(gene u expressed)
+    cell_size_pmf:   Optional[List[float]] = None       # size_pmf: P(cell expresses i+1 genes)
+    cell_max_genes:  Optional[int]   = None             # bernoulli: reject cells above this
+    cell_sampling_seed: Optional[int] = None
+    cell_stoichiometry: str          = "multinomial"    # "multinomial" or "uniform"
+    cell_readout:    str             = "threshold"      # "threshold", "noisy_or", "mean"
+    cell_threshold:  Union[float, str] = "auto"         # "auto" → calibrated median drive
+    # One scalar threshold shared by all cells, optimised jointly with the environment.
+    # Always initialised from the calibrated median so training never starts on a dead
+    # gradient; set False to freeze it there instead (ablation).
+    cell_threshold_learnable: bool   = True
+    # T_cell at the end of annealing, as a FRACTION of the calibrated spread of the
+    # drive (not an absolute value — the drive is a weighted mean of probabilities, so
+    # its scale is set by the environment). 0.05 => sigmoid argument spread ~20, i.e.
+    # near-deterministic cells. Raising this toward 1.0 leaves cells soft, and a soft
+    # cell's output entropy is mostly H(response|sniff), which carries NO information.
+    cell_temperature: float          = 0.05
+    cell_initial_temperature: Union[float, str] = "auto"
+    # Receptors per pool chunk in the fused physics+readout pass. None → one pass.
+    # Bounds peak memory at O(B·L·chunk) instead of O(B·L·R_pool); pair with
+    # recompute_backward to make the saving hold during training too.
+    cell_pool_chunk: Optional[int]   = None
+
+    def is_cell_mode(self) -> bool:
+        return self.cell_gene_sets is not None or self.n_cells is not None
+
     def __post_init__(self):
+        if self.is_cell_mode():
+            # Derive the receptor pool from the cells; sampling (if any) happens
+            # once, here, so the resolved gene sets are persisted in config.json
+            # and the run is exactly reproducible from it.
+            from src.cells import build_cell_array  # local import — avoids circular dep
+            cell_array = build_cell_array(
+                k_sub=self.k_sub,
+                n_genes=self.n_genes,
+                gene_sets=self.cell_gene_sets,
+                n_cells=self.n_cells,
+                strategy=self.cell_sampling_strategy,
+                gene_probs=self.cell_gene_probs,
+                size_pmf=self.cell_size_pmf,
+                max_genes=self.cell_max_genes,
+                seed=self.cell_sampling_seed,
+                stoichiometry=self.cell_stoichiometry,
+                use_interface_model=self.use_interface_model,
+            )
+            self.cell_gene_sets   = [list(gs) for gs in cell_array.gene_sets]
+            self.n_cells          = cell_array.n_cells
+            self.receptor_indices = cell_array.receptor_indices.tolist()
+            return
+
         if self.receptor_indices is None:
             if self.n_receptors is not None:
                 from src.geometry import build_heteromer_array  # local import — avoids circular dep
@@ -222,10 +295,33 @@ class RunConfig:
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False
 
+    # --- Performance ---
+    use_composition: Union[bool, List[bool]] = True
+    use_amp: Union[bool, List[bool]] = False
+
     # --- Receptor sampling ---
     n_receptors:               Union[Optional[int], List[Optional[int]]] = None
     receptor_sampling_strategy: Union[str,          List[str]]          = "cascading"
     receptor_sampling_seed:    Union[Optional[int], List[Optional[int]]] = None
+
+    # --- Cell mode (see src/cells.py) ---
+    # cell_gene_sets / cell_gene_probs / cell_size_pmf are inherently arrays, so
+    # they follow the _TUPLE_FIELDS convention: tuple = fixed, list-of-tuples = axis.
+    cell_gene_sets:  Union[Optional[Tuple[Tuple[int, ...], ...]],
+                           List[Tuple[Tuple[int, ...], ...]]] = None
+    n_cells:         Union[Optional[int], List[Optional[int]]] = None
+    cell_sampling_strategy: Union[str, List[str]] = "bernoulli"
+    cell_gene_probs: Union[Optional[Tuple[float, ...]], List[Tuple[float, ...]]] = None
+    cell_size_pmf:   Union[Optional[Tuple[float, ...]], List[Tuple[float, ...]]] = None
+    cell_max_genes:  Union[Optional[int], List[Optional[int]]] = None
+    cell_sampling_seed: Union[Optional[int], List[Optional[int]]] = None
+    cell_stoichiometry: Union[str, List[str]] = "multinomial"
+    cell_readout:    Union[str, List[str]] = "threshold"
+    cell_threshold:  Union[float, str, List[Union[float, str]]] = "auto"
+    cell_threshold_learnable: Union[bool, List[bool]] = True
+    cell_temperature: Union[float, List[float]] = 0.05
+    cell_initial_temperature: Union[float, str, List[Union[float, str]]] = "auto"
+    cell_pool_chunk: Union[Optional[int], List[Optional[int]]] = None
 
     # --- Sweep control (never forwarded to SingleRunConfig) ---
     sweep_name:  str  = "run"
@@ -317,6 +413,9 @@ class RunConfig:
             for k in _TUPLE_FIELDS:
                 if k in run_params and isinstance(run_params[k], tuple):
                     run_params[k] = list(run_params[k])
+            for k in _NESTED_TUPLE_FIELDS:
+                if k in run_params and isinstance(run_params[k], tuple):
+                    run_params[k] = [list(v) for v in run_params[k]]
             trajectory.append(SingleRunConfig(**run_params))
 
         yield trajectory
@@ -350,6 +449,14 @@ class RunConfig:
                 else:
                     # single fixed tuple
                     d[fname] = tuple(d[fname])
+
+        # cell_gene_sets: [[0,2],[1]] (fixed) vs [[[0,2],[1]], ...] (axis)
+        for fname in _NESTED_TUPLE_FIELDS:
+            v = d.get(fname)
+            if isinstance(v, list) and v:
+                is_axis = isinstance(v[0], list) and v[0] and isinstance(v[0][0], list)
+                d[fname] = ([tuple(tuple(g) for g in step) for step in v] if is_axis
+                            else tuple(tuple(g) for g in v))
 
         # Backward compat: old configs used affinity_length_scale float
         if "affinity_length_scale" in d and "affinity_kernel" not in d:

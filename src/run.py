@@ -134,6 +134,7 @@ def resolve_batch_sizes(
     n_partitions: int = 4,
     recompute_backward: bool = False,
     test_max_batch: Optional[int] = None,
+    n_physics_receptors: Optional[int] = None,
 ) -> tuple:
     """Returns (batch_size, test_perepoch, test_final, collision_chunk_size).
 
@@ -158,6 +159,12 @@ def resolve_batch_sizes(
 
     block_size / n_partitions must match the DiscreteExactLoss config (defaults
     15 / 4) for the blocked cap to be correct.
+
+    n_receptors vs n_physics_receptors: in the receptor picture these coincide.
+    In the CELL picture they decouple — the entropy is over the C cells while the
+    physics runs over the (much larger) receptor pool R_pool.  Pass n_receptors=C
+    and n_physics_receptors=R_pool so the estimator caps size on C and only the
+    physics cap sees R_pool.  Defaults to n_receptors when omitted.
 
     When test_batch_size == "auto": the per-epoch measurement uses test_perepoch
     (4 × batch_size, capped at test_final) and the single final measurement uses
@@ -256,7 +263,8 @@ def resolve_batch_sizes(
     # True). For the classic model the true width is n_genes (no k_sub), so
     # charging R·k_sub here is conservative — exactly that hidden margin.
     # Note s_upper ≤ n_ligands, so n_ligands bounds the 2nd dimension.
-    bytes_per_sample = n_ligands * n_receptors * k_sub * 4
+    # In cell mode this axis is the receptor POOL, not the number of cells.
+    bytes_per_sample = n_ligands * (n_physics_receptors or n_receptors) * k_sub * 4
     physics_cap = max(B_min, mem_budget_bytes // (bytes_per_sample * 16))
     b_train = min(b_train, physics_cap)
 
@@ -340,6 +348,8 @@ class SimulationRunner:
         self.config = config
         self.logger = logger
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.cell_array = None   # set by _initialize when config.is_cell_mode()
+        self.readout    = None
 
     def _initialize(self, prev_env=None):
         """Builds all components. receptor_indices are always derived from config."""
@@ -347,8 +357,36 @@ class SimulationRunner:
             self.config.receptor_indices, dtype=torch.long, device=self.device
         )
 
+        # --- Cell mode: rebuild the abundance matrix from the persisted gene sets.
+        # The pool order is deterministic (sorted in CellArray), so the columns of W
+        # line up with config.receptor_indices, which __post_init__ derived the same way.
+        self.cell_array = None
+        self.readout = None
+        if self.config.is_cell_mode():
+            from src.cells import CellArray, CellReadout
+            self.cell_array = CellArray(
+                self.config.cell_gene_sets, self.config.k_sub,
+                stoichiometry=self.config.cell_stoichiometry,
+                use_interface_model=self.config.use_interface_model,
+            ).to(self.device)
+            assert torch.equal(self.cell_array.receptor_indices, receptor_indices), (
+                "cell pool mismatch: CellArray rebuilt a different receptor pool than "
+                "the one stored in config.receptor_indices."
+            )
+            self.readout = CellReadout(
+                self.cell_array.W,
+                mode=self.config.cell_readout,
+                threshold=(0.5 if self.config.cell_threshold == "auto"
+                           else float(self.config.cell_threshold)),
+                temperature=self.config.cell_temperature,
+                k_sub=self.config.k_sub,
+                learnable_threshold=self.config.cell_threshold_learnable,
+            ).to(self.device)
+
         # Always resolve to obtain collision_chunk_size; batch sizes used only when "auto".
-        n_r = receptor_indices.shape[0]
+        # In cell mode the entropy is over C cells; the physics runs over R_pool.
+        n_pool = receptor_indices.shape[0]
+        n_r = self.readout.n_cells if self.readout is not None else n_pool
         if torch.cuda.is_available():
             free_mem, _ = torch.cuda.mem_get_info()
             mem_budget = int(free_mem * 0.8)
@@ -364,16 +402,20 @@ class SimulationRunner:
             n_partitions=self.config.n_partitions,
             recompute_backward=self.config.recompute_backward,
             test_max_batch=self.config.test_max_batch,
+            n_physics_receptors=n_pool,
         )
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
             if self.config.batch_size == "auto":
                 self.config.batch_size = b_auto
             if self.config.test_batch_size == "auto":
                 self.config.test_batch_size = test_perepoch      # per-epoch curve (cheap)
+            unit = "C" if self.readout is not None else "R"
+            pool_note = f"R_pool={n_pool}  " if self.readout is not None else ""
             print(
-                f"[auto batch] R={n_r}  "
-                f"batch_size={self.config.batch_size}  "
-                f"test_batch_size={self.config.test_batch_size}"
+                f"[auto batch] {unit}={n_r}  "
+                + pool_note
+                + f"batch_size={self.config.batch_size}  "
+                + f"test_batch_size={self.config.test_batch_size}"
                 + (f"  gpu_free={mem_budget//(1<<20)} MiB" if mem_budget is not None else "")
             )
         # Final (one-shot) measurement batch. In light mode (per_epoch_measure=False)
@@ -426,15 +468,76 @@ class SimulationRunner:
         physics = BinaryReceptor(
             self.config.n_genes, self.config.k_sub, temperature=self.config.temperature
         ).to(self.device)
+
+        # Composition binding: evaluate each DISTINCT energy source (gene, or unique
+        # +/- face pocket) once and contract to receptors with one matmul.  Removes the
+        # (B, L, R, k_sub) intermediate entirely (k_sub x memory) and, in the interface
+        # model, the ~n_genes^2/(R*k_sub) pocket redundancy (~400x at cell-mode pool
+        # sizes).  Exact — verified equal to the gather path in the self-tests.
+        if self.config.use_composition:
+            env.bind_receptors(receptor_indices)
+            n_src = env.composition.shape[0]
+            R_ = receptor_indices.shape[0]
+            if self.config.use_interface_model:
+                # Genuine compute saving: pocket energies were evaluated per (receptor,
+                # ring slot); now once per distinct (+face, -face) gene pair.
+                note = (f"pockets {receptor_indices.numel()} slots -> {n_src} distinct"
+                        f"  ({receptor_indices.numel()/max(n_src,1):.0f}x fewer evaluations)")
+            else:
+                # Energies were already per-gene; the saving is the k_sub-wide
+                # intermediate that the gather built only to average away.
+                note = f"genes={n_src}  (drops the {self.config.k_sub}x-wide gather)"
+            print(f"[composition] R={R_}  {note}")
+        else:
+            env.unbind()
         loss_fn = _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048).to(self.device)
 
         # Dampen LR when picking up from a previous env to preserve learned representations
         lr = self.config.lr if prev_env is None else self.config.lr * 0.1
-        optimizer = optim.Adam(
-            list(env.parameters()) + list(physics.parameters()), lr=lr
-        )
+        # In cell mode the readout contributes the shared firing threshold (and nothing
+        # else — W is a buffer, T_cell is annealed on a schedule, not optimised).
+        trainable = list(env.parameters()) + list(physics.parameters())
+        if self.readout is not None:
+            trainable += list(self.readout.parameters())
+        optimizer = optim.Adam(trainable, lr=lr)
 
         return env, physics, loss_fn, optimizer, receptor_indices
+
+    def _amp(self):
+        """autocast(bfloat16) context for the energy/EC50 matmuls, or a no-op.
+
+        Scoped DELIBERATELY to sampling + physics only, never the loss: the entropy
+        estimators do pairwise log/exp arithmetic over the whole batch where bf16's
+        ~3 decimal digits would show up directly in the reported bits.  Inside the
+        physics, autocast keeps logsumexp in float32 by its own dtype policy, so only
+        the einsum/matmul actually drop to bf16 — which is where the memory is.
+        """
+        from contextlib import nullcontext
+        if not self.config.use_amp or self.device != "cuda":
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+
+    def _activity(self, physics, energies, concs, receptor_indices, pre_gathered, env=None):
+        """(B, R) receptor activity, or (B, C) cell activity when in cell mode.
+
+        Everything downstream (losses, entropy estimators, measurements) consumes a
+        (B, N) tensor and is agnostic to whether N counts receptors or cells, so this
+        is the ONLY place the two pictures differ.
+        """
+        comp = getattr(env, "composition", None) if env is not None else None
+        if comp is not None:
+            pre_gathered = False        # energies are per-source, not per-receptor slot
+        if self.readout is None:
+            return physics(energies, concs, receptor_indices,
+                           pre_gathered=pre_gathered, composition=comp)
+        from src.cells import cell_activity
+        return cell_activity(
+            physics, self.readout, energies, concs, receptor_indices,
+            pre_gathered=pre_gathered,
+            chunk_size=self.config.cell_pool_chunk,
+            recompute=self.config.recompute_backward,
+            composition=comp,
+        )
 
     def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch):
         """Evaluation over batch_size total samples, with bounded per-pass memory.
@@ -460,9 +563,13 @@ class SimulationRunner:
         ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
             # --- First chunk: soft metrics + soft assignments ---
+            # NOTE: no autocast here on purpose. bf16 moves individual activities by up
+            # to ~5e-2 and the reported entropy by ~3e-3 bits; that is acceptable as
+            # training noise but not in a number we publish. Measurement stays fp32.
             E, concs, masks, concs_dense = env.sample_batch(
                 batch_size=chunk_size, receptor_indices=ri_for_batch, return_dense_conc=True)
-            activity = physics(E, concs, receptor_indices, pre_gathered=env.use_interface_model)
+            activity = self._activity(physics, E, concs, receptor_indices,
+                                      env.use_interface_model, env=env)
 
             stat = {}
             family_labels_cache = None  # computed lazily if any fn requests it
@@ -510,7 +617,8 @@ class SimulationRunner:
                 while n_so_far < batch_size:
                     this_chunk = min(chunk_size, batch_size - n_so_far)
                     E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk, receptor_indices=ri_for_batch)
-                    act_c = physics(E_c, concs_c, receptor_indices, pre_gathered=env.use_interface_model)
+                    act_c = self._activity(physics, E_c, concs_c, receptor_indices,
+                                           env.use_interface_model, env=env)
                     all_codes.append((act_c > 0.5).cpu())
                     n_so_far += this_chunk
 
@@ -538,8 +646,8 @@ class SimulationRunner:
                 while n_have < batch_size:
                     this = min(chunk_size, batch_size - n_have)
                     E_k, concs_k, _ = env.sample_batch(this, receptor_indices=ri_for_batch)
-                    acts.append(physics(E_k, concs_k, receptor_indices,
-                                        pre_gathered=env.use_interface_model))
+                    acts.append(self._activity(physics, E_k, concs_k, receptor_indices,
+                                               env.use_interface_model, env=env))
                     n_have += this
                 big_soft = loss_fn.compute_soft_assignment(torch.cat(acts, dim=0))
                 # [profiling] label the O(B²) measurement KT so it is separable from the
@@ -570,6 +678,42 @@ class SimulationRunner:
         # actually optimized to convergence instead of only at the final epoch.
         anneal_epochs = max(1, int(0.8 * self.config.epochs))
 
+        # --- Cell readout: calibrate theta / T_cell, then anneal T_cell like the
+        # receptor temperature.  physics.temperature must be at its START value for
+        # the calibration to reflect the drive distribution the first epochs see.
+        cell_start_temp = cell_end_temp = None
+        if self.readout is not None and self.readout.mode == "threshold":
+            from src.cells import calibrate_cell_readout
+            physics.temperature = start_temp
+            diag = calibrate_cell_readout(
+                self.readout, env, physics, receptor_indices,
+                chunk_size=self.config.cell_pool_chunk,
+                set_threshold=(self.config.cell_threshold == "auto"),
+                set_temperature=(self.config.cell_initial_temperature == "auto"),
+            )
+            # T_cell endpoints are RELATIVE to the calibrated spread of the drive.
+            # The drive is a weighted mean of probabilities, so its scale is set by the
+            # environment — an absolute T_cell is meaningless against it. Start at 1x
+            # the spread (unit-spread sigmoid argument, live gradients everywhere), end
+            # at cell_temperature x the spread (default 0.05 => argument spread ~20, so
+            # cells are effectively deterministic and H(response|sniff) -> 0, which is
+            # what makes the entropy objective a valid proxy for information).
+            sigma_S = diag["drive_std"]
+            cell_end_temp   = max(self.config.cell_temperature * sigma_S, 1e-6)
+            cell_start_temp = (self.readout.temperature
+                               if self.config.cell_initial_temperature == "auto"
+                               else float(self.config.cell_initial_temperature) * sigma_S)
+            kind = "learnable" if self.readout.learnable_threshold else "frozen"
+            print(f"[cell] C={self.readout.n_cells}  R_pool={receptor_indices.shape[0]}  "
+                  f"T_cell {cell_start_temp:.4g} → {cell_end_temp:.4g}  "
+                  f"theta={diag['theta']:.4g} ({kind})")
+            # A shared threshold means cells can start silent or saturated; that is
+            # allowed (theta is learnable, the environment adapts) but a large count
+            # means channels are being wasted from epoch 0 — worth seeing.
+            if diag["n_silent"] or diag["n_saturated"]:
+                print(f"[cell] at init: {diag['n_silent']} silent, "
+                      f"{diag['n_saturated']} saturated of {self.readout.n_cells} cells")
+
         stats = []
         for epoch in range(self.config.epochs):
             optimizer.zero_grad()
@@ -581,14 +725,22 @@ class SimulationRunner:
             )
             if hasattr(physics, "temperature"):
                 physics.temperature = current_temp
+            current_cell_temp = None
+            if cell_start_temp is not None:
+                current_cell_temp = (
+                    cell_end_temp + (cell_start_temp - cell_end_temp) * (1.0 - frac)
+                    if cell_end_temp < cell_start_temp else cell_end_temp
+                )
+                self.readout.temperature = current_cell_temp
 
             ri_for_batch = receptor_indices if env.use_interface_model else None
             # [profiling] record_function labels group ops in the torch.profiler trace /
             # table (physics forward vs loss vs backward). Inert (~free) when no profiler
             # is attached — see tasks/profiling/scripts/profile_run.py.
-            with record_function("prof:sample+physics_fwd"):
+            with record_function("prof:sample+physics_fwd"), self._amp():
                 energies, concs, masks = env.sample_batch(self.config.batch_size, receptor_indices=ri_for_batch)
-                activity = physics(energies, concs, receptor_indices, pre_gathered=env.use_interface_model)
+                activity = self._activity(physics, energies, concs, receptor_indices,
+                                          env.use_interface_model, env=env).float()
 
             with record_function("prof:loss_fwd"):
                 if isinstance(loss_fn, MaximizeMutualInformationLigandLoss):
@@ -610,18 +762,27 @@ class SimulationRunner:
                 if self.config.per_epoch_measure:
                     if hasattr(physics, "temperature"):
                         physics.temperature = end_temp
+                    if current_cell_temp is not None:
+                        self.readout.temperature = cell_end_temp
                     stat = self._eval_stats(
                         env, physics, loss_fn, receptor_indices,
                         self.config.test_batch_size, epoch
                     )
                     if hasattr(physics, "temperature"):
                         physics.temperature = current_temp
+                    if current_cell_temp is not None:
+                        self.readout.temperature = current_cell_temp
                 else:
                     # Free: reuse the training objective already computed for the
                     # gradient step — no extra sampling / eval. For entropy-maximising
                     # losses (kt, collision, …) the native entropy is -loss.
                     stat = {"loss": float(loss.item()), "train_entropy": float(-loss.item())}
                 stat["lr"] = optimizer.param_groups[0]["lr"]
+                if self.readout is not None and self.readout.mode == "threshold":
+                    # Track where the shared threshold drifts: it starts at the
+                    # calibrated median (population fires ~50%) and Adam is free to
+                    # move it toward a sparser or denser operating point.
+                    stat["cell_theta"] = self.readout.theta.detach().item()
                 stats.append(stat)
 
         return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}
@@ -644,7 +805,8 @@ class SimulationRunner:
             for i in range(n_logged):
                 self.logger.save_stats(i, {k: train_stats[k][i] for k in train_stats})
 
-        self.logger.save_checkpoint(self.config.epochs, env, physics, receptor_indices, is_best=True)
+        self.logger.save_checkpoint(self.config.epochs, env, physics, receptor_indices,
+                                    is_best=True, readout=self.readout)
 
         test_results = self._test(env, physics, loss_fn, receptor_indices,
                                    n_samples=self._final_test_batch)

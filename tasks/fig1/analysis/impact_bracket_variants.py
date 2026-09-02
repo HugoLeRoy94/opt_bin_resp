@@ -93,9 +93,9 @@ handles += [Line2D([0], [0], color="0.35", lw=2.0, label="KT lower (MI)"),
             Line2D([0], [0], color="0.35", lw=0, marker="|", label="± std (envs)")]
 ax.legend(handles=handles, frameon=False, fontsize=7.5, loc="upper left",
           bbox_to_anchor=(1.02, 1.0))
-figA.suptitle("A — single axes: bracket fill + std caps on the lower bound", fontsize=10)
+#figA.suptitle("A — single axes: bracket fill + std caps on the lower bound", fontsize=10)
 figA.tight_layout()
-figA.savefig(SAVE / "variantA.png", dpi=130, bbox_inches="tight")
+figA.savefig(SAVE / "variantA.svg", bbox_inches="tight")
 
 # %% ── Variant B: small multiples — bracket fill + std bands on both bounds ───
 figB, axs = plt.subplots(1, len(levels), figsize=(2.5 * len(levels), 3.2),

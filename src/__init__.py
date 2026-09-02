@@ -14,6 +14,7 @@ from .geometry import (generate_receptor_indices, generate_cascading_receptors,
                        build_heteromer_array)
 from .cells import (CellArray, CellReadout, build_cell_array, cell_activity,
                     expand_gene_set, repertoire_weights, calibrate_cell_readout,
+                    median_threshold,
                     sample_gene_sets_bernoulli, sample_gene_sets_by_size)
 from .analysis_helper import (plot_ligand_summary,
                                 plot_summary,evaluate_model,plot_latent_radar_chart,
@@ -63,6 +64,7 @@ __all__ = [
     "expand_gene_set",
     "repertoire_weights",
     "calibrate_cell_readout",
+    "median_threshold",
     "sample_gene_sets_bernoulli",
     "sample_gene_sets_by_size",
     "plot_ligand_summary",

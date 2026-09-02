@@ -142,21 +142,36 @@ class SingleRunConfig:
     cell_stoichiometry: str          = "multinomial"    # "multinomial" or "uniform"
     cell_readout:    str             = "threshold"      # "threshold", "noisy_or", "mean"
     cell_threshold:  Union[float, str] = "auto"         # "auto" → calibrated median drive
-    # One scalar threshold shared by all cells, optimised jointly with the environment.
-    # Always initialised from the calibrated median so training never starts on a dead
-    # gradient; set False to freeze it there instead (ablation).
-    cell_threshold_learnable: bool   = True
-    # T_cell at the end of annealing, as a FRACTION of the calibrated spread of the
-    # drive (not an absolute value — the drive is a weighted mean of probabilities, so
-    # its scale is set by the environment). 0.05 => sigmoid argument spread ~20, i.e.
-    # near-deterministic cells. Raising this toward 1.0 leaves cells soft, and a soft
-    # cell's output entropy is mostly H(response|sniff), which carries NO information.
-    cell_temperature: float          = 0.05
+    # One scalar threshold shared by all cells.  Default OFF: the threshold is pinned
+    # to the median of the drive and re-pinned every cell_recalibrate_every epochs, so
+    # it is determined by the data rather than fitted — no free parameter to justify.
+    # A learnable threshold collapses to the fair-coin degeneracy whenever the cell is
+    # soft (see doc/theory/07 §3b.6); set True only for that ablation.
+    cell_threshold_learnable: bool   = False
+    # T_cell at the END of phase 2, as a FRACTION of the live spread of the drive (not
+    # an absolute value — the drive is a weighted mean of probabilities, so its scale
+    # is set by the environment).  0.01 leaves ~0.8% of (sniff, cell) pairs inside the
+    # sigmoid's transition band, i.e. cells are effectively deterministic.  Raising it
+    # toward 1.0 leaves cells soft, and a soft cell's output entropy is mostly
+    # H(response | sniff), which carries NO information.
+    cell_temperature: float          = 0.01
     cell_initial_temperature: Union[float, str] = "auto"
     # Receptors per pool chunk in the fused physics+readout pass. None → one pass.
     # Bounds peak memory at O(B·L·chunk) instead of O(B·L·R_pool); pair with
     # recompute_backward to make the saving hold during training too.
     cell_pool_chunk: Optional[int]   = None
+    # Two-phase schedule (cell mode only).  Phase 1 = the first cell_phase_split of the
+    # epochs: the RECEPTOR sharpness anneals to its final value while the cell is held
+    # soft, so the chemistry arranges the drive around the threshold with live gradients
+    # everywhere.  Phase 2 = the rest: the receptor sharpness is held and the CELL
+    # sharpness anneals down to cell_temperature x spread.  Annealing both at once makes
+    # the cell's operating point chase a drive distribution that is still moving.
+    cell_phase_split: float          = 0.5
+    # Re-pin the threshold to the median of the drive every N epochs (0 disables).
+    # Costs one forward pass at the calibration batch size.  Also refreshes the drive
+    # spread, so the phase-2 sharpness target tracks the live distribution instead of
+    # one measured at epoch 0.  Ignored when cell_threshold is an explicit float.
+    cell_recalibrate_every: int      = 25
 
     def is_cell_mode(self) -> bool:
         return self.cell_gene_sets is not None or self.n_cells is not None
@@ -318,10 +333,12 @@ class RunConfig:
     cell_stoichiometry: Union[str, List[str]] = "multinomial"
     cell_readout:    Union[str, List[str]] = "threshold"
     cell_threshold:  Union[float, str, List[Union[float, str]]] = "auto"
-    cell_threshold_learnable: Union[bool, List[bool]] = True
-    cell_temperature: Union[float, List[float]] = 0.05
+    cell_threshold_learnable: Union[bool, List[bool]] = False
+    cell_temperature: Union[float, List[float]] = 0.01
     cell_initial_temperature: Union[float, str, List[Union[float, str]]] = "auto"
     cell_pool_chunk: Union[Optional[int], List[Optional[int]]] = None
+    cell_phase_split: Union[float, List[float]] = 0.5
+    cell_recalibrate_every: Union[int, List[int]] = 25
 
     # --- Sweep control (never forwarded to SingleRunConfig) ---
     sweep_name:  str  = "run"

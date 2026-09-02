@@ -673,16 +673,37 @@ class SimulationRunner:
             if self.config.use_scheduler else None
         )
 
-        # Anneal to end_temp by 80% of training, then hold at end_temp for the
-        # last 20% so the sharp-temperature objective (which eval always uses) is
-        # actually optimized to convergence instead of only at the final epoch.
-        anneal_epochs = max(1, int(0.8 * self.config.epochs))
+        # --- Sharpness schedule -------------------------------------------------
+        # Receptor-only runs: anneal the receptor temperature over 80% of training,
+        # then hold, so the sharp objective (which eval always uses) is optimised to
+        # convergence rather than only at the final epoch.
+        #
+        # Cell mode: two DISTINCT phases, because annealing the receptor and the cell
+        # together makes the cell's operating point chase a drive distribution that is
+        # still moving underneath it.
+        #   Phase 1 (first cell_phase_split of the epochs): the receptor temperature
+        #     anneals to its final value; the cell is held SOFT.  Gradients are live
+        #     everywhere, so the chemistry can arrange the drive around the threshold.
+        #   Phase 2 (the rest): the receptor temperature is HELD; the cell sharpness
+        #     anneals down until the cell is effectively deterministic.
+        is_cell = self.readout is not None and self.readout.mode == "threshold"
+        phase1_epochs = (max(1, int(self.config.cell_phase_split * self.config.epochs))
+                         if is_cell else None)
+        # phase1_epochs - 1: frac = epoch/anneal_epochs must reach 1.0 on the LAST epoch
+        # of phase 1, otherwise the receptor is still annealing one epoch into phase 2
+        # and the phases are not clean.  Receptor-only runs keep the original denominator.
+        anneal_epochs = (max(1, phase1_epochs - 1) if is_cell
+                         else max(1, int(0.8 * self.config.epochs)))
 
         # --- Cell readout: calibrate theta / T_cell, then anneal T_cell like the
         # receptor temperature.  physics.temperature must be at its START value for
         # the calibration to reflect the drive distribution the first epochs see.
         cell_start_temp = cell_end_temp = None
-        if self.readout is not None and self.readout.mode == "threshold":
+        recal_every = self.config.cell_recalibrate_every if is_cell else 0
+        # Re-pinning the threshold only makes sense when it was pinned to the data in
+        # the first place; an explicit float is the user's choice and is left alone.
+        recal_theta = recal_every and self.config.cell_threshold == "auto"
+        if is_cell:
             from src.cells import calibrate_cell_readout
             physics.temperature = start_temp
             diag = calibrate_cell_readout(
@@ -698,26 +719,41 @@ class SimulationRunner:
             # at cell_temperature x the spread (default 0.05 => argument spread ~20, so
             # cells are effectively deterministic and H(response|sniff) -> 0, which is
             # what makes the entropy objective a valid proxy for information).
-            sigma_S = diag["drive_std"]
-            cell_end_temp   = max(self.config.cell_temperature * sigma_S, 1e-6)
-            cell_start_temp = (self.readout.temperature
-                               if self.config.cell_initial_temperature == "auto"
-                               else float(self.config.cell_initial_temperature) * sigma_S)
-            kind = "learnable" if self.readout.learnable_threshold else "frozen"
+            # Both endpoints are MULTIPLES of the drive spread, so they can be
+            # recomputed whenever the spread is re-measured (see the loop).
+            start_mult = (1.0 if self.config.cell_initial_temperature == "auto"
+                          else float(self.config.cell_initial_temperature))
+            end_mult   = self.config.cell_temperature
+            # NB the floor is 1e-45 (just off zero), NOT something like 1e-6: the drive
+            # can legitimately live at ~1e-30, and an absolute floor above its scale
+            # would swamp it and turn every cell back into a fair coin.
+            sigma_S = diag["drive_scale"]
+            cell_start_temp = max(start_mult * sigma_S, 1e-45)
+            cell_end_temp   = max(end_mult   * sigma_S, 1e-45)
+            kind = ("learnable" if self.readout.learnable_threshold
+                    else (f"re-pinned every {recal_every}" if recal_theta else "fixed"))
             print(f"[cell] C={self.readout.n_cells}  R_pool={receptor_indices.shape[0]}  "
+                  f"phase1={phase1_epochs}/{self.config.epochs} epochs  "
                   f"T_cell {cell_start_temp:.4g} → {cell_end_temp:.4g}  "
                   f"theta={diag['theta']:.4g} ({kind})")
             # A shared threshold means cells can start silent or saturated; that is
-            # allowed (theta is learnable, the environment adapts) but a large count
-            # means channels are being wasted from epoch 0 — worth seeing.
+            # allowed (the chemistry adapts, and the threshold is re-pinned) but a
+            # large count means channels are being wasted from epoch 0 — worth seeing.
             if diag["n_silent"] or diag["n_saturated"]:
                 print(f"[cell] at init: {diag['n_silent']} silent, "
                       f"{diag['n_saturated']} saturated of {self.readout.n_cells} cells")
+            # The plain median sat on a point mass (a sharp receptor drives most cells
+            # to exactly zero). theta was stepped above it; the code is sparse, which is
+            # honest, but it caps how many bits a cell can carry — worth knowing.
+            if diag.get("on_point_mass"):
+                print("[cell] drive has a point mass at the median; theta stepped above "
+                      "it (sparse code). See cells.median_threshold.")
 
         stats = []
         for epoch in range(self.config.epochs):
             optimizer.zero_grad()
 
+            # --- Phase 1: the RECEPTOR sharpens (cell mode: anneal_epochs == phase1) ---
             frac = min(1.0, epoch / anneal_epochs)
             current_temp = (
                 end_temp + (start_temp - end_temp) * (1.0 - frac)
@@ -725,10 +761,33 @@ class SimulationRunner:
             )
             if hasattr(physics, "temperature"):
                 physics.temperature = current_temp
+
+            # --- Re-pin the threshold to the median of the drive -------------------
+            # The drive distribution moves as the chemistry trains, so a threshold
+            # measured at epoch 0 goes stale.  Re-pinning keeps it free of any fitted
+            # parameter AND keeps the sigmoid's transition band sitting on the densest
+            # part of the drive, which is where the phase-2 gradient comes from.
+            # Done AFTER physics.temperature is set, so the drive is measured at the
+            # receptor sharpness currently in force.
+            if recal_theta and epoch > 0 and epoch % recal_every == 0:
+                from src.cells import calibrate_cell_readout as _recal
+                d = _recal(self.readout, env, physics, receptor_indices,
+                           chunk_size=self.config.cell_pool_chunk,
+                           set_threshold=True, set_temperature=False)
+                # Refresh the spread too: both sharpness endpoints are multiples of it,
+                # so phase 2 targets the live distribution rather than epoch 0's.
+                sigma_S = d["drive_scale"]
+                cell_start_temp = max(start_mult * sigma_S, 1e-45)
+                cell_end_temp   = max(end_mult   * sigma_S, 1e-45)
+
+            # --- Phase 2: the CELL sharpens; held soft for the whole of phase 1 ------
             current_cell_temp = None
             if cell_start_temp is not None:
+                cell_frac = (0.0 if epoch < phase1_epochs else
+                             min(1.0, (epoch - phase1_epochs)
+                                 / max(1, self.config.epochs - phase1_epochs)))
                 current_cell_temp = (
-                    cell_end_temp + (cell_start_temp - cell_end_temp) * (1.0 - frac)
+                    cell_end_temp + (cell_start_temp - cell_end_temp) * (1.0 - cell_frac)
                     if cell_end_temp < cell_start_temp else cell_end_temp
                 )
                 self.readout.temperature = current_cell_temp

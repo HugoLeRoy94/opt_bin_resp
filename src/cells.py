@@ -422,6 +422,80 @@ def cell_activity(physics, readout: CellReadout,
 # Calibration
 # ---------------------------------------------------------------------------
 
+def median_threshold(drive_flat: torch.Tensor) -> Tuple[float, bool]:
+    """Threshold that splits the drive in half WITHOUT landing on a point mass.
+
+    Returns (theta, on_point_mass).
+
+    The rule is one line: **theta is the midpoint between the median and the next
+    distinct value above it.**  That single rule covers two very different regimes.
+
+    Continuous drive (the normal case).  `torch.median` returns the LOWER of the two
+    middle order statistics; the next distinct value above it is the upper one.  Their
+    midpoint is the textbook median, and every value between them is an equally valid
+    median of the sample.  So here the rule changes nothing of substance — it just picks
+    the interior of the median interval instead of its lower endpoint.
+
+    Drive with a point mass at the bottom (the case this exists for).  A SHARP receptor
+    is off unless its ligand is present, so for a sparse code most (sniff, cell) drives
+    are numerically ZERO — measured at 98% on an untrained toy once the receptor
+    temperature has annealed.  The plain median then IS zero, and a sharp sigmoid
+    centred on a mass of zeros returns sigmoid(0) = 0.5 for every one of them: the whole
+    mass becomes fair coins, the array reports maximum entropy and carries no
+    information (the fair-coin degeneracy, doc/theory/07 §3b.6).
+    Stepping to the midpoint between the mass and the smallest strictly-larger drive
+    puts theta STRICTLY above the mass, so those sniffs read cleanly OFF and the code is
+    sparse but honest.  Note the trap is narrow: any theta above the mass works: only
+    theta exactly ON it produces coins.
+
+    Degenerate case: if every drive is identical there is no value above the median, so
+    no threshold can separate anything and the caller is warned.  We leave theta on the
+    mass rather than nudging, because when the drive has zero spread T_cell collapses to
+    its floor too and a nudge cannot outrun it — the honest signal is the warning.
+    """
+    m = drive_flat.median()
+    above = drive_flat[drive_flat > m]
+    if above.numel() == 0:
+        return float(m), True
+    return float(0.5 * (m + above.min())), bool(m == drive_flat.min())
+
+
+def drive_scale(drive_flat: torch.Tensor, theta: float) -> float:
+    """Scale of the drive AROUND theta: the median absolute deviation (MAD).
+
+    T_cell is set as a fraction of this, so "how spread out is the drive" has to be
+    measured WHERE THE THRESHOLD SITS.  A standard deviation does not do that, and the
+    difference is not academic — it is the whole ballgame.
+
+    Why.  The drive is a weighted mean of receptor open probabilities, and a sharp
+    receptor is off unless its ligand is present, so the open probabilities are
+    sigmoids saturated deep into their tails.  The resulting drive spans a huge
+    dynamic range: measured on a toy at the final receptor sharpness, the median was
+    ~1e-30 while the maximum was ~1, THIRTY orders of magnitude apart.
+
+    A standard deviation of that sample is ~4e-2 — it is set entirely by the handful of
+    strongly-firing sniffs and says nothing about the region the threshold occupies.
+    Using it gives T_cell ~ 4e-4, which utterly swamps the 1e-30 scale of the middle of
+    the distribution: every sniff there evaluates to sigmoid(~0) = 0.5 and becomes a
+    fair coin.  Measured: 91% of activities were coins.  The interquartile range is
+    better but not enough (67% coins) because the upper quartile still sits ~12 orders
+    of magnitude above the median.  The MAD is the deviation of the TYPICAL point from
+    the median, so it tracks the middle by construction: 0% coins, 50% firing — the
+    design target.
+
+    Degenerate guard: if more than half the drives sit exactly on theta the MAD is zero,
+    so fall back to the smallest nonzero deviation.  If even that does not exist the
+    drive is constant, no threshold can separate anything, and median_threshold has
+    already flagged it.
+    """
+    dev = (drive_flat - theta).abs()
+    mad = dev.median()
+    if mad <= 0:
+        nonzero = dev[dev > 0]
+        mad = nonzero.min() if nonzero.numel() else torch.tensor(1e-6)
+    return float(mad)
+
+
 @torch.no_grad()
 def calibrate_cell_readout(readout: CellReadout, env, physics,
                            receptor_indices: torch.Tensor,
@@ -437,7 +511,10 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
     either a hard step with vanishing gradient or a mushy all-0.5 response.
 
       theta   <- median over ALL (b, c) of S      the population fires ~50% of the time
-      T_cell  <- std over (b, c) of (S - theta)   the sigmoid argument starts unit-spread
+                 (via median_threshold, which keeps theta off a point mass — see there)
+      T_cell  <- MAD over (b, c) of (S - theta)   the sigmoid argument starts unit-spread
+                 (a MAD, not a std: the drive spans ~30 orders of magnitude and a std
+                  measures only its tail — see drive_scale)
 
     theta is a single scalar shared by every cell, so the median is taken over the
     pooled drive rather than per cell.  This is deliberate (see CellReadout): a shared
@@ -473,26 +550,35 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
         part = readout.accumulate(p, r0, r1)
         acc = part if acc is None else acc + part                   # (B, C)
 
+    on_point_mass = False
     if set_threshold:
-        readout.theta.data.fill_(acc.median().item())      # pooled over (b, c)
+        # Pooled over (b, c): one scalar for the whole array. See median_threshold for
+        # why this is not simply acc.median() — a sharp receptor drives most cells to
+        # exactly zero, and a threshold sitting on that mass turns it into fair coins.
+        theta, on_point_mass = median_threshold(acc.reshape(-1))
+        readout.theta.data.fill_(theta)
     if set_temperature:
-        spread = (acc - readout.theta).std().item()
-        readout.temperature = max(spread, 1e-3)
+        readout.temperature = drive_scale(acc.reshape(-1), float(readout.theta))
 
     firing = (acc > readout.theta).float().mean(dim=0)     # (C,) fraction of sniffs
     return {
         "theta":            readout.theta.detach().item(),
         "T_cell":           readout.temperature,
-        # Scale of the drive. The ONLY meaningful reference for T_cell: the drive is a
-        # weighted mean of probabilities, so its spread is set by the environment, not
-        # by any fixed number. A T_cell comparable to drive_std leaves cells soft (their
-        # response is mostly conditional entropy, which carries no information); T_cell
-        # << drive_std makes them near-deterministic, which is what the entropy
+        # Scale of the drive AROUND THE THRESHOLD (a MAD, not a standard deviation —
+        # see drive_scale for why). The only meaningful reference for T_cell: the drive
+        # is a weighted mean of probabilities, so its scale is set by the environment,
+        # not by any fixed number. T_cell comparable to it leaves cells soft (their
+        # output is mostly conditional entropy, which carries no information); T_cell
+        # well below it makes them near-deterministic, which is what the entropy
         # objective needs to be a valid proxy for information.
-        "drive_std":        (acc - acc.median()).std().item(),
+        "drive_scale":      drive_scale(acc.reshape(-1), float(readout.theta)),
         "firing_fraction":  firing,
         "n_silent":         int((firing < 0.01).sum()),
         "n_saturated":      int((firing > 0.99).sum()),
+        # True when the plain median would have landed on a point mass and the
+        # threshold was stepped above it (or, if the drive has no spread at all,
+        # when nothing could be done). Worth surfacing: it means the code is sparse.
+        "on_point_mass":    on_point_mass,
     }
 
 
@@ -556,5 +642,57 @@ if __name__ == "__main__":
     assert build_cell_array(k_sub=5, n_genes=8, n_cells=20, strategy="size_pmf",
                             size_pmf=[0.4, 0.4, 0.2], seed=1).gene_sets == ca7.gene_sets
     print(f"[6] samplers: bernoulli(max_genes=3) {ca6}\n              size_pmf {ca7} (seeded, reproducible)")
+
+    # 7) median_threshold never lands on a point mass.
+    #    (a) continuous drive: unchanged in substance, still splits the sample in half.
+    torch.manual_seed(3)
+    cont = torch.rand(10001)
+    th, pm = median_threshold(cont)
+    frac = (cont > th).float().mean().item()
+    assert not pm and abs(frac - 0.5) < 0.01, (th, frac, pm)
+    assert abs(th - cont.median().item()) < 1e-3, "moved the median of a continuous drive"
+    print(f"[7] continuous drive: theta={th:.4f} splits {frac:.3f} above (median unchanged)")
+
+    #    (b) 98% of the mass at exactly zero — the sharp-receptor / sparse-code case.
+    sparse = torch.cat([torch.zeros(9800), torch.rand(200) * 0.1 + 0.01])
+    th, pm = median_threshold(sparse)
+    assert pm, "should have flagged the point mass"
+    assert th > 0.0, f"theta landed ON the zero mass: {th}"
+    assert th < sparse[sparse > 0].min().item(), "theta overshot past the first real value"
+    A = torch.sigmoid((sparse - th) / 1e-6)          # a sharp cell
+    coins = ((A - 0.5).abs() < 1e-3).float().mean().item()
+    assert coins == 0.0, f"{coins:.4f} of activities are fair coins"
+    print(f"[7] point mass at 0: theta={th:.3e} sits strictly above it, "
+          f"{coins:.0%} coins, {(A > 0.5).float().mean():.1%} of sniffs fire")
+
+    #    (c) no spread at all: nothing can separate; must be flagged, not silently hidden.
+    flat_drive = torch.full((512,), 0.7)
+    th, pm = median_threshold(flat_drive)
+    assert pm and abs(th - 0.7) < 1e-6      # float32: 0.7 is not exactly 0.7
+    print("[7] zero-spread drive: flagged (no threshold can separate a constant)")
+
+    # 8) drive_scale tracks the MIDDLE of a drive that spans many decades.
+    #    Synthetic stand-in for the real thing: a mass at zero, a bulk at ~1e-30, and a
+    #    few strongly-firing sniffs at ~1. A std is set by the tail; a MAD is not.
+    torch.manual_seed(11)
+    wide = torch.cat([torch.zeros(2000),
+                      torch.rand(6000) * 1e-30,
+                      torch.rand(2000)])
+    th_w, _ = median_threshold(wide)
+    sc_std = (wide - th_w).std().item()
+    sc_mad = drive_scale(wide, th_w)
+    coins = {}
+    for nm, sp in (("std", sc_std), ("mad", sc_mad)):
+        A = torch.sigmoid((wide - th_w) / max(0.01 * sp, 1e-45))
+        coins[nm] = ((A - 0.5).abs() < 1e-3).float().mean().item()
+    assert coins["mad"] == 0.0, f"MAD still leaves {coins['mad']:.2%} coins"
+    assert coins["std"] > 0.5, "expected the std to fail on a wide-range drive"
+    assert sc_mad < sc_std, (sc_mad, sc_std)
+    print(f"[8] wide-range drive: std scale={sc_std:.2e} -> {coins['std']:.0%} coins;  "
+          f"MAD scale={sc_mad:.2e} -> {coins['mad']:.0%} coins")
+
+    #    degenerate: every drive on theta -> MAD is 0, must still return something > 0
+    assert drive_scale(torch.full((256,), 0.3), 0.3) > 0
+    print("[8] all-identical drive: drive_scale still returns a positive scale")
 
     print("\nall cells.py self-tests passed.")

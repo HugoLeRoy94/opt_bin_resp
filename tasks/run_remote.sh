@@ -6,8 +6,12 @@
 #   ./run_remote.sh <task> <script.py> [gpu] [-- script args...]
 #
 # Examples:
-#   ./run_remote.sh fig1 het_casc_ng3.py                 # GPU 0, no args
-#   ./run_remote.sh fig1 het_casc.py 2 -- --n_genes 7    # GPU 2, pass --n_genes 7
+#   ./run_remote.sh receptors/fig1 het_casc_ng3.py       # GPU 0, no args
+#   ./run_remote.sh receptors/fig1 het_casc.py 2 -- --n_genes 7   # GPU 2, pass args
+#   ./run_remote.sh cells/convergence convergence.py 0
+#
+# <task> is the path under tasks/ — since the split into tasks/receptors/ and
+# tasks/cells/ it carries the family prefix.
 #
 # The run lives in a detached tmux session (holds live logs, survives logout).
 #   attach:  ssh -t cluster tmux attach -t <session>
@@ -29,12 +33,20 @@ ARGS="$*"
 
 [ -z "$TASK" ] || [ -z "$SCRIPT" ] && { echo "usage: $0 <task> <script.py> [gpu] [-- args]"; exit 1; }
 
-SESSION="${TASK}_${SCRIPT%.py}_$(date +%H%M%S)"
+# TASK is now a PATH under tasks/ (e.g. "receptors/fig1" or "cells/convergence"), so
+# it may contain a slash. That interpolates fine into the script/data paths below, but
+# tmux rejects "/" in a session name — flatten it there only.
+SESSION="$(echo "${TASK}_${SCRIPT%.py}" | tr '/' '_')_$(date +%H%M%S)"
 REMOTE_SCRIPT="/app/tasks/${TASK}/scripts/${SCRIPT}"
 # Write the GPU trace + the run's stdout/stderr into the data folder so sync.sh
 # pulls them back with the runs (the tmux pane is discarded when the session ends).
-MEM_LOG="$REMOTE_DATA/${TASK}/gpu_mem_${SESSION}.csv"
-RUN_LOG="$REMOTE_DATA/${TASK}/run_${SESSION}.log"
+# data/ is deliberately NOT split the way tasks/ is: every base_folder in every task
+# script points at a flat /app/data/<name>, and the existing results live there. So the
+# log dir is the task's BASENAME ("receptors/fig1" -> data/fig1), which is exactly where
+# each task's sync.sh already looks. Keep a task's data folder named after its leaf dir.
+DATA_NAME="$(basename "$TASK")"
+MEM_LOG="$REMOTE_DATA/${DATA_NAME}/gpu_mem_${SESSION}.csv"
+RUN_LOG="$REMOTE_DATA/${DATA_NAME}/run_${SESSION}.log"
 
 # 1. Pull latest code (visible — fails loudly before we launch anything).
 ssh "$SERVER" "cd $REMOTE_ROOT && git pull"
@@ -44,7 +56,7 @@ ssh "$SERVER" "cd $REMOTE_ROOT && git pull"
 #    the monitor — matched by its unique log-file path — when the sim exits.
 # -T disables the container TTY so stdout/stderr can be piped to tee (kept live in
 # the tmux pane AND appended to $RUN_LOG).
-MON="mkdir -p $REMOTE_DATA/$TASK; $REMOTE_ROOT/tasks/monitor_gpu.sh $GPU 5 $MEM_LOG >/dev/null 2>&1 &"
+MON="mkdir -p $REMOTE_DATA/$DATA_NAME; $REMOTE_ROOT/tasks/monitor_gpu.sh $GPU 5 $MEM_LOG >/dev/null 2>&1 &"
 # python3 -u: without a TTY, Python block-buffers stdout, so prints never reach the
 # pane/log until the buffer fills — -u forces unbuffered so output streams live.
 SIM="MY_GPU=$GPU docker compose -f $COMPOSE run --rm -T gpu-runner python3 -u $REMOTE_SCRIPT $ARGS 2>&1 | tee -a $RUN_LOG"

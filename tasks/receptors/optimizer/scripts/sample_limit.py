@@ -21,11 +21,11 @@ train batch. Separate sweep_name ("sample_limit") keeps it out of plot_optimizer
   python3 sample_limit.py --train_batch 1024           # one train size (own GPU)
 
 Run on the cluster (split over GPUs to parallelise the 3 train sizes):
-  ../run_remote.sh optimizer sample_limit.py 0 -- --train_batch auto
-  ../run_remote.sh optimizer sample_limit.py 1 -- --train_batch 4096
-  ../run_remote.sh optimizer sample_limit.py 2 -- --train_batch 1024
+  ../../run_remote.sh receptors/optimizer sample_limit.py 0 -- --train_batch auto
+  ../../run_remote.sh receptors/optimizer sample_limit.py 1 -- --train_batch 4096
+  ../../run_remote.sh receptors/optimizer sample_limit.py 2 -- --train_batch 1024
   # recompute_backward on → the ~2x-larger compute-bound auto batch:
-  ../run_remote.sh optimizer sample_limit.py 0 -- --train_batch auto --recompute_backward
+  ../../run_remote.sh receptors/optimizer sample_limit.py 0 -- --train_batch auto --recompute_backward
 """
 import argparse
 import time

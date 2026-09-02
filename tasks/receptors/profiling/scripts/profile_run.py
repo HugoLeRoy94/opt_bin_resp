@@ -32,10 +32,10 @@ KT test, NOT the training loop): use --target train for the training breakdown (
 eval → training dominates), --target measure to profile the final KT test.
 
 Run on the cluster:
-  ../run_remote.sh profiling profile_run.py 0 -- --mode torch --target train
-  ../run_remote.sh profiling profile_run.py 0 -- --mode torch --target measure
-  ../run_remote.sh profiling profile_run.py 0 -- --mode cprofile --target train
-  ../run_remote.sh profiling profile_run.py 0 -- --mode cprofile --blocking
+  ../../run_remote.sh receptors/profiling profile_run.py 0 -- --mode torch --target train
+  ../../run_remote.sh receptors/profiling profile_run.py 0 -- --mode torch --target measure
+  ../../run_remote.sh receptors/profiling profile_run.py 0 -- --mode cprofile --target train
+  ../../run_remote.sh receptors/profiling profile_run.py 0 -- --mode cprofile --blocking
 """
 import os
 import sys

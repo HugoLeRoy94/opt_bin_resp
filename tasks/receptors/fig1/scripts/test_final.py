@@ -9,11 +9,11 @@ impact_bracket_variants.py / impact_of_heteromerization_kt.py pick it up as each
 largest measured size. All logic is in src.testscaling; this only sets fig1 defaults.
 
 Parallelise per n_genes (each is its own sweep folder ng{G}_*):
-  ../run_remote.sh fig1 test_final.py 0 -- --sweep_glob 'ng2_*'
-  ../run_remote.sh fig1 test_final.py 1 -- --sweep_glob 'ng3_*'
-  ../run_remote.sh fig1 test_final.py 2 -- --sweep_glob 'ng5_*'
-  ../run_remote.sh fig1 test_final.py 3 -- --sweep_glob 'ng7_*'
-  ../run_remote.sh fig1 test_final.py 0 -- --sweep_glob 'ng10_*'   # then ng15_* ...
+  ../../run_remote.sh receptors/fig1 test_final.py 0 -- --sweep_glob 'ng2_*'
+  ../../run_remote.sh receptors/fig1 test_final.py 1 -- --sweep_glob 'ng3_*'
+  ../../run_remote.sh receptors/fig1 test_final.py 2 -- --sweep_glob 'ng5_*'
+  ../../run_remote.sh receptors/fig1 test_final.py 3 -- --sweep_glob 'ng7_*'
+  ../../run_remote.sh receptors/fig1 test_final.py 0 -- --sweep_glob 'ng10_*'   # then ng15_* ...
 
 --largest defaults to 16 (=16×B, the top of the plateau sweep). The low-ratio runs have the
 LARGEST B (batch ∝ 1/√R), so 16×B is biggest and slowest there (KT is O(B²)); lower --largest

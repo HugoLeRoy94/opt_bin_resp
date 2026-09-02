@@ -8,11 +8,11 @@ by analysis/test_scaling_kt.py. All logic is in src.testscaling; this only sets 
 defaults.
 
 Parallelise per n_genes (each n_genes is its own sweep folder ng{G}_*):
-  ../run_remote.sh fig1 test_scaling.py 0 -- --sweep_glob 'ng2_*'
-  ../run_remote.sh fig1 test_scaling.py 1 -- --sweep_glob 'ng3_*'
-  ../run_remote.sh fig1 test_scaling.py 2 -- --sweep_glob 'ng5_*'
-  ../run_remote.sh fig1 test_scaling.py 3 -- --sweep_glob 'ng7_*'
-  ../run_remote.sh fig1 test_scaling.py 0 -- --sweep_glob 'ng10_*'
+  ../../run_remote.sh receptors/fig1 test_scaling.py 0 -- --sweep_glob 'ng2_*'
+  ../../run_remote.sh receptors/fig1 test_scaling.py 1 -- --sweep_glob 'ng3_*'
+  ../../run_remote.sh receptors/fig1 test_scaling.py 2 -- --sweep_glob 'ng5_*'
+  ../../run_remote.sh receptors/fig1 test_scaling.py 3 -- --sweep_glob 'ng7_*'
+  ../../run_remote.sh receptors/fig1 test_scaling.py 0 -- --sweep_glob 'ng10_*'
 Add --per_condition to measure one env per (n_genes, R) (much faster); override sizes
 with --mult or --test_sizes.
 """

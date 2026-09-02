@@ -10,8 +10,8 @@ Sizes: --test_sizes (explicit), --mult (per-run multiples of train B), else an a
 ladder of --n_test points. Re-running MERGES the CSV, so you can add sizes incrementally.
 
 Run on the cluster (GPU):
-  ../run_remote.sh optimizer test_scaling.py 0
-  ../run_remote.sh optimizer test_scaling.py 0 -- --sweep_glob 'sample_limit_*' --n_test 6
+  ../../run_remote.sh receptors/optimizer test_scaling.py 0
+  ../../run_remote.sh receptors/optimizer test_scaling.py 0 -- --sweep_glob 'sample_limit_*' --n_test 6
 """
 import sys
 sys.path.append('/app')

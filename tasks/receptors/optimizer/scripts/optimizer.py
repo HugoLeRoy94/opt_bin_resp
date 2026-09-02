@@ -22,7 +22,7 @@ collision / kt / annealed are unaffected by the flag, so they run once (False).
   python3 optimizer.py --losses blocked annealed    # subset
 
 Run on the cluster:
-  ../run_remote.sh optimizer optimizer.py 0
+  ../../run_remote.sh receptors/optimizer optimizer.py 0
 """
 import argparse
 import time

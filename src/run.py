@@ -711,6 +711,7 @@ class SimulationRunner:
                 chunk_size=self.config.cell_pool_chunk,
                 set_threshold=(self.config.cell_threshold == "auto"),
                 set_temperature=(self.config.cell_initial_temperature == "auto"),
+                n_molecules=self.config.cell_n_molecules,
             )
             # T_cell endpoints are RELATIVE to the calibrated spread of the drive.
             # The drive is a weighted mean of probabilities, so its scale is set by the
@@ -745,6 +746,11 @@ class SimulationRunner:
             # The plain median sat on a point mass (a sharp receptor drives most cells
             # to exactly zero). theta was stepped above it; the code is sparse, which is
             # honest, but it caps how many bits a cell can carry — worth knowing.
+            if diag.get("theta_floored"):
+                print(f"[cell] theta hit the physical floor 1/N = "
+                      f"{1.0 / self.config.cell_n_molecules:.2e} (one open channel of "
+                      f"{self.config.cell_n_molecules:.0e}): the code is sparse, so the "
+                      f"population does not fire 50%.")
             if diag.get("on_point_mass"):
                 print("[cell] drive has a point mass at the median; theta stepped above "
                       "it (sparse code). See cells.median_threshold.")
@@ -773,7 +779,8 @@ class SimulationRunner:
                 from src.cells import calibrate_cell_readout as _recal
                 d = _recal(self.readout, env, physics, receptor_indices,
                            chunk_size=self.config.cell_pool_chunk,
-                           set_threshold=True, set_temperature=False)
+                           set_threshold=True, set_temperature=False,
+                           n_molecules=self.config.cell_n_molecules)
                 # Refresh the spread too: both sharpness endpoints are multiples of it,
                 # so phase 2 targets the live distribution rather than epoch 0's.
                 sigma_S = d["drive_scale"]

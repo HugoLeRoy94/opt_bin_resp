@@ -25,7 +25,11 @@ _TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "con
 
 # cell_gene_sets is nested one level deeper (a tuple of gene tuples), so it needs
 # its own round-trip handling rather than the flat _TUPLE_FIELDS rule.
-_NESTED_TUPLE_FIELDS = frozenset({"cell_gene_sets"})
+_NESTED_TUPLE_FIELDS = frozenset({"cell_gene_sets", "receptor_indices"})
+
+# cell_receptors is nested one level deeper still (cells -> receptors -> subunits).
+# Fixed-only: it is never a sweep axis, so the round-trip always rebuilds tuples.
+_DEEP_TUPLE_FIELDS = frozenset({"cell_receptors"})
 
 
 @dataclass
@@ -133,6 +137,12 @@ class SingleRunConfig:
     # repertoires) and the entropy is computed over the C cells, not the R_pool
     # receptors.  Leave both None for the original receptor-array behaviour.
     cell_gene_sets:  Optional[List[List[int]]] = None   # explicit gene set per cell
+    # Explicit REPERTOIRE per cell: cell_receptors[j] is the list of receptors cell j
+    # contains, each a list of k_sub gene indices. Bypasses the gene -> repertoire
+    # expansion and weights them uniformly. Use it when the repertoire itself is the
+    # thing you want to control — notably "exactly one receptor per cell", which gene
+    # sets cannot express for a heteromer (see CellArray). Overrides cell_gene_sets.
+    cell_receptors:  Optional[List[List[List[int]]]] = None
     n_cells:         Optional[int]   = None             # sample this many gene sets
     cell_sampling_strategy: str      = "bernoulli"      # "bernoulli" or "size_pmf"
     cell_gene_probs: Optional[List[float]] = None       # bernoulli: P(gene u expressed)
@@ -172,9 +182,20 @@ class SingleRunConfig:
     # spread, so the phase-2 sharpness target tracks the live distribution instead of
     # one measured at epoch 0.  Ignored when cell_threshold is an explicit float.
     cell_recalibrate_every: int      = 25
+    # Receptor MOLECULES per cell (copy number). NOT the number of receptor TYPES the
+    # cell can assemble (that is its repertoire), and NOT the number of cells in a
+    # sucker (that is the array size). The drive is the fraction of THIS cell's
+    # receptors that are open, so the number open is an integer count n = N * drive and
+    # 1/N is the drive's resolution: below one open channel there is no state to be in.
+    # theta is floored there, which is what stops the median — a rank statistic with no
+    # notion of scale — from running off to 1e-290. See cells.median_threshold.
+    # 1e4 is an order-of-magnitude placeholder; replace it with a measured copy number.
+    # None disables the floor (the pre-floor behaviour; expect the degeneracy).
+    cell_n_molecules: Optional[float] = 1e4
 
     def is_cell_mode(self) -> bool:
-        return self.cell_gene_sets is not None or self.n_cells is not None
+        return (self.cell_gene_sets is not None or self.n_cells is not None
+                or self.cell_receptors is not None)
 
     def __post_init__(self):
         if self.is_cell_mode():
@@ -183,6 +204,7 @@ class SingleRunConfig:
             # and the run is exactly reproducible from it.
             from src.cells import build_cell_array  # local import — avoids circular dep
             cell_array = build_cell_array(
+                repertoires=self.cell_receptors,
                 k_sub=self.k_sub,
                 n_genes=self.n_genes,
                 gene_sets=self.cell_gene_sets,
@@ -195,6 +217,8 @@ class SingleRunConfig:
                 stoichiometry=self.cell_stoichiometry,
                 use_interface_model=self.use_interface_model,
             )
+            # gene_sets is DERIVED when repertoires were given; persist it either way so
+            # config.json records what the cells actually turned out to be.
             self.cell_gene_sets   = [list(gs) for gs in cell_array.gene_sets]
             self.n_cells          = cell_array.n_cells
             self.receptor_indices = cell_array.receptor_indices.tolist()
@@ -315,6 +339,10 @@ class RunConfig:
     use_amp: Union[bool, List[bool]] = False
 
     # --- Receptor sampling ---
+    # Explicit receptor list, fixed only (nested, so a list would read as a sweep axis).
+    # Build it as a tuple of k_sub-tuples. Takes precedence over n_receptors, and is the
+    # only way to state an exact array — needed whenever two runs must share receptors.
+    receptor_indices:          Optional[Tuple[Tuple[int, ...], ...]] = None
     n_receptors:               Union[Optional[int], List[Optional[int]]] = None
     receptor_sampling_strategy: Union[str,          List[str]]          = "cascading"
     receptor_sampling_seed:    Union[Optional[int], List[Optional[int]]] = None
@@ -324,6 +352,10 @@ class RunConfig:
     # they follow the _TUPLE_FIELDS convention: tuple = fixed, list-of-tuples = axis.
     cell_gene_sets:  Union[Optional[Tuple[Tuple[int, ...], ...]],
                            List[Tuple[Tuple[int, ...], ...]]] = None
+    # Fixed only (not a sweep axis): nested three deep, so a list here would be
+    # mis-read as an iteration axis. Build it as a tuple, e.g. for one receptor per
+    # cell: tuple((r,) for r in RECEPTORS).
+    cell_receptors:  Optional[Tuple[Tuple[Tuple[int, ...], ...], ...]] = None
     n_cells:         Union[Optional[int], List[Optional[int]]] = None
     cell_sampling_strategy: Union[str, List[str]] = "bernoulli"
     cell_gene_probs: Union[Optional[Tuple[float, ...]], List[Tuple[float, ...]]] = None
@@ -339,6 +371,7 @@ class RunConfig:
     cell_pool_chunk: Union[Optional[int], List[Optional[int]]] = None
     cell_phase_split: Union[float, List[float]] = 0.5
     cell_recalibrate_every: Union[int, List[int]] = 25
+    cell_n_molecules: Union[Optional[float], List[Optional[float]]] = 1e4
 
     # --- Sweep control (never forwarded to SingleRunConfig) ---
     sweep_name:  str  = "run"
@@ -433,6 +466,9 @@ class RunConfig:
             for k in _NESTED_TUPLE_FIELDS:
                 if k in run_params and isinstance(run_params[k], tuple):
                     run_params[k] = [list(v) for v in run_params[k]]
+            for k in _DEEP_TUPLE_FIELDS:
+                if k in run_params and isinstance(run_params[k], tuple):
+                    run_params[k] = [[list(r) for r in cell] for cell in run_params[k]]
             trajectory.append(SingleRunConfig(**run_params))
 
         yield trajectory
@@ -466,6 +502,13 @@ class RunConfig:
                 else:
                     # single fixed tuple
                     d[fname] = tuple(d[fname])
+
+        # cell_receptors: always fixed, always three deep -> tuples all the way down,
+        # so _axes() cannot mistake the outer list for an iteration axis.
+        for fname in _DEEP_TUPLE_FIELDS:
+            v = d.get(fname)
+            if isinstance(v, list) and v:
+                d[fname] = tuple(tuple(tuple(r) for r in cell) for cell in v)
 
         # cell_gene_sets: [[0,2],[1]] (fixed) vs [[[0,2],[1]], ...] (axis)
         for fname in _NESTED_TUPLE_FIELDS:

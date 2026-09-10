@@ -1,5 +1,6 @@
 # Documented in:
-#   doc/theory/07_optimization_pipeline.md  (stage 3b: cell readout)
+#   doc/theory/09_cell_arrays.md            (REFERENCE for this file: sampling, choices)
+#   doc/theory/07_optimization_pipeline.md  (stage 3b: where it sits in the pipeline)
 #   doc/theory/02_biophysics_mwc.md         (receptor activation this layer pools over)
 """
 cells.py — Cell-level readout layered on top of the receptor array.
@@ -133,23 +134,63 @@ class CellArray:
                           W[c, r] = 0 when cell c cannot assemble receptor r.
     """
 
-    def __init__(self, gene_sets: Sequence[Sequence[int]], k_sub: int,
+    def __init__(self, gene_sets: Optional[Sequence[Sequence[int]]], k_sub: int,
                  stoichiometry: str = "multinomial",
-                 use_interface_model: bool = False):
+                 use_interface_model: bool = False,
+                 repertoires: Optional[Sequence[Sequence[Sequence[int]]]] = None):
+        """Build from GENE SETS (the usual way) or from explicit REPERTOIRES.
+
+        gene_sets: one gene set per cell; each is expanded into every receptor those
+          genes allow (expand_gene_set) and weighted by `stoichiometry`. This is the
+          biological model: you choose what the cell EXPRESSES, the repertoire follows.
+
+        repertoires: one explicit receptor list per cell, bypassing the expansion.
+          Weights are UNIFORM over the receptors you listed — you have specified the
+          repertoire directly, so `stoichiometry` does not apply and is ignored.
+          `gene_sets` is then derived from the receptors, for reporting only.
+
+          This exists because the gene-set model CANNOT express "a cell containing
+          exactly one heteromer": expressing the genes of [0,0,0,1,1] necessarily also
+          produces every other combination of genes 0 and 1. One gene per cell does give
+          exactly one receptor, but only ever the homomer. Explicit repertoires are the
+          way to pin an arbitrary receptor into a cell — which is what the cell-vs-
+          receptor equivalence check needs (tasks/cells/equivalence).
+        """
         self.k_sub = k_sub
         self.stoichiometry = stoichiometry
         self.use_interface_model = use_interface_model
-        self.gene_sets = [tuple(sorted(set(int(g) for g in gs))) for gs in gene_sets]
+        self.explicit = repertoires is not None
 
-        per_cell = [expand_gene_set(gs, k_sub, use_interface_model) for gs in self.gene_sets]
+        if self.explicit:
+            if gene_sets is not None:
+                raise ValueError("CellArray: pass gene_sets OR repertoires, not both.")
+            per_cell = []
+            for reps in repertoires:
+                if not len(reps):
+                    raise ValueError("CellArray: a cell must contain at least one receptor.")
+                cell = []
+                for r in reps:
+                    r = tuple(int(u) for u in r)
+                    if len(r) != k_sub:
+                        raise ValueError(f"receptor {r} has {len(r)} subunits, expected k_sub={k_sub}.")
+                    # canonicalise so an explicitly-listed receptor is the SAME object the
+                    # gene-set path would have produced (sorted multiset / min rotation).
+                    cell.append(_canonical_rotation(r) if use_interface_model else tuple(sorted(r)))
+                per_cell.append(sorted(set(cell)))
+            # derived, for __repr__ and for anything that inspects which genes are in play
+            self.gene_sets = [tuple(sorted({u for r in reps for u in r})) for reps in per_cell]
+        else:
+            self.gene_sets = [tuple(sorted(set(int(g) for g in gs))) for gs in gene_sets]
+            per_cell = [expand_gene_set(gs, k_sub, use_interface_model) for gs in self.gene_sets]
 
         pool = sorted({r for reps in per_cell for r in reps})
         pos = {r: i for i, r in enumerate(pool)}
 
         W = torch.zeros(len(self.gene_sets), len(pool), dtype=torch.float32)
         for c, (gs, reps) in enumerate(zip(self.gene_sets, per_cell)):
-            weights = repertoire_weights(reps, len(gs), k_sub,
-                                         stoichiometry, use_interface_model)
+            weights = ([1.0 / len(reps)] * len(reps) if self.explicit else
+                       repertoire_weights(reps, len(gs), k_sub,
+                                          stoichiometry, use_interface_model))
             for r, w in zip(reps, weights):
                 W[c, pos[r]] = w
 
@@ -171,9 +212,10 @@ class CellArray:
 
     def __repr__(self) -> str:
         sizes = [len(gs) for gs in self.gene_sets]
+        how = ("repertoires=explicit" if self.explicit
+               else f"stoichiometry={self.stoichiometry!r}")
         return (f"CellArray(C={self.n_cells}, R_pool={self.pool_size}, "
-                f"genes/cell={min(sizes)}-{max(sizes)}, "
-                f"stoichiometry={self.stoichiometry!r})")
+                f"genes/cell={min(sizes)}-{max(sizes)}, {how})")
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +286,19 @@ def build_cell_array(
     seed: Optional[int] = None,
     stoichiometry: str = "multinomial",
     use_interface_model: bool = False,
+    repertoires: Optional[Sequence[Sequence[Sequence[int]]]] = None,
 ) -> CellArray:
-    """Unified entry point: explicit gene sets, or sample them.
+    """Unified entry point: explicit repertoires, explicit gene sets, or sampled ones.
 
+    repertoires wins if given (the receptor list per cell is stated outright);
+    otherwise gene_sets; otherwise n_cells gene sets are sampled with `strategy`.
     strategy='bernoulli' uses gene_probs (defaults to uniform 2/n_genes, i.e. two
     expressed genes per cell on average); strategy='size_pmf' uses size_pmf.
     """
+    if repertoires is not None:
+        return CellArray(None, k_sub, use_interface_model=use_interface_model,
+                         repertoires=repertoires)
+
     if gene_sets is None:
         if n_cells is None:
             raise ValueError("build_cell_array: provide gene_sets or n_cells.")
@@ -422,10 +471,15 @@ def cell_activity(physics, readout: CellReadout,
 # Calibration
 # ---------------------------------------------------------------------------
 
-def median_threshold(drive_flat: torch.Tensor) -> Tuple[float, bool]:
-    """Threshold that splits the drive in half WITHOUT landing on a point mass.
+def median_threshold(drive_flat: torch.Tensor,
+                     floor: float = 0.0) -> Tuple[float, bool]:
+    """Threshold that splits the drive in half, floored at a PHYSICAL minimum.
 
     Returns (theta, on_point_mass).
+
+    `floor` is 1/N, where N is the number of receptor MOLECULES the cell carries (see
+    the section below). It is what stops the median — a pure rank statistic with no
+    notion of scale — from wandering off the bottom of physics.
 
     The rule is one line: **theta is the midpoint between the median and the next
     distinct value above it.**  That single rule covers two very different regimes.
@@ -452,12 +506,50 @@ def median_threshold(drive_flat: torch.Tensor) -> Tuple[float, bool]:
     no threshold can separate anything and the caller is warned.  We leave theta on the
     mass rather than nudging, because when the drive has zero spread T_cell collapses to
     its floor too and a nudge cannot outrun it — the honest signal is the warning.
+
+    THE PHYSICAL FLOOR (why the median alone is not enough)
+    -------------------------------------------------------
+    The drive is the FRACTION of a cell's receptors that are open.  A cell carries a
+    finite number N of receptor MOLECULES, so the number open is an integer count
+    n = N * S: below n = 1 there is no state for the cell to be in.  1/N is therefore
+    the resolution of the drive, and the smallest threshold that means anything.
+
+    The median knows none of this — it only splits the sample in half.  When the code is
+    sparse most drives are numerically tiny, and worse, SHARPENING THE RECEPTOR MAKES IT
+    WORSE, not better: for an off receptor p = sigmoid(ln_sum / T) ~ exp(ln_sum / T), so
+    shrinking T divides ln_sum by T and spreads the off values over MORE decades.
+    Measured, sweeping the receptor temperature 1.0 -> 0.003, the median-pinned theta ran
+    1e-1 -> 1e-3 -> 1e-9 -> 1e-29 -> 1e-87 -> 1e-290.  At N = 1e4 that last value is
+    1e-286 open channels.  It is not a threshold, it is a rank statistic that has lost
+    contact with the units, and it splits a cloud of values that do not physically exist
+    (at N = 1e5, 83% of drives sit below 1/N) instead of separating OFF from ON.
+
+    Flooring at 1/N restores the behaviour a cell should have — no receptors open -> OFF,
+    receptors open -> ON.  Measured at N = 1e4: 17.0% firing against a 15.8% underlying
+    receptor firing rate, 0% fair coins, and 98.8% agreement with the receptor code.
+
+    Two properties worth knowing:
+
+    * The floor only bites in the SPARSE regime.  When the code is dense enough that the
+      median sits above 1/N, theta is the median and nothing changes.
+    * Where it bites, the "population fires ~50%" property becomes conditional: a sparse
+      world now yields a sparse code (17% above, not 50%).  That is the honest answer,
+      but it IS a behavioural change from an unfloored median.
+
+    It also fixes T_cell for free, so no second floor is needed: drive_scale is a MAD
+    measured AROUND theta, and once most drives sit far below theta the deviation is
+    ~theta itself, so the MAD lands on 1/N and T_cell follows the same physical scale.
+
+    n = 1 (one open channel) is the right floor rather than some larger "channels needed
+    to reach rheobase": the result is insensitive to that choice anyway — 1 vs 100
+    channels moved the firing rate 17.0% -> 16.4% — so the extra constant would earn
+    nothing.
     """
     m = drive_flat.median()
     above = drive_flat[drive_flat > m]
-    if above.numel() == 0:
-        return float(m), True
-    return float(0.5 * (m + above.min())), bool(m == drive_flat.min())
+    theta, on_mass = ((float(m), True) if above.numel() == 0 else
+                      (float(0.5 * (m + above.min())), bool(m == drive_flat.min())))
+    return max(theta, float(floor)), on_mass
 
 
 def drive_scale(drive_flat: torch.Tensor, theta: float) -> float:
@@ -502,7 +594,8 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
                            calibration_batch_size: int = 2048,
                            chunk_size: Optional[int] = None,
                            set_threshold: bool = True,
-                           set_temperature: bool = True) -> dict:
+                           set_temperature: bool = True,
+                           n_molecules: Optional[float] = None) -> dict:
     """Set theta and T_cell from the empirical distribution of the drive S.
 
     Same rationale as physics.compute_initial_temperature: a threshold placed off
@@ -510,8 +603,10 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
     array carries zero entropy, while a temperature far from the spread of S gives
     either a hard step with vanishing gradient or a mushy all-0.5 response.
 
-      theta   <- median over ALL (b, c) of S      the population fires ~50% of the time
-                 (via median_threshold, which keeps theta off a point mass — see there)
+      theta   <- median over ALL (b, c) of S, FLOORED at 1/n_molecules
+                 (via median_threshold: it keeps theta off a point mass, and the floor
+                  keeps it inside physics — one open channel is the smallest threshold
+                  that means anything. See median_threshold for the measured numbers.)
       T_cell  <- MAD over (b, c) of (S - theta)   the sigmoid argument starts unit-spread
                  (a MAD, not a std: the drive spans ~30 orders of magnitude and a std
                   measures only its tail — see drive_scale)
@@ -550,13 +645,18 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
         part = readout.accumulate(p, r0, r1)
         acc = part if acc is None else acc + part                   # (B, C)
 
-    on_point_mass = False
+    on_point_mass = theta_floored = False
     if set_threshold:
         # Pooled over (b, c): one scalar for the whole array. See median_threshold for
         # why this is not simply acc.median() — a sharp receptor drives most cells to
         # exactly zero, and a threshold sitting on that mass turns it into fair coins.
-        theta, on_point_mass = median_threshold(acc.reshape(-1))
+        # n_molecules = receptor MOLECULES per cell (copy number), NOT receptor types
+        # and NOT cells per sucker. The drive is a fraction of THIS cell's receptors, so
+        # 1/N is its resolution: one open channel. See median_threshold.
+        floor = 0.0 if n_molecules is None else 1.0 / float(n_molecules)
+        theta, on_point_mass = median_threshold(acc.reshape(-1), floor=floor)
         readout.theta.data.fill_(theta)
+        theta_floored = floor > 0.0 and theta == floor
     if set_temperature:
         readout.temperature = drive_scale(acc.reshape(-1), float(readout.theta))
 
@@ -579,6 +679,10 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
         # threshold was stepped above it (or, if the drive has no spread at all,
         # when nothing could be done). Worth surfacing: it means the code is sparse.
         "on_point_mass":    on_point_mass,
+        # True when the median fell below 1/N and the physical floor took over — i.e.
+        # the code is SPARSE. Expected, not an error, but it means the "population fires
+        # ~50%" property no longer holds: a sparse world gives a sparse code.
+        "theta_floored":    theta_floored,
     }
 
 
@@ -665,6 +769,28 @@ if __name__ == "__main__":
     print(f"[7] point mass at 0: theta={th:.3e} sits strictly above it, "
           f"{coins:.0%} coins, {(A > 0.5).float().mean():.1%} of sniffs fire")
 
+    #    (b2) the PHYSICAL floor: a sparse code drives the median off the bottom of
+    #    physics, and sharpening the receptor makes it worse, not better.
+    ln_sum = torch.randn(20000, 8) * 2.0 - 2.0
+    for T_recep, expect_floor in ((1.0, False), (0.01, True)):
+        drv = torch.sigmoid(ln_sum / T_recep).reshape(-1)
+        th_free, _ = median_threshold(drv)
+        th_flr, _ = median_threshold(drv, floor=1e-4)          # N = 1e4 molecules/cell
+        assert th_flr >= 1e-4
+        assert (th_flr == 1e-4) == expect_floor, (T_recep, th_free, th_flr)
+        print(f"[7] receptor T={T_recep:<5}: median theta={th_free:.2e} -> floored "
+              f"{th_flr:.2e}  ({'floor bit' if th_flr == 1e-4 else 'median kept'})")
+    #    floored theta recovers the receptor code; unfloored does not
+    drv2d = torch.sigmoid(ln_sum / 0.01)
+    agree = {}
+    for floor, tag in ((0.0, "unfloored"), (1e-4, "floored  ")):
+        th, _ = median_threshold(drv2d.reshape(-1), floor=floor)
+        agree[tag] = ((drv2d > th) == (drv2d > 0.5)).double().mean().item()
+        print(f"[7] {tag}: theta={th:.2e}  agrees with the receptor code {agree[tag]:.1%}")
+    # the floored threshold must recover the receptor code, and beat the unfloored one
+    assert agree["floored  "] > 0.95, agree
+    assert agree["floored  "] > agree["unfloored"], agree
+
     #    (c) no spread at all: nothing can separate; must be flagged, not silently hidden.
     flat_drive = torch.full((512,), 0.7)
     th, pm = median_threshold(flat_drive)
@@ -694,5 +820,41 @@ if __name__ == "__main__":
     #    degenerate: every drive on theta -> MAD is 0, must still return something > 0
     assert drive_scale(torch.full((256,), 0.3), 0.3) > 0
     print("[8] all-identical drive: drive_scale still returns a positive scale")
+
+    # 9) explicit repertoires: one receptor per cell -> W is the identity, so the cell
+    #    layer becomes a pass-through and cell mode must reduce to receptor mode.
+    RECS = [(0,0,0,0,0), (0,0,0,0,1), (0,0,0,1,1), (1,1,1,2,2)]
+    ce = CellArray(None, 5, repertoires=[(r,) for r in RECS])
+    assert ce.n_cells == 4 and ce.pool_size == 4, (ce.n_cells, ce.pool_size)
+    assert ce.receptor_indices.tolist() == [list(r) for r in sorted(RECS)]
+    assert torch.equal(ce.W, torch.eye(4)), ce.W
+    print(f"[9] one receptor per cell: {ce}  -> W == I")
+
+    #    the pass-through is exact: 'mean' readout on an identity W returns p untouched
+    torch.manual_seed(5)
+    phys9 = BinaryReceptor(3, 5, temperature=0.3)
+    E9 = torch.randn(32, 4, 3).abs()
+    c9 = torch.rand(32, 4) * 10
+    p9 = phys9(E9, c9, ce.receptor_indices)
+    a9 = cell_activity(phys9, CellReadout(ce.W, mode="mean", k_sub=5),
+                       E9, c9, ce.receptor_indices)
+    assert torch.allclose(p9, a9, atol=0), (p9 - a9).abs().max()
+    print("[9] 'mean' readout through W == I reproduces receptor activity exactly")
+
+    #    a multi-receptor cell gets uniform weights, and gene_sets is derived
+    cm = CellArray(None, 5, repertoires=[[(0,0,0,0,0), (0,0,0,1,1)], [(2,2,2,2,2)]])
+    assert cm.gene_sets == [(0, 1), (2,)], cm.gene_sets
+    assert torch.allclose(cm.W.sum(1), torch.ones(2))
+    assert cm.W[0][cm.W[0] > 0].tolist() == [0.5, 0.5]
+    print(f"[9] explicit multi-receptor cell: uniform weights, gene_sets derived {cm.gene_sets}")
+
+    #    unsorted / non-canonical input is canonicalised to the gene-set convention
+    assert CellArray(None, 5, repertoires=[((1,0,0,0,0),)]).receptor_indices.tolist() \
+        == [[0, 0, 0, 0, 1]]
+    try:
+        CellArray([[0]], 5, repertoires=[((0,0,0,0,0),)]); raise SystemExit("should have raised")
+    except ValueError:
+        pass
+    print("[9] receptors canonicalised; gene_sets+repertoires together rejected")
 
     print("\nall cells.py self-tests passed.")

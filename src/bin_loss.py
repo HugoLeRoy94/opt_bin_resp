@@ -168,12 +168,27 @@ def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size
     return (torch.logsumexp(full_row, dim=1) - log_B).sum()
 
 
+KT_EPS = 1e-6
+
+
+def compute_response_conditional_entropy(activity: torch.Tensor,
+                                         eps: float = KT_EPS) -> torch.Tensor:
+    """Mean H(Y|X) for conditionally independent Bernoulli outputs, in bits.
+
+    X includes the full sampled input, including any observation-noise realization.
+    KT and stochastic counting evaluation use this same probability clamp.
+    """
+    a = activity.clamp(eps, 1.0 - eps)
+    return (-(a * torch.log2(a) + (1.0 - a) * torch.log2(1.0 - a))).sum(-1).mean()
+
+
 def compute_kt_entropy(
     soft_assign: torch.Tensor,
     chunk_size: int = 512,
-    eps: float = 1e-6,
+    eps: float = KT_EPS,
     recompute: bool = False,
     use_compile: bool = False,
+    return_mi: bool = False,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey Bhattacharyya LOWER bound on the joint Shannon entropy.
 
@@ -192,18 +207,21 @@ def compute_kt_entropy(
 
     BC[i,j] is the Bhattacharyya affinity between components i and j;
     BC[i,i]=1, so the diagonal anchors the inner sum at 1/B and the
-    resolvable-entropy ceiling is log2(TOTAL batch B) — NOT log2(chunk).
+    separation-term ceiling is log2(TOTAL batch B) — NOT log2(chunk).
+    The entropy bound itself can reach H_cond + log2(B).
 
     ALL-PAIRS, DIAGONAL INCLUDED, NORMALIZED BY TOTAL B. The inner j-loop
     spans the ENTIRE batch and the diagonal (logBC=0) is kept. This is NOT
-    the adjacent-chunk / diagonal-masked scheme of the collision estimator
-    (which caps its ceiling at log2(chunk)); collapsing KT to that would be
-    wrong. Peak memory O(chunk²·R); time O(B²·R/chunk), quadratic in B.
+    the adjacent-chunk / diagonal-masked scheme of the collision estimator.
+    Pairwise arithmetic is O(B²·R), independent of tile size. Inference also
+    retains O(chunk·B) row buffers alongside the O(chunk²·R) tile.
 
     Args:
         soft_assign: (B, R, 2) tensor; channel 1 is A_br, channel 0 is 1-A_br.
         chunk_size:  edge length m of the (m, n) logBC blocks.
         eps:         clamp A into [eps, 1-eps] for log/sqrt stability.
+        return_mi:   return the separation term alone, bounding I(Y;X) for the
+                     empirical mixture. Avoids subtracting two large entropy terms.
         recompute:   if True, gradient-checkpoint each i-chunk's contribution so its
                      (m, n, R) / (m, B) tensors are recomputed in backward instead of
                      retained. Retained graph drops O(B²·R) → O(B·R), so the training
@@ -218,7 +236,7 @@ def compute_kt_entropy(
     A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)   # (B, R)
 
     # Conditional (mean per-component) entropy in bits.
-    h_cond = (-(A * torch.log2(A) + (1.0 - A) * torch.log2(1.0 - A))).sum(dim=1).mean()
+    h_cond = None if return_mi else compute_response_conditional_entropy(A, eps)
 
     sqrt_A  = torch.sqrt(A)                            # (B, R)
     sqrt_1A = torch.sqrt(1.0 - A)                      # (B, R)
@@ -241,13 +259,14 @@ def compute_kt_entropy(
         inter_nats = inter_nats + contrib
 
     inter_bits = (inter_nats / B) / math.log(2)
-    return h_cond - inter_bits
+    return -inter_bits if return_mi else h_cond - inter_bits
 
 
 def compute_kt_upper_entropy(
     soft_assign: torch.Tensor,
     chunk_size: int = 512,
-    eps: float = 1e-6,
+    eps: float = KT_EPS,
+    return_mi: bool = False,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey UPPER bound on the joint Shannon entropy H(s).
 
@@ -266,18 +285,20 @@ def compute_kt_upper_entropy(
 
     Certified upper bound (never below the true H(s)); tight in the well-separated
     regime. The diagonal (i=j, KL=0) is kept and the sum normalised by the total
-    batch B, so the resolvable-entropy ceiling is log2(B) — same as the lower bound.
-    Peak memory O(chunk^2 * R); time O(B^2 * R / chunk), quadratic in B.
+    batch B, so the MI separation term is capped at log2(B), as for the lower bound;
+    the entropy includes H_cond in addition.
+    Pairwise arithmetic O(B²·R); inference memory O(chunk²·R + chunk·B).
 
     Args:
         soft_assign: (B, R, 2); channel 1 is A_ir, channel 0 is 1-A_ir.
         chunk_size:  edge length m of the (m, n) blocks.
         eps:         clamp A into [eps, 1-eps] for log stability.
+        return_mi:   return the upper bound on I(Y;X), including the C-H(Y|X) cap.
     """
     B, R, _ = soft_assign.shape
     A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)            # (B, R)
 
-    h_cond = (-(A * torch.log2(A) + (1.0 - A) * torch.log2(1.0 - A))).sum(dim=1).mean()
+    h_cond = compute_response_conditional_entropy(A, eps)
 
     log_A  = torch.log(A)                                     # (B, R)
     log_1A = torch.log1p(-A)                                  # (B, R) = log(1-A)
@@ -303,6 +324,8 @@ def compute_kt_upper_entropy(
     inter_bits = (inter_nats / B) / math.log(2)
     # H(s) of R binary receptors is <= R bits, so clamp: min of two valid upper
     # bounds is still an upper bound, and tighter in the overlapping regime.
+    if return_mi:
+        return torch.minimum(-inter_bits, R - h_cond)
     return (h_cond - inter_bits).clamp(max=float(R))
 
 
@@ -670,6 +693,27 @@ class DiscreteExactLoss(nn.Module):
             return compute_collision_entropy(soft, return_collision_prob=True,
                                              collision_chunk_size=self.collision_chunk_size)
         return -self.compute_entropy(activity, use_cache=True)
+
+
+class KTMutualInformationLoss(DiscreteExactLoss):
+    """Optimize I(Y;X)'s KT lower bound, retaining entropy measurements as entropy.
+
+    Selected by config entropy='kt_mi'. Inherited compute_entropy still returns
+    H(Y); forward returns -I_lower and differentiates through the full objective.
+    No sampling of output bits is necessary during training.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(entropy_type='kt', **kwargs)
+
+    def forward(self, activity: torch.Tensor) -> torch.Tensor:
+        return -compute_kt_entropy(
+            self.compute_soft_assignment(activity),
+            chunk_size=self.collision_chunk_size,
+            recompute=self.recompute_backward,
+            use_compile=self.compile_kt,
+            return_mi=True,
+        )
 
 
 # backward-compat alias

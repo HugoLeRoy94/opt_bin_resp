@@ -42,6 +42,11 @@ from src.analysis_helper import (
     entropy_kt,
     entropy_kt_upper,
     codeword_entropy,
+    conditional_entropy_response,
+    mutual_information_kt,
+    mutual_information_kt_upper,
+    mutual_information_counting,
+    response_counting_metrics,
     miller_madow_entropy,
     mean_receptor_distance,
     conditional_entropy_ligand,
@@ -60,7 +65,9 @@ from src.analysis_helper import (
     receptor_conditioned_entropy
 )
 
-from src.bin_loss import DiscreteExactLoss, compute_kt_entropy, compute_kt_upper_entropy
+from src.bin_loss import (DiscreteExactLoss, KTMutualInformationLoss, KT_EPS,
+                          compute_kt_entropy, compute_kt_upper_entropy,
+                          compute_response_conditional_entropy)
 from src.annealed_loss import AnnealedEntropyLoss, BlockedToCorrectedLoss
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
@@ -77,6 +84,10 @@ MEASUREMENT_REGISTRY = {
     "entropy_kt":                        entropy_kt,
     "entropy_kt_upper":                  entropy_kt_upper,
     "codeword_entropy":                  codeword_entropy,
+    "conditional_entropy_response":      conditional_entropy_response,
+    "mutual_information_kt":             mutual_information_kt,
+    "mutual_information_kt_upper":       mutual_information_kt_upper,
+    "mutual_information_counting":       mutual_information_counting,
     "mean_receptor_distance":            mean_receptor_distance,
     "conditional_entropy_ligand":        conditional_entropy_ligand,
     "mutual_information_ligand":         mutual_information_ligand,
@@ -170,6 +181,9 @@ def resolve_batch_sizes(
     (4 × batch_size, capped at test_final) and the single final measurement uses
     test_final (= min(2^R, memory)). An explicit test_batch_size is used for both.
     """
+    # KT entropy and information share the same pairwise work and memory budget.
+    if entropy_type == 'kt_mi':
+        entropy_type = 'kt'
     B_min = 512
     collision_chunk_size = None
     if mem_budget_bytes is None:
@@ -296,7 +310,13 @@ ENV_REGISTRY = {
 
 def _build_loss(cfg, collision_chunk_size: int = 2048) -> nn.Module:
     """Dispatch on cfg.entropy to construct the appropriate loss module."""
-    if cfg.entropy in DiscreteExactLoss._ENTROPY_FNS:
+    if cfg.entropy == 'kt_mi':
+        return KTMutualInformationLoss(
+            collision_chunk_size=collision_chunk_size,
+            recompute_backward=cfg.recompute_backward,
+            compile_kt=cfg.compile_kt,
+        )
+    elif cfg.entropy in DiscreteExactLoss._ENTROPY_FNS:
         return DiscreteExactLoss(
             entropy_type=cfg.entropy,
             cov_weight=cfg.cov_weight or 0.0,
@@ -326,7 +346,7 @@ def _build_loss(cfg, collision_chunk_size: int = 2048) -> nn.Module:
     else:
         raise ValueError(f"Unknown entropy: {cfg.entropy!r}. "
                          f"Choose from {DiscreteExactLoss._ENTROPY_FNS} or "
-                         f"'annealed' / 'mi_ligand' / 'mi_conc'.")
+                         f"'kt_mi' / 'annealed' / 'mi_ligand' / 'mi_conc'.")
 
 CONC_REGISTRY = {
     "lognormal": lambda cfg: LogNormalConcentration(
@@ -426,6 +446,8 @@ class SimulationRunner:
         else:
             self._final_test_batch = (test_final if was_auto_test
                                       else int(self.config.test_batch_size))
+        if self.config.final_test_batch_size is not None:
+            self._final_test_batch = int(self.config.final_test_batch_size)
         # config.json was written with "auto" before this resolution; re-save it so
         # the resolved batch_size / test_batch_size (the per-epoch measurement size)
         # are persisted for analysis — e.g. the log2(sample_size) measurement ceilings.
@@ -539,7 +561,8 @@ class SimulationRunner:
             composition=comp,
         )
 
-    def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch):
+    def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch,
+                    measurement_fns=None):
         """Evaluation over batch_size total samples, with bounded per-pass memory.
 
         chunk_size = min(eval_chunk_size or batch_size, batch_size)
@@ -549,16 +572,21 @@ class SimulationRunner:
         Soft metrics (Rényi, blocked Shannon, distances …) run on a single
         chunk_size forward pass.
 
-        Hard-codeword metrics (plug-in, Miller-Madow, K_hat, K_frac) are
-        accumulated over ceil(batch_size / chunk_size) forward passes so the
-        full batch_size budget drives bias estimation.  When batch_size ==
-        chunk_size the single-pass path in full_array_entropy covers both.
+        KT, response conditional entropy, and both counting measurements use the
+        same full batch. Counting-only evaluations retain CPU bits, not all soft
+        activities, and perform no quadratic KT computation.
         """
         chunk_size = min(self.config.eval_chunk_size or self.config.batch_size, batch_size)
-        do_mm_accumulation = (
-            'codeword_entropy' in self.config.measurement_fns
-            and batch_size > chunk_size
-        )
+        measurements = self.config.measurement_fns if measurement_fns is None else measurement_fns
+        requested = set(measurements)
+        batch_metrics = {'entropy_kt', 'entropy_kt_upper', 'conditional_entropy_response',
+                         'mutual_information_kt', 'mutual_information_kt_upper',
+                         'codeword_entropy', 'mutual_information_counting'}
+        want_lower = bool(requested & {'entropy_kt', 'mutual_information_kt'})
+        want_upper = bool(requested & {'entropy_kt_upper', 'mutual_information_kt_upper'})
+        want_kt = want_lower or want_upper
+        want_counting = 'mutual_information_counting' in requested
+        want_hard = 'codeword_entropy' in requested
 
         ri_for_batch = receptor_indices if env.use_interface_model else None
         with torch.no_grad():
@@ -574,7 +602,9 @@ class SimulationRunner:
             stat = {}
             family_labels_cache = None  # computed lazily if any fn requests it
             block_labels_cache  = None  # computed lazily if any fn requests it
-            for fn_name in self.config.measurement_fns:
+            for fn_name in measurements:
+                if fn_name in batch_metrics:
+                    continue
                 fn  = MEASUREMENT_REGISTRY[fn_name]
                 sig = inspect.signature(fn)
                 kwargs = {}
@@ -609,56 +639,59 @@ class SimulationRunner:
                 else:
                     stat[fn_name] = result
 
-            if do_mm_accumulation:
-                # Accumulate hard codewords on CPU over the full budget.
-                # (B_eval, R) bool tensor — 2.5 MB for B=2^20, R=20.
-                all_codes = [(activity > 0.5).cpu()]
-                n_so_far = chunk_size
-                while n_so_far < batch_size:
-                    this_chunk = min(chunk_size, batch_size - n_so_far)
-                    E_c, concs_c, _ = env.sample_batch(batch_size=this_chunk, receptor_indices=ri_for_batch)
-                    act_c = self._activity(physics, E_c, concs_c, receptor_indices,
-                                           env.use_interface_model, env=env)
-                    all_codes.append((act_c > 0.5).cpu())
-                    n_so_far += this_chunk
-
-                all_codes_cat = torch.cat(all_codes, dim=0)  # (batch_size, R) on CPU
-                H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(all_codes_cat)
-                stat.update({
-                    'codeword_entropy_plugin': H_plugin,
-                    'codeword_entropy_mm':     H_MM,
-                    'codeword_entropy_log2B':  log2_B,
-                    'codeword_entropy_K_hat':  float(K_hat),
-                    'codeword_entropy_K_frac': K_frac,
-                })
-
-            # --- KT on the full eval batch (overrides the chunk-based value above) ----
-            # KT is all-pairs O(B²·R); its resolvable-entropy ceiling is log2(B). We
-            # measure it on the WHOLE eval batch (batch_size = test_batch_size, itself
-            # min(2^R, memory)). Samples are generated in sub-batches and concatenated;
-            # KT tiles internally so peak memory is bounded by the tile (EVAL_TILE),
-            # not B. No cap on samples — only time grows (O(B²)).
-            kt_want = [f for f in ('entropy_kt', 'entropy_kt_upper')
-                       if f in self.config.measurement_fns]
-            if kt_want and batch_size > activity.shape[0]:
-                acts = [activity]
-                n_have = activity.shape[0]
-                while n_have < batch_size:
+            if requested & batch_metrics:
+                acts, hard_codes, sampled_codes = [], [], []
+                cond_sum = torch.zeros((), dtype=torch.float64, device=activity.device)
+                if want_counting and not hasattr(self, '_response_generator'):
+                    # Output sampling must not perturb the world's/training RNG.
+                    self._response_generator = torch.Generator(device=activity.device)
+                    self._response_generator.manual_seed((torch.initial_seed() + 104729) % (2**63))
+                n_have = 0
+                while True:
+                    n = activity.shape[0]
+                    cond_sum += compute_response_conditional_entropy(activity).double() * n
+                    if want_kt:
+                        acts.append(activity)
+                    if want_hard:
+                        hard_codes.append((activity > 0.5).cpu())
+                    if want_counting:
+                        a = activity.clamp(KT_EPS, 1.0 - KT_EPS)
+                        sampled_codes.append(torch.bernoulli(
+                            a, generator=self._response_generator).bool().cpu())
+                    n_have += n
+                    if n_have == batch_size:
+                        break
                     this = min(chunk_size, batch_size - n_have)
                     E_k, concs_k, _ = env.sample_batch(this, receptor_indices=ri_for_batch)
-                    acts.append(self._activity(physics, E_k, concs_k, receptor_indices,
-                                               env.use_interface_model, env=env))
-                    n_have += this
-                big_soft = loss_fn.compute_soft_assignment(torch.cat(acts, dim=0))
-                # [profiling] label the O(B²) measurement KT so it is separable from the
-                # training-loss KT in the profiler trace. Inert when not profiling.
-                with record_function("prof:eval_kt"):
-                    _compile_kt = getattr(loss_fn, "compile_kt", False)
-                    if 'entropy_kt' in kt_want:
-                        stat['full_array_entropy_kt'] = compute_kt_entropy(
-                            big_soft, chunk_size=2048, use_compile=_compile_kt).item()
-                    if 'entropy_kt_upper' in kt_want:
-                        stat['full_array_entropy_kt_upper'] = compute_kt_upper_entropy(big_soft, chunk_size=2048).item()
+                    activity = self._activity(physics, E_k, concs_k, receptor_indices,
+                                              env.use_interface_model, env=env)
+                h_cond = (cond_sum / n_have).item()
+                stat['response_evaluation_samples'] = n_have
+                if requested & {'conditional_entropy_response', 'mutual_information_kt',
+                                'mutual_information_kt_upper', 'mutual_information_counting'}:
+                    stat['conditional_entropy_response'] = h_cond
+                if want_hard:
+                    stat.update(codeword_entropy(torch.cat(hard_codes)))
+                if want_counting:
+                    stat.update(response_counting_metrics(torch.cat(sampled_codes), h_cond))
+                if want_kt:
+                    big_soft = loss_fn.compute_soft_assignment(torch.cat(acts))
+                    with record_function("prof:eval_kt"):
+                        if want_lower:
+                            i_lower = compute_kt_entropy(
+                                big_soft, chunk_size=2048, return_mi=True,
+                                use_compile=getattr(loss_fn, 'compile_kt', False)).item()
+                            if 'entropy_kt' in requested:
+                                stat['full_array_entropy_kt'] = i_lower + h_cond
+                            if 'mutual_information_kt' in requested:
+                                stat['mutual_information_kt'] = i_lower
+                        if want_upper:
+                            i_upper = compute_kt_upper_entropy(
+                                big_soft, chunk_size=2048, return_mi=True).item()
+                            if 'entropy_kt_upper' in requested:
+                                stat['full_array_entropy_kt_upper'] = i_upper + h_cond
+                            if 'mutual_information_kt_upper' in requested:
+                                stat['mutual_information_kt_upper'] = i_upper
 
         return stat
 
@@ -790,9 +823,11 @@ class SimulationRunner:
             # --- Phase 2: the CELL sharpens; held soft for the whole of phase 1 ------
             current_cell_temp = None
             if cell_start_temp is not None:
+                phase2_epochs = self.config.epochs - phase1_epochs
                 cell_frac = (0.0 if epoch < phase1_epochs else
-                             min(1.0, (epoch - phase1_epochs)
-                                 / max(1, self.config.epochs - phase1_epochs)))
+                             (1.0 if phase2_epochs <= 1 else
+                              min(1.0, (epoch - phase1_epochs)
+                                  / (phase2_epochs - 1))))
                 current_cell_temp = (
                     cell_end_temp + (cell_start_temp - cell_end_temp) * (1.0 - cell_frac)
                     if cell_end_temp < cell_start_temp else cell_end_temp
@@ -842,7 +877,11 @@ class SimulationRunner:
                     # Free: reuse the training objective already computed for the
                     # gradient step — no extra sampling / eval. For entropy-maximising
                     # losses (kt, collision, …) the native entropy is -loss.
-                    stat = {"loss": float(loss.item()), "train_entropy": float(-loss.item())}
+                    metric = ('train_mutual_information' if isinstance(loss_fn, KTMutualInformationLoss)
+                              else 'train_entropy')
+                    stat = {"loss": float(loss.item()), metric: float(-loss.item())}
+                if isinstance(loss_fn, KTMutualInformationLoss):
+                    stat['train_mutual_information'] = float(-loss.item())
                 stat["lr"] = optimizer.param_groups[0]["lr"]
                 if self.readout is not None and self.readout.mode == "threshold":
                     # Track where the shared threshold drifts: it starts at the
@@ -855,7 +894,8 @@ class SimulationRunner:
 
     def _test(self, env, physics, loss_fn, receptor_indices, n_samples: int, test_epochs: int = 10):
         stats = [
-            self._eval_stats(env, physics, loss_fn, receptor_indices, n_samples, i)
+            self._eval_stats(env, physics, loss_fn, receptor_indices, n_samples, i,
+                             measurement_fns=self.config.final_measurement_fns)
             for i in range(test_epochs)
         ]
         return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}

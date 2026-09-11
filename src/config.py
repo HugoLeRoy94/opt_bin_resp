@@ -20,7 +20,7 @@ _SWEEP_CONTROL_FIELDS = frozenset({"sweep_name", "base_folder", "warm_start"})
 
 # Fields whose values are arrays (tuple = fixed, list-of-tuples = axis).
 # Used when converting RunConfig values to lists for SingleRunConfig.
-_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "conc_mean", "conc_std",
+_TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "final_measurement_fns", "conc_mean", "conc_std",
                            "cell_gene_probs", "cell_size_pmf"})
 
 # cell_gene_sets is nested one level deeper (a tuple of gene tuples), so it needs
@@ -80,7 +80,7 @@ class SingleRunConfig:
     batch_size: Union[int, str]
 
     # --- Loss ---
-    entropy:      str
+    entropy:      str  # 'kt_mi' maximizes full-sniff MI; 'kt' retains entropy training
 
     # --- Training ---
     epochs:          int
@@ -104,13 +104,18 @@ class SingleRunConfig:
     # high R without shrinking training. None → no cap (auto uses min(2^R, memory)).
     test_max_batch:   Optional[int] = None
     # When False: skip the per-epoch _eval_stats measurement (log the training loss for
-    # free instead) AND run the final test at 4×train. Saves the per-epoch re-sampling
+    # free instead) AND default the final test to 4×train (final_test_batch_size overrides).
+    # Saves the per-epoch re-sampling
     # cost; re-measure from the saved checkpoint if more samples are needed.
     per_epoch_measure: bool = True
     # torch.compile the KT per-tile kernel (fuses the launch-heavy elementwise loop).
     compile_kt: bool = False
     eval_chunk_size:  Optional[int] = None   # per-forward-pass budget; None → use batch_size
     measurement_fns:  List[str] = field(default_factory=list)
+    # Optional final-only measurements/budget, e.g. large streamed counting without KT.
+    # None inherits measurement_fns / the existing final batch sizing policy.
+    final_measurement_fns: Optional[List[str]] = None
+    final_test_batch_size: Optional[int] = None
     # None → SimulationRunner builds [[i]*k_sub for i in range(n_genes)]
     receptor_indices: Optional[List[List[int]]] = None
     # When set, receptor_indices is auto-generated via build_heteromer_array.
@@ -198,6 +203,8 @@ class SingleRunConfig:
                 or self.cell_receptors is not None)
 
     def __post_init__(self):
+        if self.final_test_batch_size is not None and self.final_test_batch_size <= 0:
+            raise ValueError("final_test_batch_size must be positive.")
         if self.is_cell_mode():
             # Derive the receptor pool from the cells; sampling (if any) happens
             # once, here, so the resolved gene sets are persisted in config.json
@@ -330,6 +337,8 @@ class RunConfig:
     test_max_batch: Union[Optional[int], List[Optional[int]]] = None  # cap the final auto measurement (O(B²) KT)
     per_epoch_measure: Union[bool, List[bool]] = True  # False → skip per-epoch eval, final test at 4×train
     compile_kt: Union[bool, List[bool]] = False  # torch.compile the KT tile kernel
+    final_measurement_fns: Optional[Union[Tuple[str, ...], List[Tuple[str, ...]]]] = None
+    final_test_batch_size: Union[Optional[int], List[Optional[int]]] = None
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False

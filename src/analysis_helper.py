@@ -26,7 +26,8 @@ import seaborn as sns
 from src.environment import LogNormalConcentration # Adjust import path as needed
 from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entropy,
                           compute_blocked_entropy, compute_kt_entropy,
-                          compute_kt_upper_entropy)
+                          compute_kt_upper_entropy, compute_response_conditional_entropy,
+                          KT_EPS)
 
 
 @torch.no_grad()
@@ -262,6 +263,48 @@ def sample_activity(env, physics, receptor_indices, n_samples, fwd_chunk=FWD_CHU
                                       chunk_size=pool_chunk))
         n += b
     return torch.cat(acts, dim=0)
+
+
+@torch.no_grad()
+def count_sampled_responses(env, physics, receptor_indices, n_samples,
+                            fwd_chunk=FWD_CHUNK, readout=None, pool_chunk=None,
+                            response_generator=None):
+    """Estimate response entropy and MI from streamed stochastic binary outputs.
+
+    Fresh inputs are forwarded in bounded chunks.  For each input, one conditionally
+    independent Bernoulli response vector is sampled and moved to CPU; the analytic
+    conditional entropy is accumulated with the corresponding sample weight.  Thus
+    this avoids both retaining a ``(n_samples, R)`` probability tensor and KT's
+    quadratic pairwise calculation.  The returned keys are those of
+    :func:`response_counting_metrics`.
+
+    ``response_generator`` may be supplied to isolate response-sampling randomness
+    from the environment's input-sampling RNG.
+    """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive")
+
+    ri_fwd = receptor_indices if env.use_interface_model else None
+    codes, n_done = [], 0
+    h_cond_sum = None
+    while n_done < n_samples:
+        b = min(fwd_chunk, n_samples - n_done)
+        E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
+        if readout is None:
+            activity = physics(E, concs, receptor_indices,
+                               pre_gathered=env.use_interface_model)
+        else:
+            from src.cells import cell_activity
+            activity = cell_activity(physics, readout, E, concs, receptor_indices,
+                                     pre_gathered=env.use_interface_model,
+                                     chunk_size=pool_chunk)
+        activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
+        h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
+        h_cond_sum = h_cond_chunk if h_cond_sum is None else h_cond_sum + h_cond_chunk
+        codes.append(torch.bernoulli(activity, generator=response_generator).bool().cpu())
+        n_done += b
+
+    return response_counting_metrics(torch.cat(codes), (h_cond_sum / n_done).item())
 
 
 @torch.no_grad()
@@ -585,7 +628,7 @@ def miller_madow_entropy(activity: torch.Tensor):
     p = counts.float() / B
     H_plugin = -(p * torch.log2(p.clamp(min=1e-12))).sum().item()
     H_MM = H_plugin + (K_hat - 1) / (2 * B * math.log(2))
-    return H_plugin, H_MM, K_hat, math.log2(B), K_hat / (2 ** R)
+    return H_plugin, H_MM, K_hat, math.log2(B), math.ldexp(float(K_hat), -R)
 
 
 @torch.no_grad()
@@ -671,6 +714,53 @@ def entropy_kt_upper(activity, loss_fn):
     """Opt-in: Kolchinsky-Tracey UPPER bound on H(s) on all provided samples
     → full_array_entropy_kt_upper. Pairs with entropy_kt to bracket H(s)."""
     return _opt_entropy(activity, loss_fn, 'kt_upper', 'full_array_entropy_kt_upper')
+
+
+def conditional_entropy_response(activity):
+    """H(Y|X) from the Bernoulli outputs; X includes sampled observation noise."""
+    return compute_response_conditional_entropy(activity).item()
+
+
+def mutual_information_kt(activity, loss_fn):
+    """KT lower bound on information about the complete sampled input."""
+    return compute_kt_entropy(loss_fn.compute_soft_assignment(activity), return_mi=True).item()
+
+
+def mutual_information_kt_upper(activity, loss_fn):
+    """KT upper bound on information about the complete sampled input."""
+    return compute_kt_upper_entropy(loss_fn.compute_soft_assignment(activity), return_mi=True).item()
+
+
+def response_counting_metrics(codes, h_cond):
+    """Sampled-output H minus analytic H(Y|X), with no population-bound claim.
+
+    Negative estimates are retained: finite-sample bias or Monte Carlo error must
+    not be hidden by clamping. K_hat / B diagnoses sparse observed-code coverage.
+    """
+    plugin, mm, k_hat, log2_b, _ = miller_madow_entropy(codes)
+    return {
+        'response_entropy_plugin': plugin,
+        'response_entropy_mm': mm,
+        'mutual_information_counting_plugin': plugin - h_cond,
+        'mutual_information_counting_mm': mm - h_cond,
+        'conditional_entropy_response': h_cond,
+        'response_counting_K_hat': float(k_hat),
+        'response_counting_unique_fraction': k_hat / codes.shape[0],
+        'response_counting_samples': int(codes.shape[0]),
+        'response_counting_log2B': log2_b,
+    }
+
+
+@torch.no_grad()
+def mutual_information_counting(activity):
+    """Count one independent Bernoulli output per sniff, then subtract H(Y|X).
+
+    For large evaluations SimulationRunner streams the draws on a separate RNG
+    and stores only CPU binary codes. This differs from thresholded codeword_entropy.
+    """
+    a = activity.clamp(KT_EPS, 1.0 - KT_EPS)
+    return response_counting_metrics(torch.bernoulli(a).bool(),
+                                     compute_response_conditional_entropy(a).item())
 
 
 @torch.no_grad()

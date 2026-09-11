@@ -322,8 +322,8 @@ class LigandEnvironment(nn.Module):
         _log_pmf_l -= _log_pmf_l.logsumexp(dim=1, keepdim=True)
         self.register_buffer('_log_pmf_ligand', _log_pmf_l)      # (K, max_m)
 
-        # Static upper bound on present ligands per sniff — avoids a per-batch GPU→CPU sync.
-        # Covers the ~99.99th percentile of Poisson(mu_sources) * max_m without truncation risk.
+        # Usual sparse allocation width, not a support bound. _sample_masks widens
+        # batches whose realized ligand count exceeds this tail heuristic.
         _poisson_tail = int(mu_sources + 4.0 * mu_sources ** 0.5) + 1
         self.s_upper = min(n_ligands, _poisson_tail * _max_m)
 
@@ -563,8 +563,9 @@ class LigandEnvironment(nn.Module):
     def _sample_masks(self, batch_size: int) -> torch.Tensor:
         """(B, L) float presence mask via the vectorized hierarchical source→ligand sampler.
 
-        All K blocks are processed simultaneously with O(1) CUDA kernel launches —
-        no Python loop, no GPU→CPU synchronization.
+        All K blocks are processed simultaneously without a Python loop. When the
+        usual sparse width is below L, one scalar GPU→CPU synchronization sizes
+        the output so rare large mixtures are never silently truncated.
 
           1. Draw n_src ~ ZTP(mu_sources, K) via Gumbel-max; select n_src blocks via Gumbel-top-k.
           2. Draw n_lig[b,k] ~ ZTP(mu_ligands_per_source, m_k) for all (b,k) via Gumbel-max.
@@ -619,18 +620,21 @@ class LigandEnvironment(nn.Module):
         M = torch.zeros(B, L + 1, device=device)
         M.scatter_add_(1, idx_flat, picked_flat)
 
-        # --- Step 5: build sparse_idx (B, s_upper) — selected ligand indices, L for padding ---
+        # --- Step 5: retain ALL selected ligands, widening rare overflow batches ---
         # torch.where: real member index where picked, dummy L otherwise.
         safe_flat    = self._safe_block_members.view(K * max_m)                 # (K*max_m,)
         selected_flat = torch.where(picked_flat.bool(), safe_flat.unsqueeze(0), L)  # (B, K*max_m)
         # topk on picked_flat (1.0 = selected) brings selected positions to front without sorting.
-        _, front_order = picked_flat.topk(self.s_upper, dim=-1, sorted=False)   # (B, s_upper)
-        sparse_idx = selected_flat.gather(1, front_order)                        # (B, s_upper)
+        width = self.s_upper
+        if width < L:
+            width = max(width, int(n_lig.sum(dim=1).max().item()))
+        _, front_order = picked_flat.topk(width, dim=-1, sorted=False)     # (B, width)
+        sparse_idx = selected_flat.gather(1, front_order)                  # (B, width)
 
         return M[:, :L].clamp(max=1.0), sparse_idx
 
     def _sample_noisy_ligands(self, batch_size: int, sparse_idx: torch.Tensor) -> torch.Tensor:
-        """(B, s_upper, D) — noisy coordinates for the selected ligands only.
+        """(B, sparse_width, D) — noisy coordinates for the selected ligands only.
 
         sparse_idx: (B, s_upper) long tensor — real ligand indices [0, L-1] for present
                     ligands, n_ligands (dummy) for padding slots.
@@ -837,8 +841,9 @@ class LigandEnvironment(nn.Module):
             concs:         (B, s_upper)
             mixture_masks: (B, L)
 
-        s_upper is a static bound (set at __init__ time) on the max present ligands per sniff:
-        ~99.99th percentile of Poisson(mu_sources) * max_m.  Padding slots carry index L
+        The usual sparse width s_upper is set at __init__ from a Poisson-tail heuristic.
+        The returned ligand axis widens to the actual maximum count if a batch exceeds
+        it; no selected ligands are discarded. Padding slots carry index L
         with concentration 0, contributing exp(-27) ≈ 0 to the logsumexp in physics.
         The hierarchical sampler guarantees S >= 1 for every row by construction.
         """

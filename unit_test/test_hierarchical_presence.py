@@ -45,7 +45,7 @@ def _make_env(n_ligands=40, n_presence_blocks=4,
 
 
 def _masks(env, B=2048):
-    return env._sample_masks(B)
+    return env._sample_masks(B)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +159,32 @@ def test_determinism():
     env = _make_env(n_ligands=20, n_presence_blocks=4,
                     mu_sources=1.5, mu_ligands_per_source=2.0)
     torch.manual_seed(42)
-    m1 = env._sample_masks(64)
+    m1, idx1 = env._sample_masks(64)
     torch.manual_seed(42)
-    m2 = env._sample_masks(64)
+    m2, idx2 = env._sample_masks(64)
     assert torch.equal(m1, m2), "Masks differ under the same torch seed"
+    assert torch.equal(idx1, idx2), "Sparse indices differ under the same torch seed"
+
+
+@pytest.mark.parametrize("force_overflow", [False, True])
+def test_sparse_indices_preserve_full_mixture(force_overflow):
+    env = _make_env(n_ligands=17, n_presence_blocks=5)
+    if force_overflow:
+        # Force a supported tail event: every block and every ligand is selected.
+        env._log_pmf_source.fill_(float('-inf'))
+        env._log_pmf_source[-1] = 0.0
+        env._log_pmf_ligand.fill_(float('-inf'))
+        env._log_pmf_ligand.scatter_(1, (env._block_sizes - 1)[:, None], 0.0)
+        env.s_upper = 2
+    masks, indices = env._sample_masks(32)
+    recovered = torch.zeros(32, env.n_ligands + 1)
+    recovered.scatter_add_(1, indices, (indices < env.n_ligands).float())
+    torch.testing.assert_close(recovered[:, :env.n_ligands], masks)
+    if force_overflow:
+        assert indices.shape[1] == env.n_ligands
+    _, sparse_concs, masks, dense_concs = env.sample_batch(32, return_dense_conc=True)
+    torch.testing.assert_close(dense_concs > 0, masks.bool())
+    torch.testing.assert_close(sparse_concs.sum(1), dense_concs.sum(1))
 
 
 # ---------------------------------------------------------------------------

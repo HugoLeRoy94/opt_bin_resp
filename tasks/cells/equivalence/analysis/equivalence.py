@@ -2,33 +2,32 @@
 """Did cell mode reduce to the receptor model?
 
 Compares the runs from scripts/as_cells.py and scripts/as_receptors.py. A cell holding
-exactly one receptor IS that receptor, so with W == I cell mode should reproduce the
-receptor model — same environment draw, same sniffs, same receptors.
+exactly one receptor has drive p when W == I. The thresholded readout approaches the
+receptor model in the binary-opening limit with theta between OFF and ON. The runs
+share an initial world and receptor array but may see different subsequent sniffs.
 
 ## Which numbers to compare, and why not the KT entropies
 
 The cell run uses the real `threshold` readout, so its activity is near-BINARY while the
 receptor run reports SOFT open probabilities p. Those are not on the same footing:
 
-    receptor KT  =  H(code)  +  conditional entropy of the soft p
-    cell     KT  =  H(code)  +  ~0
+    MI lower = entropy KT lower - H(response | full input)
+    MI upper = entropy KT upper - H(response | full input)
 
-So **expect receptor KT >= cell KT**, by roughly the receptor's conditional-entropy term.
-That gap is not a failure — it is the soft/hard difference, and it shrinks as the
-receptor temperature anneals. The like-for-like comparison is `codeword_entropy_*`,
-which binarises BOTH sides at 0.5; those are the checks below.
+There is no guaranteed ordering between the two channels. Hard-code entropy is not
+generally the MI of the soft response. Both runs now optimize KT MI; sampled-output
+counting estimates the same stochastic channel. Hard codewords remain a qualitative
+diagnostic, rather than proof of equality of the complete conditional distributions.
 
 ## Reading a mismatch
 
   receptor_indices differ    -> the pool is not the receptor list (ordering/canonicalisation)
-  codewords differ a lot     -> theta is not separating OFF from ON. Check whether it hit
-                                the 1/N floor (the `[cell]` line in the run log) and see
-                                doc/theory/09 §9.8.1
-  everything differs         -> the runs did not share an environment (seeding broken)
+  codewords differ a lot     -> inspect theta, temperature, sampling and optimization
+  everything differs         -> also check initial environment and seeds
 
-The trajectories are close but NOT identical: the cell run adds a phase-2 hardening the
-receptor run has no need for. This tests convergence to the same answer, not step-for-step
-agreement. For the bit-exact plumbing check, run as_cells.py with cell_readout="mean".
+The cell run adds a phase-2 hardening. Hard-code counts and entropies can agree even
+when the code-to-stimulus assignments differ; the checks are qualitative. With W == I,
+the mean readout has the same forward map as the receptor model on a fixed batch.
 """
 import sys
 from pathlib import Path
@@ -80,7 +79,9 @@ def final(test, key):
 
 # hard-code metrics first: those are the like-for-like comparison
 KEYS = ("codeword_entropy_K_hat", "codeword_entropy_mm",
-        "full_array_entropy_kt", "full_array_entropy_kt_upper")
+        "mutual_information_kt", "mutual_information_kt_upper",
+        "conditional_entropy_response", "mutual_information_counting_mm",
+        "response_counting_unique_fraction")
 TOL_BITS = 0.10     # hard-codeword entropy agreement, in bits
 TOL_KHAT = 0.10     # distinct-codeword count agreement, relative
 
@@ -97,38 +98,30 @@ vals = {k: (a, b) for k, a, b, _ in rows}
 mm_gap = abs(vals["codeword_entropy_mm"][0] - vals["codeword_entropy_mm"][1])
 kh_a, kh_b = vals["codeword_entropy_K_hat"]
 kh_rel = abs(kh_a - kh_b) / max(kh_b, 1.0)
-kt_cell, kt_rec = vals["full_array_entropy_kt"]
 
 checks = [
     ("same receptors, same order", same_array),
     ("hard-codeword entropies agree", mm_gap < TOL_BITS),
     ("distinct-codeword counts agree", kh_rel < TOL_KHAT),
-    # soft vs hard: the cell (binary) must not report MORE than the soft receptor
-    ("cell KT does not exceed receptor KT", kt_cell <= kt_rec + TOL_BITS),
 ]
 for name, ok in checks:
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
-print(f"\n  KT gap (receptor - cell) = {kt_rec - kt_cell:+.4f} bits"
-      f"   <- expected >= 0: the receptor's soft p carries a conditional-entropy term")
 
 if all(ok for _, ok in checks):
-    print("\nEQUIVALENT: one receptor per cell reproduces the receptor model.")
+    print("\nHard-code statistics agree qualitatively; inspect MI separately.")
 elif not same_array:
     print("\nNOT COMPARABLE: the two runs used different receptor arrays — fix that first.")
 elif mm_gap >= TOL_BITS or kh_rel >= TOL_KHAT:
     print(f"\nCODES DIFFER (mm gap {mm_gap:.3f} bits, K_hat {kh_a:.0f} vs {kh_b:.0f}). "
-          "theta is not separating OFF from ON. Check the [cell] line in the run log for "
-          "whether it hit the 1/N floor; see doc/theory/09 §9.8.1.")
-else:
-    print("\nCell KT exceeds receptor KT, which should be impossible for a hard code "
-          "against a soft one — suspect the cell did not harden (check T_cell in phase 2).")
+          "Check threshold placement, the temperature schedules and optimization; "
+          "these runs also see different training samples.")
 
 # %%
-# ── training curves should lie on top of each other ──────────────────────────
+# ── compare training trends ─────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(7, 4.5))
 for name, style in (("as_receptors", "-"), ("as_cells", "--")):
     h = hists[name]
-    for col in [c for c in h.columns if "entropy" in c]:
+    for col in [c for c in h.columns if "mutual_information" in c or c == "conditional_entropy_response"]:
         ax.plot(h["epoch"], h[col], style, label=f"{name}: {col}", alpha=.8)
 ax.set_xlabel("epoch"); ax.set_ylabel("bits")
 ax.set_title("Cell array (one receptor per cell) vs receptor array")

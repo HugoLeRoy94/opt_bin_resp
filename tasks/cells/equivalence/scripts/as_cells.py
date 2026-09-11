@@ -27,14 +27,15 @@ means the agreement is approximate rather than bit-exact. Three things follow.
     temperature. The trajectories are therefore close but not identical, and the test is
     "do they converge to the same answer", not "are they the same run".
 
-  * Compare the HARD codeword metrics, not the KT entropies. The receptor run reports
-    soft p, whose KT value includes a conditional-entropy term; the cell run reports a
-    near-binary activity, which does not. Expect receptor KT >= cell KT by roughly that
-    term. `codeword_entropy_*` binarises both at 0.5 and is the like-for-like comparison.
+  * Compare the MI brackets and sampled-output counting estimates, with hard codeword
+    entropy as a separate qualitative diagnostic. Both optimize KT MI. Thresholding
+    changes the probability channel: neither MI nor entropy has a guaranteed ordering
+    between these independently optimized runs. Only the binary-opening limit with
+    a threshold strictly between OFF and ON gives the same response.
 
 For the bit-exact plumbing check instead, set cell_readout="mean": with W = I the
 readout is a pass-through (activity = W @ p = p) and `is_cell` stays False, so the
-schedules match too and the two runs agree to float noise.
+forward maps match too. Matching complete trajectories also requires matching samples.
 
   ../../run_remote.sh cells/equivalence as_cells.py 0
 """

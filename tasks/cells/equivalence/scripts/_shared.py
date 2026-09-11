@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Everything the two equivalence runs must share, in one place.
 
-The check is only meaningful if the two runs differ in EXACTLY one respect — cell
-array vs receptor array. Any other difference (a different receptor list, a different
-environment draw, a different schedule) invalidates it, so both live here and neither
-script is allowed its own copy.
+Both runs share the receptor list, initial world seed, and KT mutual-information
+objective. This is a qualitative comparison of optimized endpoints: cell calibration
+consumes additional sniffs and threshold cells have a second sharpening phase.
 """
 import sys
 sys.path.append('/app')
@@ -27,7 +26,10 @@ RECEPTORS = tuple(sorted([
 ]))
 
 N_GENES = 5
-SEED    = 0        # torch RNG: fixes the environment draw AND the sniff sequence
+SEED    = 0        # fixes the initial world; calibration changes subsequent RNG draws
+
+MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
+                "mutual_information_kt", "mutual_information_kt_upper", "codeword_entropy")
 
 COMMON = dict(
     # --- Environment ---
@@ -59,7 +61,7 @@ COMMON = dict(
 
     # --- Cell readout (ignored by the receptor run) ---
     # phase 1 = 80% of epochs, matching the receptor run's own annealing window, so the
-    # receptor temperature follows the SAME schedule in both. The remaining 20% is where
+    # receptor temperature follows a comparable schedule in both. The remaining 20% is where
     # the receptor run merely holds T at its final value while the cell run additionally
     # hardens its readout — the one structural difference, and an unavoidable one: the
     # receptor array is already binarised by its own temperature and has nothing to
@@ -70,10 +72,11 @@ COMMON = dict(
     cell_n_molecules = 1e4,
 
     # --- Loss / training ---
-    entropy="kt",
+    entropy="kt_mi",
     epochs=300, lr=1e-2, use_scheduler=False,
     batch_size=2048, test_batch_size=2048,
-    measurement_fns=("entropy_kt", "entropy_kt_upper", "codeword_entropy"),
+    measurement_fns=MEASUREMENTS,
+    final_measurement_fns=MEASUREMENTS + ("mutual_information_counting",),
 
     base_folder = "/app/data/equivalence",
     warm_start  = False,
@@ -81,10 +84,5 @@ COMMON = dict(
 
 
 def seed_everything():
-    """Both runs must draw the SAME environment and the SAME sniffs.
-
-    The environment is initialised from the torch RNG and every batch is sampled from
-    it, so seeding here makes the two trajectories comparable step for step. Cell-set
-    construction uses `random.Random` instead, and does not disturb this stream.
-    """
+    """Share the initial world; later sniff sequences may differ due to calibration."""
     torch.manual_seed(SEED)

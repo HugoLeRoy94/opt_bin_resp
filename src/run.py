@@ -377,7 +377,7 @@ class SimulationRunner:
             self.config.receptor_indices, dtype=torch.long, device=self.device
         )
 
-        # --- Cell mode: rebuild the abundance matrix from the persisted gene sets.
+        # --- Cell mode: preserve explicit repertoires when rebuilding abundances.
         # The pool order is deterministic (sorted in CellArray), so the columns of W
         # line up with config.receptor_indices, which __post_init__ derived the same way.
         self.cell_array = None
@@ -385,9 +385,11 @@ class SimulationRunner:
         if self.config.is_cell_mode():
             from src.cells import CellArray, CellReadout
             self.cell_array = CellArray(
-                self.config.cell_gene_sets, self.config.k_sub,
+                (None if self.config.cell_receptors is not None
+                 else self.config.cell_gene_sets), self.config.k_sub,
                 stoichiometry=self.config.cell_stoichiometry,
                 use_interface_model=self.config.use_interface_model,
+                repertoires=self.config.cell_receptors,
             ).to(self.device)
             assert torch.equal(self.cell_array.receptor_indices, receptor_indices), (
                 "cell pool mismatch: CellArray rebuilt a different receptor pool than "
@@ -889,6 +891,12 @@ class SimulationRunner:
                     # move it toward a sparser or denser operating point.
                     stat["cell_theta"] = self.readout.theta.detach().item()
                 stats.append(stat)
+
+        # Save and test the same endpoint used for periodic evaluation, including
+        # very short runs whose schedule has no room for a complete second phase.
+        physics.temperature = end_temp
+        if cell_end_temp is not None:
+            self.readout.temperature = cell_end_temp
 
         return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}
 

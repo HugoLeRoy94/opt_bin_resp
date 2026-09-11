@@ -27,7 +27,8 @@ def main():
                         sweep_default="ng*", mult_default=[1, 2, 4, 8, 16])
     args = p.parse_args()
     ts.run(args.data, args.sweep_glob, ts.sizes_from_args(args),
-           n_receptors=args.n_receptors, per_condition=args.per_condition)
+           n_receptors=args.n_receptors, per_condition=args.per_condition,
+           measurement=args.measurement)
 
 
 if __name__ == "__main__":

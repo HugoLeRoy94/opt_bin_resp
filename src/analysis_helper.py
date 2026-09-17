@@ -413,12 +413,12 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
 # from core.environment import UniformNBall
 
 @torch.no_grad()
-def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_state=42, ax=None):
+def build_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_state=42):
     """
     Projects the N-dimensional chemical latent space into 2D using UMAP.
-    Visualizes the families as density gradients (regions), the family centers as circles,
-    the ligands as small dots,
-    and the assembled receptors as numeric indices.
+    Returns projected families, ligands, receptor centroids and family samples.
+    Reuse this result for all panels of the same model. Sampling and UMAP use
+    private seeded RNGs; they do not change the simulation's torch RNG state.
 
     Args:
         env: Instantiated LigandEnvironment.
@@ -426,7 +426,6 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         n_samples_per_family: How many points to sample per family to generate the gradient.
     """
     import umap  # lazy: only needed here, keeps src importable without umap-learn
-    device = next(env.parameters()).device
     n_families = env.n_families
     n_ligands = env.n_ligands
     n_receptors = receptor_indices.shape[0]
@@ -450,32 +449,25 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     # =====================================================================
     # 2. SAMPLE THE LIGAND REGIONS (To generate the gradient)
     # =====================================================================
-    sampled_points = []
-    sampled_labels = []
-    
-    for f_idx in range(n_families):
-        center = env.family_latent[f_idx:f_idx+1].expand(n_samples_per_family, -1)
-        
-        # Draw from the exact distribution defined in the environment
-        if env.distribution_type == 'gaussian':
-            dist = torch.distributions.Normal(loc=center, scale=env.family_spread)
-            pts = dist.rsample()
-        elif env.distribution_type == 'uniform_cube':
-            low = center - env.family_spread
-            high = center + env.family_spread
-            dist = torch.distributions.Uniform(low=low, high=high)
-            pts = dist.rsample()
-        elif env.distribution_type == 'uniform':
-            # Assuming UniformNBall is available in your scope
-            from src.environment import UniformNBall
-            dist = UniformNBall(loc=center, radius=env.family_spread, dim=env.latent_dim)
-            pts = dist.rsample()
-            
-        sampled_points.append(pts.cpu().numpy())
-        sampled_labels.extend([f_idx] * n_samples_per_family)
-        
-    sampled_points = np.vstack(sampled_points)
-    sampled_labels = np.array(sampled_labels)
+    if n_samples_per_family < 2:
+        raise ValueError("n_samples_per_family must be at least 2")
+    rng = np.random.default_rng(random_state)
+    shape = (n_families, n_samples_per_family, env.latent_dim)
+    if env.distribution_type == 'gaussian':
+        offsets = rng.normal(size=shape) * env.family_spread
+    elif env.distribution_type == 'uniform_cube':
+        offsets = rng.uniform(-env.family_spread, env.family_spread, size=shape)
+    elif env.distribution_type in ('uniform', 'shell'):
+        direction = rng.normal(size=shape)
+        direction /= np.linalg.norm(direction, axis=-1, keepdims=True)
+        radius = rng.uniform(size=(*shape[:2], 1))
+        if env.distribution_type == 'uniform':
+            radius = radius ** (1.0 / env.latent_dim)
+        offsets = direction * radius * env.family_spread
+    else:
+        raise ValueError(f"Unsupported family distribution: {env.distribution_type}")
+    sampled_points = (v_families[:, None, :] + offsets).reshape(-1, env.latent_dim)
+    sampled_labels = np.repeat(np.arange(n_families), n_samples_per_family)
     
     # =====================================================================
     # 3. FIT UMAP PROJECTION
@@ -483,7 +475,8 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     all_data = np.vstack([v_families, v_ligands, v_receptors, sampled_points])
     
     print("Fitting UMAP... (This may take a few seconds)")
-    reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, metric='euclidean')#, random_state=random_state)
+    reducer = umap.UMAP(n_neighbors=min(15, len(all_data) - 1), min_dist=0.1,
+                       metric='euclidean', random_state=random_state, n_jobs=1)
     embedding = reducer.fit_transform(all_data)
     
     # Unpack the embeddings
@@ -491,6 +484,31 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     emb_ligands = embedding[n_families : n_families + n_ligands]
     emb_receptors = embedding[n_families + n_ligands : n_families + n_ligands + n_receptors]
     emb_samples = embedding[n_families + n_ligands + n_receptors :]
+
+    return dict(families=emb_families, ligands=emb_ligands, receptors=emb_receptors,
+                samples=emb_samples, sample_labels=sampled_labels,
+                ligand_assignments=ligand_assignments, latent_dim=env.latent_dim)
+
+
+def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_state=42,
+                     ax=None, *, embedding=None):
+    """Plot the chemical landscape; optionally reuse a build_latent_umap result.
+
+    Existing calls and the (fig, ax) return value are preserved. Supplied embeddings
+    must describe the same environment and displayed receptor list.
+    """
+    if embedding is None:
+        embedding = build_latent_umap(env, receptor_indices, n_samples_per_family, random_state)
+    return _draw_latent_umap(embedding, ax=ax)
+
+
+def _draw_latent_umap(embedding, ax=None, ligand_values=None, show_legend=True):
+    """Shared drawing layer for a landscape and individual cell response panels."""
+    emb_families, emb_ligands = embedding['families'], embedding['ligands']
+    emb_receptors, emb_samples = embedding['receptors'], embedding['samples']
+    sampled_labels = embedding['sample_labels']
+    ligand_assignments = embedding['ligand_assignments']
+    n_families, n_receptors = len(emb_families), len(emb_receptors)
     
     # =====================================================================
     # 4. PLOTTING
@@ -511,7 +529,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         # Seaborn KDE creates the beautiful topographical contour gradients
         sns.kdeplot(
             x=pts[:, 0], y=pts[:, 1], 
-            ax=ax, fill=True, color=c, alpha=0.3, 
+            ax=ax, fill=True, color=c, alpha=0.3 if ligand_values is None else 0.10,
             levels=5, thresh=0.05
         )
         
@@ -523,15 +541,34 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
         )
         
         # Plot ligands assigned to this family
-        ligand_pts = emb_ligands[ligand_assignments == f_idx]
-        ax.scatter(
-            ligand_pts[:, 0], ligand_pts[:, 1],
-            marker='.', s=20, color=c, edgecolor='black', linewidth=0.5,
-            zorder=3
-        )
+        if ligand_values is None:
+            ligand_pts = emb_ligands[ligand_assignments == f_idx]
+            ax.scatter(
+                ligand_pts[:, 0], ligand_pts[:, 1],
+                marker='.', s=20, color=c, edgecolor='black', linewidth=0.5,
+                zorder=3
+            )
+
+    if ligand_values is not None:
+        ax.scatter(emb_ligands[:, 0], emb_ligands[:, 1], c=ligand_values,
+                   cmap='magma', vmin=0, vmax=1, marker='D', s=85,
+                   edgecolor='black', linewidth=.7, zorder=6)
+        for ligand_id, xy in enumerate(emb_ligands):
+            ax.annotate(f'L{ligand_id}', xy, xytext=(5, 5), textcoords='offset points',
+                        fontsize=8, zorder=7)
         
     # Plot the Assembled Receptors as numbered labels
     for r_idx in range(n_receptors):
+        if ligand_values is not None:
+            # Homomers can lie directly under their preferred ligand. Offset their
+            # labels with leader lines so ligand colour and gene ID remain visible.
+            offsets = ((-16, -16), (0, -24), (16, -16), (16, 16), (0, 24), (-16, 16))
+            ax.annotate(str(r_idx), emb_receptors[r_idx],
+                        xytext=offsets[r_idx % len(offsets)], textcoords='offset points',
+                        fontsize=8, ha='center', va='center',
+                        bbox=dict(facecolor='white', edgecolor='0.5', boxstyle='circle,pad=0.2'),
+                        arrowprops=dict(arrowstyle='-', color='0.5', lw=.5), zorder=5)
+            continue
         ax.text(
             emb_receptors[r_idx, 0], emb_receptors[r_idx, 1], str(r_idx),
             fontsize=8, ha='center', va='center', fontweight='bold',
@@ -543,7 +580,7 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     ax.scatter([], [], marker='o', color='white', edgecolor='black', label='Receptors')
     
     # Clean up aesthetics
-    ax.set_title(f"UMAP Projection of {env.latent_dim}D Chemical Latent Space", fontsize=9, fontweight='bold')
+    ax.set_title(f"UMAP Projection of {embedding['latent_dim']}D Chemical Latent Space", fontsize=9, fontweight='bold')
     ax.set_xlabel("UMAP Dimension 1", fontsize=9)
     ax.set_ylabel("UMAP Dimension 2", fontsize=9)
 
@@ -551,11 +588,68 @@ def plot_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_st
     ax.set_yticks([])
     
     # Shrink current axis by 20% to put legend outside
-    box = ax.get_position()
-    ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+    if show_legend:
+        box = ax.get_position()
+        ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
     
     return fig, ax
+
+
+@torch.no_grad()
+def cell_ligand_responses(env, physics, receptor_indices, readout, concentration=1.0):
+    """Return (ligands, cells) probabilities for isolated ligands at fixed concentration.
+
+    Uses exact saved ligand positions (no observation noise or concentration draws),
+    the FULL receptor pool and existing cell_activity physics. The readout must have
+    its checkpoint W, theta and calibrated temperature restored, in this pool order.
+    This is a conditional response map, not an average over the training environment.
+    """
+    from src.cells import cell_activity
+
+    if not math.isfinite(concentration) or concentration <= 0:
+        raise ValueError("concentration must be finite and positive")
+    if readout.W.shape[1] != len(receptor_indices):
+        raise ValueError("Readout W must match the full receptor pool")
+    if env.use_interface_model:
+        energies = env.interaction_mu_interface(receptor_indices).permute(2, 0, 1)[:, None]
+    else:
+        energies = env.interaction_mu.T[:, None]
+    concentrations = energies.new_full((env.n_ligands, 1), concentration)
+    return cell_activity(physics, readout, energies, concentrations, receptor_indices,
+                         pre_gathered=env.use_interface_model)
+
+
+def plot_cell_response_umap(embedding, responses, gene_sets, concentration=1.0):
+    """One panel per cell on a shared chemical UMAP, with a shared probability scale.
+
+    Pass the homomer embedding from build_latent_umap and the (L, C) probabilities
+    from cell_ligand_responses. Family colours indicate geometry only; numbered
+    receptor markers identify homomers, and diamonds L0, L1, ... show responses.
+    """
+    if isinstance(responses, torch.Tensor):
+        responses = responses.detach().cpu().numpy()
+    responses = np.asarray(responses)
+    n_cells = len(gene_sets)
+    if n_cells == 0 or responses.shape != (len(embedding['ligands']), n_cells):
+        raise ValueError("Expected one response per ligand and cell")
+    if not np.isfinite(responses).all() or np.any((responses < 0) | (responses > 1)):
+        raise ValueError("Cell responses must be finite probabilities in [0, 1]")
+    ncols = min(3, n_cells)
+    nrows = math.ceil(n_cells / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows),
+                             sharex=True, sharey=True, squeeze=False, layout='constrained')
+    for cell, ax in enumerate(axes.flat):
+        if cell >= n_cells:
+            ax.set_visible(False)
+            continue
+        _draw_latent_umap(embedding, ax=ax, ligand_values=responses[:, cell], show_legend=False)
+        ax.set_title(f"Cell {cell} — genes {', '.join(map(str, gene_sets[cell]))}", fontsize=10)
+    fig.colorbar(plt.cm.ScalarMappable(norm=plt.Normalize(0, 1), cmap='magma'),
+                 ax=list(axes.flat)[:n_cells], label='Cell firing probability', shrink=.8)
+    fig.suptitle(f"Single-ligand cell responses at concentration {concentration:g}\n"
+                 "Diamonds: ligands • numbered circles: gene homomers • clouds: families")
+    return fig, axes
 
 @torch.no_grad()
 def receptor_distances(env, receptor_indices):

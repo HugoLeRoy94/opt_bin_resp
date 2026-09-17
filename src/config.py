@@ -16,7 +16,10 @@ from dataclasses import dataclass, asdict, field, fields as dc_fields
 from typing import Union, List, Dict, Any, Generator, Tuple, Optional
 
 
-_SWEEP_CONTROL_FIELDS = frozenset({"sweep_name", "base_folder", "warm_start"})
+_SWEEP_CONTROL_FIELDS = frozenset({
+    "sweep_name", "base_folder", "warm_start",
+    "curation_state", "curation_label",
+})
 
 # Fields whose values are arrays (tuple = fixed, list-of-tuples = axis).
 # Used when converting RunConfig values to lists for SingleRunConfig.
@@ -386,6 +389,19 @@ class RunConfig:
     sweep_name:  str  = "run"
     base_folder: str  = "/app/data"
     warm_start:  bool = True
+    # Scientific value is independent of whether execution succeeds.  Most sweeps
+    # should be judged after they finish, so "review" is deliberately the default.
+    # The repository-level curation.csv can override this decision post hoc.
+    curation_state: str = "review"       # "review", "keep", or "delete"
+    curation_label: str = ""             # short human name; required for "keep"
+
+    def __post_init__(self):
+        if self.curation_state not in {"review", "keep", "delete"}:
+            raise ValueError(
+                "curation_state must be one of: review, keep, delete."
+            )
+        if self.curation_state == "keep" and not self.curation_label.strip():
+            raise ValueError("curation_label is required when curation_state='keep'.")
 
     # ------------------------------------------------------------------
     # Internal helpers

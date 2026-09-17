@@ -117,11 +117,22 @@ class SweepLogger:
         )
         os.makedirs(self.sweep_root, exist_ok=True)
         self._save_sweep_config()
+        self.set_execution_state("running")
 
     def _save_sweep_config(self):
         path = os.path.join(self.sweep_root, "sweep_config.json")
         with open(path, "w") as f:
             json.dump(self.config.to_dict(), f, indent=4, cls=CustomJSONEncoder)
+
+    def set_execution_state(self, state: str):
+        """Atomically record the small, machine-owned sweep execution state."""
+        if state not in {"running", "complete", "failed", "interrupted"}:
+            raise ValueError(f"Unknown execution state: {state}")
+        path = os.path.join(self.sweep_root, ".state")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(state + "\n")
+        os.replace(tmp, path)
 
     def get_run_logger(self, single_cfg: SingleRunConfig, run_timestamp: str) -> ExperimentLogger:
         rel_path = _run_rel_path(self.config, single_cfg, run_timestamp)

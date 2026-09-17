@@ -1,111 +1,89 @@
-# runs.db cheat sheet
+# Data curation and synchronization
 
-`runs.db` lives in your data root (e.g. `/app/data/fig1/runs.db`).  
-All paths stored in the DB are **relative to that directory**.
-
----
-
-## Setup
+The data workflow has two user-facing commands, both run from `opt_bin_resp/`:
 
 ```bash
-# Create the DB for the first time (also creates the directory if needed)
-python -m src.db init /mnt/hcleroy/Postdoc2/octopus_smelling/opt_bin_resp/data/[..]/runs.db
-
-# Index everything already on disk
-python -m src.db backfill /app/data/fig1/runs.db
+python manage_data.py curate [goal]
+python manage_data.py sync [goal]
 ```
 
-Once `init` has been run, sweeps auto-index each run as it finishes.
+`runs.db` is only a derived analysis cache. It is rebuilt automatically by
+`sync`; normal work does not require database-management commands.
 
----
+## States
 
-## Keeping the index up to date
+Execution and curation are independent:
 
-| Goal | Command |
-|---|---|
-| Full rebuild from disk | `backfill runs.db` |
-| Only touch new/changed runs | `sync runs.db` |
-| Flag rows whose folder is gone | `reconcile runs.db [--dry-run]` |
+- Execution is machine-owned: `running`, `complete`, `failed`, or `interrupted`.
+  New sweeps store this single word in `.state`. Legacy sweeps are summarized by
+  their number of `test_results.json` files.
+- Curation is user-owned: implicit `review`, explicit `keep`, or explicit
+  `delete`. Decisions apply to a complete timestamped sweep, not individual
+  parameter points.
 
----
+New `RunConfig` objects default to `curation_state="review"`. A script may set a
+known decision in advance:
 
-## Cluster → local workflow
+```python
+RunConfig(
+    # simulation fields ...
+    curation_state="keep",
+    curation_label="Figure 1 KT — 5 genes",
+)
+```
+
+Usually it is easier to decide afterward with `curate`. Post-hoc decisions are
+stored in the Git-tracked `curation.csv` and override the config default. A label
+is required only for kept data.
+
+## Review
 
 ```bash
-# 1. Copy a subset of run folders (never copy runs.db itself)
-rsync -av --exclude='runs.db' user@cluster:/app/data/fig1/ /local/data/fig1/
-
-# 2. Build a fresh local index over exactly what landed
-python -m src.db init     /local/data/fig1/runs.db
-python -m src.db backfill /local/data/fig1/runs.db
+python manage_data.py curate
+python manage_data.py curate convergence
+python manage_data.py curate fig1 --all
 ```
 
----
+The prompt shows the execution result, completed/expected run count, size, and
+current decision. It only edits `curation.csv`; it never deletes data.
 
-## Query
+## Synchronize
 
 ```bash
-# All complete runs with 5 genes
-python -m src.db query runs.db --where "n_genes=5 AND status='complete'"
-
-# Specific columns, limit output
-python -m src.db query runs.db \
-  --where "entropy='collision' AND n_receptors>10" \
-  --cols "path,n_genes,n_receptors,full_array_entropy_mean" \
-  --limit 20
-
-# Sort (raw SQL in --where is fine)
-python -m src.db query runs.db \
-  --where "1=1 ORDER BY full_array_entropy_mean DESC" \
-  --cols "path,full_array_entropy_mean" \
-  --limit 10
+python manage_data.py sync
+python manage_data.py sync fig1
 ```
 
----
+The cluster (`leroy@10.187.172.7:/storage/leroy/data`) is authoritative for raw
+data. `sync` performs these operations in order:
 
-## Manage rows
+1. Show every `delete`-labelled sweep in scope and require the word `delete`.
+2. Delete those exact sweep directories on the cluster first, then locally.
+3. Mirror the cluster goal locally with `rsync --delete` (database files excluded).
+4. Fully rebuild the local `runs.db`, including curation columns.
+
+After a deletion succeeds its temporary `delete` row is removed from
+`curation.csv`; durable `keep` labels remain. This prevents later syncs from
+reconfirming data that are already absent.
+
+For unattended use, `--yes` supplies the deletion confirmation. Use it only after
+reviewing `curation.csv`:
 
 ```bash
-# Index one specific run
-python -m src.db add-run runs.db homomers_20260603_143022/n_genes_5/run_20260603_143100
-
-# Remove a row (does not delete files)
-python -m src.db delete runs.db homomers_20260603_143022/n_genes_5/run_20260603_143100
-python -m src.db delete runs.db some/path --dry-run   # preview first
-
-# Update path after renaming a folder
-python -m src.db move runs.db old/relative/path new/relative/path
+python manage_data.py sync fig1 --yes
 ```
 
----
+Environment variables can override the endpoints for tests or another host:
+`OCTOPUS_DATA_ROOT`, `OCTOPUS_CURATION_FILE`, `OCTOPUS_DATA_SERVER`, and
+`OCTOPUS_REMOTE_DATA_ROOT`.
 
-## Schema changes
+## Database columns
 
-```bash
-# Add a custom column
-python -m src.db alter runs.db add-col my_note TEXT
+Analysis code continues to read `runs.db`. In addition to the existing `status`
+(`complete` or `partial` per run), each row now has:
 
-# Remove a column (rebuilds table)
-python -m src.db alter runs.db remove-col my_note --dry-run
-python -m src.db alter runs.db remove-col my_note
-```
+- `curation_state`: `review`, `keep`, or `delete`, inherited from its sweep.
+- `curation_label`: the short name assigned to a kept sweep.
 
-Metric columns (`full_array_entropy_mean`, etc.) are added automatically
-when new metrics appear in `test_results.json` — no manual `alter` needed.
-
----
-
-## Quick reference
-
-| Command | Effect |
-|---|---|
-| `init` | Create table (no-op if exists) |
-| `backfill` | Upsert all runs found on disk |
-| `sync` | Backfill only changed/new runs |
-| `add-run` | Upsert one run directory |
-| `reconcile` | Flag missing paths as `status='missing'` |
-| `delete` | Remove a row from the index |
-| `move` | Rename a path in the index |
-| `alter add-col` | Add a column |
-| `alter remove-col` | Rebuild table without a column |
-| `query` | Print matching rows via pandas |
+The low-level `python -m src.db ...` interface remains available for debugging,
+but it is not part of the normal workflow.

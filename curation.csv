@@ -1,0 +1,24 @@
+path,state,label
+concentration_vs_family_spread/sparsity_het_20260626_135647,keep,Sparsity response — heteromers
+concentration_vs_family_spread/sparsity_hom_20260626_135839,keep,Sparsity response — homomers
+convergence/cell_convergence_20260917_072907,keep,Current cell convergence reference
+fig1/ng10_20260724_132647,keep,Figure 1 KT — 10 genes
+fig1/ng15_20260727_113211,keep,Figure 1 KT — 15 genes
+fig1/ng2_20260724_132635,keep,Figure 1 KT — 2 genes
+fig1/ng3_20260724_082622,keep,Figure 1 KT — 3 genes
+fig1/ng5_20260724_082633,keep,Figure 1 KT — 5 genes
+fig1/ng7_20260724_082642,keep,Figure 1 KT — 7 genes
+fig1_2/homomers_20260623_232356,keep,Figure 1 annealed — homomer reference
+fig1_2/ng10_20260623_102715,keep,Figure 1 annealed — 10 genes
+fig1_2/ng15_20260623_232529,keep,Figure 1 annealed — 15 genes
+fig1_2/ng20_20260625_065203,keep,Figure 1 annealed — 20 genes
+fig1_2/ng2_20260626_145839,keep,Figure 1 annealed — 2 genes
+fig1_2/ng3_20260623_102629,keep,Figure 1 annealed — 3 genes
+fig1_2/ng5_20260624_124405,keep,Figure 1 annealed — 5 genes
+fig1_2/ng7_20260625_131836,keep,Figure 1 annealed — 7 genes
+mix_size/het_ng15_20260623_232423,keep,Mixture-size sweep — 15-gene heteromers
+mix_size/hom_20260623_232719,keep,Mixture-size sweep — homomers
+optimizer/optimizer_20260705_142229,keep,Optimizer comparison — blocked variants
+optimizer/optimizer_20260706_140948,keep,Optimizer comparison — 20-gene baselines
+optimizer/optimizer_20260709_120221,keep,Optimizer comparison — current baseline cells
+optimizer/optimizer_20260710_092507,keep,Optimizer comparison — current KT cells

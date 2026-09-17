@@ -1,8 +1,8 @@
 """
 db.py — SQLite lookup-table index over sweep run directories.
 
-`runs.db` is a *derived* index — `config.json` is ground truth.
-Delete and rebuild any time with `backfill`.  The table holds one row per run
+`runs.db` is a *derived* index — the run files plus the repository-level
+`curation.csv` are ground truth.  The table holds one row per run
 directory; scalar config fields are columns; list-valued fields (conc_mean,
 conc_mean, kernel_params, etc.) are skipped; metric means from test_results.json are added
 as dynamic columns when first seen.
@@ -10,26 +10,12 @@ as dynamic columns when first seen.
 WAL mode + exponential-backoff retry make concurrent writes from parallel
 sweeps safe.
 
-CLI (all commands take the db path as the first positional argument):
-
-    python -m src.db init       runs.db
-    python -m src.db backfill   runs.db
-    python -m src.db add-run    runs.db  path/to/run_dir
-    python -m src.db sync       runs.db
-    python -m src.db reconcile  runs.db  [--dry-run]
-    python -m src.db delete     runs.db  relative/path  [--dry-run]
-    python -m src.db move       runs.db  old/path  new/path
-    python -m src.db alter      runs.db  add-col    col_name  TYPE
-    python -m src.db alter      runs.db  remove-col col_name  [--dry-run]
-    python -m src.db query      runs.db  [--where EXPR] [--cols c1,c2] [--limit N]
-
-Examples:
-    python -m src.db init      /app/data/fig1/runs.db
-    python -m src.db backfill  /app/data/fig1/runs.db
-    python -m src.db query     /app/data/fig1/runs.db --where "n_genes=5 AND full_array_entropy_mean > 4" --cols "path,n_genes,full_array_entropy_mean"
-    python -m src.db reconcile /app/data/fig1/runs.db --dry-run
+Users normally interact through ``manage_data.py sync`` and
+``manage_data.py curate``.  The lower-level functions and CLI remain available
+for debugging and for the automatic per-run indexing hook.
 """
 import argparse
+import csv
 import json
 import os
 import re
@@ -63,6 +49,8 @@ _META_COLS: list[tuple[str, str]] = [
     ("sweep_folder",  "TEXT"),
     ("receptor_type", "TEXT"),   # "homomer" | "heteromer"
     ("status",        "TEXT"),
+    ("curation_state", "TEXT"),
+    ("curation_label", "TEXT"),
     ("run_mtime",     "REAL"),
     ("git_hash",      "TEXT"),
     ("created",       "TEXT"),
@@ -108,6 +96,9 @@ _CFG_COLS: list[tuple[str, str]] = [
 ]
 
 _ALL_BASE_COLS = _META_COLS + _CFG_COLS
+
+_CURATION_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "curation.csv")
+_CURATION_CACHE: tuple[Optional[int], dict[str, tuple[str, str]]] = (None, {})
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -199,6 +190,50 @@ def _cfg_values(cfg) -> dict[str, Any]:
     return row
 
 
+def _curation_catalog() -> dict[str, tuple[str, str]]:
+    """Load sweep decisions, caching until the tracked CSV changes."""
+    global _CURATION_CACHE
+    try:
+        stamp = os.stat(_CURATION_PATH).st_mtime_ns
+    except FileNotFoundError:
+        stamp = None
+    if _CURATION_CACHE[0] == stamp:
+        return _CURATION_CACHE[1]
+
+    catalog: dict[str, tuple[str, str]] = {}
+    if stamp is not None:
+        with open(_CURATION_PATH, newline="") as f:
+            for row in csv.DictReader(f):
+                path = row.get("path", "").strip().strip("/")
+                state = row.get("state", "").strip()
+                label = row.get("label", "").strip()
+                if path and state in {"keep", "delete"}:
+                    catalog[path] = (state, label)
+    _CURATION_CACHE = (stamp, catalog)
+    return catalog
+
+
+def _sweep_curation(data_root: str, sweep_folder: str) -> tuple[str, str]:
+    """Return registry override, then config default, then implicit review."""
+    goal = os.path.basename(os.path.abspath(data_root))
+    key = f"{goal}/{sweep_folder}"
+    decision = _curation_catalog().get(key)
+    if decision is not None:
+        return decision
+
+    config_path = os.path.join(data_root, sweep_folder, "sweep_config.json")
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+        state = config.get("curation_state", "review")
+        label = config.get("curation_label", "")
+        if state in {"review", "keep", "delete"}:
+            return state, label
+    except (OSError, ValueError, TypeError):
+        pass
+    return "review", ""
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Row builder
 # ──────────────────────────────────────────────────────────────────────────────
@@ -212,18 +247,22 @@ def _build_row(run_dir: str, db_path: str) -> tuple[Optional[dict[str, Any]], Op
 
     data_root            = os.path.dirname(os.path.abspath(db_path))
     rel_path             = os.path.relpath(os.path.abspath(run_dir), data_root)
+    sweep_folder         = rel_path.split(os.sep)[0]
     sweep_name, sweep_date = _sweep_info(run_dir)
     test_json            = os.path.join(run_dir, "test_results.json")
     status               = "complete" if os.path.exists(test_json) else "partial"
     now_iso              = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    curation_state, curation_label = _sweep_curation(data_root, sweep_folder)
 
     row: dict[str, Any] = {
         "path":          rel_path,
         "sweep_name":    sweep_name,
         "sweep_date":    sweep_date,
-        "sweep_folder":  rel_path.split("/")[0],
+        "sweep_folder":  sweep_folder,
         "receptor_type": "homomer" if cfg.n_receptors is None else "heteromer",
         "status":        status,
+        "curation_state": curation_state,
+        "curation_label": curation_label,
         "run_mtime":     os.path.getmtime(run_dir),
         "git_hash":      _git_hash(),
         "created":       now_iso,
@@ -336,6 +375,15 @@ def backfill(db_path: str) -> None:
         _retry(_prune)
         print(f"Pruned {len(stale)} deleted run(s) from index.")
     print(f"Backfilled {count} run(s), skipped {skipped} → {db_path}")
+
+
+def rebuild(db_path: str) -> None:
+    """Discard and fully recreate the derived index from disk and curation.csv."""
+    for suffix in ("", "-wal", "-shm"):
+        path = db_path + suffix
+        if os.path.exists(path):
+            os.remove(path)
+    backfill(db_path)
 
 
 def sync(db_path: str) -> None:

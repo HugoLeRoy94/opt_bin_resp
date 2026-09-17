@@ -952,6 +952,19 @@ class SweepRunner:
         self.master_logger = SweepLogger(config)
 
     def execute(self):
+        """Execute the sweep and leave an objective execution-state marker."""
+        try:
+            result = self._execute()
+        except KeyboardInterrupt:
+            self.master_logger.set_execution_state("interrupted")
+            raise
+        except BaseException:
+            self.master_logger.set_execution_state("failed")
+            raise
+        self.master_logger.set_execution_state("complete")
+        return result
+
+    def _execute(self):
         total = _sweep_total_steps(self.config)
         print(f"\nInitiating sweep: {self.master_logger.sweep_root}")
         print(f"Total runs: {total}\n")

@@ -1,3 +1,22 @@
+# Data workflow
+
+Simulation data live primarily on the GPU cluster and are mirrored locally.
+From this directory, the complete user-facing workflow is:
+
+```bash
+# Review unlabelled timestamped sweeps; choose keep/delete/skip.
+python manage_data.py curate [goal]
+
+# Apply confirmed delete labels on both machines, mirror cluster → local,
+# and rebuild the derived runs.db indexes.
+python manage_data.py sync [goal]
+```
+
+Execution state (`running`, `complete`, `failed`, `interrupted`) is recorded
+automatically. Curation defaults to `review`; explicit `keep`/`delete` decisions
+and short labels live in the Git-tracked `curation.csv`. See
+[`doc/db_cheatsheet.md`](doc/db_cheatsheet.md) for the concise reference.
+
 # 🐳 Docker & DevPod Cheat Sheet
 
 ## 1. Concepts

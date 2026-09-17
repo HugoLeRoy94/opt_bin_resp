@@ -26,8 +26,12 @@ sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-from src.plotlib import load_run, DATA_ROOT
-from src.IO import find_latest_sweep, SweepLoader
+import torch
+from src.plotlib import load_run, load_model, DATA_ROOT
+from src.IO import find_latest_sweep, SweepLoader, SingleRunLoader
+from src.cells import CellReadout
+from src.analysis_helper import (build_latent_umap, plot_latent_umap,
+                                 cell_ligand_responses, plot_cell_response_umap)
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
@@ -200,7 +204,50 @@ ax_code.legend(fontsize=8, ncol=2)
 ax_code.grid(axis="y", alpha=.2)
 
 fig.tight_layout()
-plt.savefig(FIGURES / "cell_convergence.png", dpi=150, bbox_inches="tight")
+#plt.savefig(FIGURES / "cell_convergence.png", dpi=150, bbox_inches="tight")
+plt.show()
+
+# %%
+# ── final latent-space map ───────────────────────────────────────────────────
+# plot_latent_umap is the project's shared visualisation: family regions and
+# centres, the fixed ligands, and receptor centroids. For cell simulations, show
+# one homomer per gene: label g represents [g, g, ..., g]. In the interface model
+# its position is the homotypic pocket midpoint (v_plus[g] + v_minus[g]) / 2.
+# Include every gene, even genes absent from the sampled cells' repertoires.
+env, physics, receptor_indices = load_model(run_dir=RUN_DIR)
+plot_receptors = receptor_indices
+if cfg.is_cell_mode():
+    plot_receptors = torch.arange(env.n_genes, device=receptor_indices.device)[:, None].expand(
+        -1, cfg.k_sub
+    )
+print(f"UMAP: {env.n_families} families, {env.n_ligands} ligands, "
+      f"{len(plot_receptors)} displayed receptors (simulation R_pool={len(receptor_indices)})")
+fig, ax = plt.subplots(figsize=(9, 7))
+latent_embedding = build_latent_umap(env, plot_receptors)
+plot_latent_umap(env, plot_receptors, ax=ax, embedding=latent_embedding)
+ax.set_title(f"Latent-space UMAP — {env.n_genes} gene homomers (labels = gene IDs)"
+             if cfg.is_cell_mode() else "Latent-space UMAP — receptors")
+fig.tight_layout()
+#plt.savefig(FIGURES / "cell_convergence_latent_umap.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# %%
+# ── cell responses on the same chemical map ──────────────────────────────────
+# Restore the actual trained readout. In particular, cell_temperature in the
+# config is a relative scale, NOT the calibrated temperature saved here.
+CONCENTRATION = 1.0
+checkpoint = SingleRunLoader(RUN_DIR).load_checkpoint(map_location="cpu")
+readout = CellReadout(
+    checkpoint["readout_state"]["W"], mode=checkpoint["readout_mode"],
+    temperature=checkpoint["readout_temperature"], k_sub=cfg.k_sub,
+    learnable_threshold=cfg.cell_threshold_learnable,
+)
+readout.load_state_dict(checkpoint["readout_state"])
+readout.eval()
+responses = cell_ligand_responses(env, physics, receptor_indices, readout, CONCENTRATION)
+fig, axes = plot_cell_response_umap(latent_embedding, responses, cfg.cell_gene_sets,
+                                   concentration=CONCENTRATION)
+fig.savefig(FIGURES / "cell_convergence_response_umap.png", dpi=180, bbox_inches="tight")
 plt.show()
 
 # %%

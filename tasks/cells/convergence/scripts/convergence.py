@@ -44,6 +44,7 @@ def main():
         environment_geometry    = "asymmetric",
         distribution_type       = "gaussian",
         observation_noise_sigma = 0.0,
+        initial_temperature=3.0,
 
         # --- Presence (hierarchical sampler) ---
         n_presence_blocks      = 1,

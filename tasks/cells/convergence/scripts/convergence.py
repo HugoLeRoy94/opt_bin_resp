@@ -27,7 +27,7 @@ from src.run import SweepRunner
 N_LIG      = 8      # approximate singleton identity reference: log2(N_LIG)
 N_CELLS    = 6      # > log2(N_LIG); architecture may still limit attainability
 N_GENES    = 10
-GENES_CELL = 3      # every cell expresses exactly this many genes
+GENES_CELL = 1      # every cell expresses exactly this many genes
 MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
                 "mutual_information_kt", "mutual_information_kt_upper",
                 "identity_channel", "concentration_channel", "codeword_entropy")

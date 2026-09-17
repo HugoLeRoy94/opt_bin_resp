@@ -22,3 +22,5 @@ optimizer/optimizer_20260705_142229,keep,Optimizer comparison — blocked varian
 optimizer/optimizer_20260706_140948,keep,Optimizer comparison — 20-gene baselines
 optimizer/optimizer_20260709_120221,keep,Optimizer comparison — current baseline cells
 optimizer/optimizer_20260710_092507,keep,Optimizer comparison — current KT cells
+sweepD10/block_size_20260605_145007,keep,dim_check?
+sweepD5/block_size_20260605_144953,keep,dim_check_or_block_check?

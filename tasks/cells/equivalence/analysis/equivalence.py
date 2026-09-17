@@ -128,3 +128,5 @@ ax.set_title("Cell array (one receptor per cell) vs receptor array")
 ax.legend(fontsize=7)
 plt.savefig(FIGURES / "equivalence.png", dpi=150, bbox_inches="tight")
 plt.show()
+
+# %%

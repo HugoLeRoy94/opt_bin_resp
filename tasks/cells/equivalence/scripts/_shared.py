@@ -33,10 +33,10 @@ MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response"
 
 COMMON = dict(
     # --- Environment ---
-    n_families              = 3,
-    n_ligands               = 12,
+    n_families              = 1,
+    n_ligands               = 100,
     latent_dim              = 3,
-    family_spread           = 0.3,
+    family_spread           = 0.1,
     average_family_distance = 2.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",

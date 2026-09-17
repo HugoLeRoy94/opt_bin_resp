@@ -24,8 +24,8 @@ sys.path.append('/app')
 from src.config import RunConfig
 from src.run import SweepRunner
 
-N_LIG      = 8      # approximate singleton identity reference: log2(N_LIG)
-N_CELLS    = 6      # > log2(N_LIG); architecture may still limit attainability
+N_LIG      = 100      # approximate singleton identity reference: log2(N_LIG)
+N_CELLS    = 8
 N_GENES    = 10
 GENES_CELL = 1      # every cell expresses exactly this many genes
 MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
@@ -36,11 +36,11 @@ MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response"
 def main():
     config = RunConfig(
         # --- Environment: approximately one ligand, nearly fixed concentration ---
-        n_families              = 3,
+        n_families              = 1,
         n_ligands               = N_LIG,
         latent_dim              = 3,
         family_spread           = 0.1,
-        average_family_distance = 1.0,      # families far apart -> ligands separable
+        average_family_distance = 1.0,
         environment_geometry    = "asymmetric",
         distribution_type       = "gaussian",
         observation_noise_sigma = 0.0,

@@ -38,7 +38,7 @@ def main():
         # --- Environment: approximately one ligand, nearly fixed concentration ---
         n_families              = 1,
         n_ligands               = N_LIG,
-        latent_dim              = 3,
+        latent_dim              = 6,
         family_spread           = 0.1,
         average_family_distance = 1.0,
         environment_geometry    = "asymmetric",

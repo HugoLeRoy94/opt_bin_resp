@@ -27,6 +27,7 @@ RECEPTORS = tuple(sorted([
 
 N_GENES = 5
 SEED    = 0        # fixes the initial world; calibration changes subsequent RNG draws
+N_LIG = 100
 
 MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
                 "mutual_information_kt", "mutual_information_kt_upper", "codeword_entropy")
@@ -34,29 +35,30 @@ MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response"
 COMMON = dict(
     # --- Environment ---
     n_families              = 1,
-    n_ligands               = 100,
-    latent_dim              = 3,
+    n_ligands               = N_LIG,
+    latent_dim              = 6,
     family_spread           = 0.1,
-    average_family_distance = 2.0,
+    average_family_distance = 1.0,
     environment_geometry    = "asymmetric",
     distribution_type       = "gaussian",
-    observation_noise_sigma = 0.05,
+    observation_noise_sigma = 0.0,
+    initial_temperature=3.0,
 
     # --- Presence ---
     n_presence_blocks      = 1,
     mu_sources             = 1.0,
-    mu_ligands_per_source  = 2.0,
+    mu_ligands_per_source  = 1.0e-6,
     block_shared_conc_mean = False,
 
-    use_interface_model = False,
+    use_interface_model = True,
 
     # --- Concentration ---
     conc_model_type = "lognormal",
-    conc_mean       = (0.0,) * 12,
-    conc_std        = (1.0,) * 12,
+    conc_mean       = (0.0,) * N_LIG,
+    conc_std        = (1e-4,) * N_LIG,
 
     # --- Physics ---
-    n_genes=N_GENES, k_sub=5, temperature=0.1,
+    n_genes=N_GENES, k_sub=5, temperature=0.05,
     affinity_kernel="gaussian", kernel_params=(1.0,),
 
     # --- Cell readout (ignored by the receptor run) ---
@@ -66,15 +68,15 @@ COMMON = dict(
     # hardens its readout — the one structural difference, and an unavoidable one: the
     # receptor array is already binarised by its own temperature and has nothing to
     # harden. See the note in as_cells.py.
-    cell_phase_split = 0.8,
+    cell_phase_split = 0.5,
     # Receptor MOLECULES per cell. Floors theta at 1/N, which is what makes the
     # threshold readout track the receptor code at all (doc/theory/09 §9.8.1).
     cell_n_molecules = 1e4,
 
     # --- Loss / training ---
     entropy="kt_mi",
-    epochs=300, lr=1e-2, use_scheduler=False,
-    batch_size=2048, test_batch_size=2048,
+    epochs=5000, lr=1e-2, use_scheduler=False,
+    batch_size=4096, test_batch_size=4096,
     measurement_fns=MEASUREMENTS,
     final_measurement_fns=MEASUREMENTS + ("mutual_information_counting",),
 

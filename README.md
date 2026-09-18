@@ -17,6 +17,10 @@ automatically. Curation defaults to `review`; explicit `keep`/`delete` decisions
 and short labels live in the Git-tracked `curation.csv`. See
 [`doc/db_cheatsheet.md`](doc/db_cheatsheet.md) for the concise reference.
 
+Cell experiments: [`cells/gene_expression`](tasks/cells/gene_expression/README.md)
+sweeps the mean number of genes expressed per cell using the mean readout and KT MI,
+with final-information and convergence-curve analysis.
+
 # 🐳 Docker & DevPod Cheat Sheet
 
 ## 1. Concepts

@@ -29,6 +29,7 @@ N_LIG      = 100      # approximate singleton identity reference: log2(N_LIG)
 N_CELLS    = 8
 N_GENES    = 10
 K_SUB      = 5
+GENES_CELL = 2
 # Cell c contains exactly one homomer made from gene c. Declaring the repertoires
 # directly avoids duplicate cells from independent random gene-set sampling.
 CELL_RECEPTORS = tuple((((gene,) * K_SUB),) for gene in range(N_CELLS))
@@ -69,13 +70,13 @@ def main():
         affinity_kernel="gaussian", kernel_params=(1.0,),
 
         # --- Cells ---
-        #n_cells                = N_CELLS,
-        #cell_sampling_strategy = "size_pmf",
-        #cell_size_pmf          = (0.0,) * (GENES_CELL - 1) + (1.0,),
-        #cell_sampling_seed     = 0,
-        #cell_stoichiometry     = "multinomial",
+        n_cells                = N_CELLS,
+        cell_sampling_strategy = "size_pmf",
+        cell_size_pmf          = (0.0,) * (GENES_CELL - 1) + (1.0,),
+        cell_sampling_seed     = 0,
+        cell_stoichiometry     = "multinomial",
         #cell_readout           = "threshold",
-        cell_receptors = CELL_RECEPTORS,
+        #cell_receptors = CELL_RECEPTORS,
         cell_readout   = "mean",
 
         # --- Loss ---

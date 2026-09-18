@@ -6,18 +6,17 @@ builds an approximately singleton world with small concentration variation. The
 reference target (not a guaranteed achievable answer) is
 
     identity_channel  ->  log2(N_LIG)      the real information
-    conditional_entropy_response -> 0      only if responses become deterministic
-    codeword_entropy_K_hat -> N_LIG        one codeword per ligand
 
 The actual loss maximizes KT MI. H(response | mixture mask), historically named
 concentration_channel, includes concentration information AND response noise; it
 must not be labelled pure softness. Falling short can reflect geometry, readout,
 sampling, or optimization. These checks do not diagnose a unique cause.
 
-The training loop records about 100 evaluation points. Older runs stored their
-*logging index* (0..99) as ``epoch`` rather than the corresponding optimization
-step; this notebook reconstructs the latter so the phase-2 boundary is drawn in
-the right place.
+The mean drive is interpreted as a stochastic firing probability, so nonzero
+conditional response entropy is expected and is removed by the MI objective. The
+training loop records about 100 evaluation points. Older runs stored their *logging
+index* (0..99) as ``epoch`` rather than the corresponding optimization step; this
+notebook reconstructs the latter.
 """
 import sys
 from pathlib import Path
@@ -50,7 +49,7 @@ ceiling = min(math.log2(n_lig), n_cells)
 
 print(f"{n_lig} ligands, approximately one per sniff -> identity reference = {math.log2(n_lig):.4f} bits")
 print(f"{n_cells} cells                  ->  array capacity = {n_cells} bits")
-print(f"TARGET: {ceiling:.4f} bits and {n_lig} distinct codewords")
+print(f"TARGET: {ceiling:.4f} bits of ligand-identity information")
 print(f"pool: R_pool={len(cfg.receptor_indices)}, genes/cell="
       f"{min(len(g) for g in cfg.cell_gene_sets)}-{max(len(g) for g in cfg.cell_gene_sets)}")
 
@@ -82,14 +81,13 @@ print(f"  response noise entropy {softness:8.4f} bits   (zero only in determinis
 print(f"  KT MI bracket          [{kt_lo:.4f}, {kt_hi:.4f}]")
 print(f"  counting MI (MM)       {final('mutual_information_counting_mm'):.4f} bits")
 print(f"  distinct / samples     {final('response_counting_unique_fraction'):.4f}")
-print(f"  distinct codewords    {k_hat:8.0f}        (target {n_lig})")
+print(f"  distinct hard codes   {k_hat:8.0f}        (diagnostic only for mean readout)")
 
 # %%
 # ── verdict ──────────────────────────────────────────────────────────────────
 checks = [
     ("information reached the world's entropy", info >= ceiling - TOL),
     ("information did not exceed it (no free bits)", info <= ceiling + TOL),
-    ("codewords separate the ligands", k_hat >= n_lig - 1),
 ]
 for name, ok in checks:
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
@@ -139,22 +137,15 @@ if kt_curve is not None:
 hard_k = values("codeword_entropy_K_hat")
 if hard_k is not None and np.allclose(hard_k, 1):
     print("DIAGNOSTIC: K_hat stayed at 1 at every evaluation: the hard cell array "
-          "emitted one constant code throughout training. This is an initialization/"
-          "signal-or-gradient failure, not a late convergence plateau.")
-
-theta = values("cell_theta")
-theta_floor = 1.0 / cfg.cell_n_molecules
-if theta is not None and np.allclose(theta, theta_floor):
-    print(f"DIAGNOSTIC: shared cell threshold remained at its physical floor "
-          f"(1/N = {theta_floor:.2e}). Inspect the initial drive distribution and "
-          "silent/saturated-cell calibration before changing the optimizer.")
+          "emitted one constant code throughout training. With mean readout this does "
+          "not by itself imply zero stochastic MI; compare the MI curves above.")
 
 
-def phase_marker(ax):
-    """Show when receptor sharpness stops changing and cell hardening begins."""
-    phase2 = cfg.cell_phase_split * cfg.epochs
-    ax.axvline(phase2, color="0.45", lw=1, ls="--", alpha=.8)
-    ax.text(phase2, 0.98, " phase 2: cell hardening", transform=ax.get_xaxis_transform(),
+def annealing_marker(ax):
+    """Show when the receptor temperature reaches its final value."""
+    annealing_end = 0.8 * cfg.epochs
+    ax.axvline(annealing_end, color="0.45", lw=1, ls="--", alpha=.8)
+    ax.text(annealing_end, 0.98, " receptor annealing ends", transform=ax.get_xaxis_transform(),
             va="top", ha="left", fontsize=8, color="0.35")
 
 
@@ -175,7 +166,7 @@ for column, label, style in (
     if series is not None:
         ax_mi.plot(epochs, series, label=label, **style)
 ax_mi.axhline(ceiling, color="k", lw=1, ls=":", label=f"reference = {ceiling:.2f} bits")
-phase_marker(ax_mi)
+annealing_marker(ax_mi)
 ax_mi.set_ylabel("mutual information [bits]")
 ax_mi.set_title(f"Cell convergence diagnostic — {n_cells} cells, {n_lig} ligands")
 ax_mi.legend(fontsize=8, ncol=2)
@@ -196,8 +187,8 @@ if hard_k is not None:
     ax_code.plot(epochs, np.log2(np.maximum(hard_k, 1)), color="tab:purple", ls=":",
                  label="log2(K_hat)")
 ax_code.axhline(math.log2(n_lig), color="k", lw=1, ls=":",
-                label=f"{n_lig} ligand codes")
-phase_marker(ax_code)
+                label=f"deterministic reference: {n_lig} codes")
+annealing_marker(ax_code)
 ax_code.set_xlabel("optimization update")
 ax_code.set_ylabel("bits")
 ax_code.legend(fontsize=8, ncol=2)
@@ -233,8 +224,7 @@ plt.show()
 
 # %%
 # ── cell responses on the same chemical map ──────────────────────────────────
-# Restore the actual trained readout. In particular, cell_temperature in the
-# config is a relative scale, NOT the calibrated temperature saved here.
+# Restore the actual trained mean readout and its deterministic receptor weights.
 CONCENTRATION = 1.0
 checkpoint = SingleRunLoader(RUN_DIR).load_checkpoint(map_location="cpu")
 readout = CellReadout(

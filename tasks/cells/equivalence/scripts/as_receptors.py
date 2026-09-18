@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Equivalence check, RECEPTOR side: the same receptors, as a plain receptor array.
 
-The control for as_cells.py: the same initial environment and receptors, and comparable
-schedules. Cell calibration consumes additional samples, and the threshold changes
-the channel. This is a qualitative endpoint comparison, not identical trajectories.
-Compare with analysis/equivalence.py.
+The control for as_cells.py: the same initial environment, receptors, stochastic
+response probabilities, and receptor-temperature schedule. The cell run uses W = I and
+the mean readout, so the two forward maps should agree numerically. Compare with
+analysis/equivalence.py.
 
   ../../run_remote.sh cells/equivalence as_receptors.py 0
 """

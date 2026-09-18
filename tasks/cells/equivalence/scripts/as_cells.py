@@ -9,33 +9,11 @@ express this for a heteromer — expressing the genes of [0,0,0,1,1] also produc
 other combination of 0 and 1 — so only the explicit path can pin an arbitrary receptor
 into a cell. With RECEPTORS sorted, W is exactly the identity, and the drive is p itself.
 
-## What "equivalent" means with the THRESHOLD readout
-
-The readout is the real one, `threshold`: activity = sigmoid((p - theta) / T_cell). So
-this tests the MODEL, not just the plumbing — which is the interesting question, but it
-means the agreement is approximate rather than bit-exact. Three things follow.
-
-  * It only works because theta is floored at 1/N (doc/theory/09 §9.8.1). Unfloored, the
-    median runs to ~1e-39 on a sparse code and splits a cloud of drives that are below
-    one open channel; floored, it sits between OFF and ON. Measured on this config:
-    99.9-100% of hard codes agree with the receptor code.
-
-  * The cell run has an extra hardening phase. `threshold` sets `is_cell` True, so the
-    two-phase schedule runs: phase 1 (80% here, matching the receptor run's annealing
-    window) anneals the receptor with the cell held soft; phase 2 hardens the cell. The
-    receptor run has no phase 2 because a receptor array is already binarised by its own
-    temperature. The trajectories are therefore close but not identical, and the test is
-    "do they converge to the same answer", not "are they the same run".
-
-  * Compare the MI brackets and sampled-output counting estimates, with hard codeword
-    entropy as a separate qualitative diagnostic. Both optimize KT MI. Thresholding
-    changes the probability channel: neither MI nor entropy has a guaranteed ordering
-    between these independently optimized runs. Only the binary-opening limit with
-    a threshold strictly between OFF and ON gives the same response.
-
-For the bit-exact plumbing check instead, set cell_readout="mean": with W = I the
-readout is a pass-through (activity = W @ p = p) and `is_cell` stays False, so the
-forward maps match too. Matching complete trajectories also requires matching samples.
+The readout is `mean`: activity = W @ p. Since W is the identity here, the cell activity
+is exactly the receptor opening probability p. There is no cell threshold, calibration,
+or second sharpening phase. Both scripts start from the same seed and use the same
+receptor annealing schedule, so any discrepancy diagnoses the cell plumbing rather than
+a difference between response models.
 
   ../../run_remote.sh cells/equivalence as_cells.py 0
 """
@@ -54,7 +32,7 @@ def main():
     config = RunConfig(
         # one cell per receptor: cell j contains exactly RECEPTORS[j]
         cell_receptors = tuple((r,) for r in RECEPTORS),
-        cell_readout   = "threshold",   # the real readout; see the module docstring
+        cell_readout   = "mean",
         sweep_name     = "as_cells",
         **COMMON,
     )

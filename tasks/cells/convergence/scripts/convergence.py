@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Qualitative cell convergence toward the approximately three-bit singleton target.
+"""Qualitative cell convergence toward the singleton-ligand information limit.
 
-The world has almost always one of eight ligands at nearly fixed concentration.
-The structured repertoire can limit attainability. Small concentration variation
-and rare multi-ligand sniffs remain part of the input.
+The world has almost always one of 100 ligands at nearly fixed concentration. Eight
+cells each contain one explicitly listed homomer, so the cell list is deterministic
+and contains no duplicates. With the mean readout, each cell's firing probability is
+the open probability of its receptor.
 
 Training maximizes the KT mutual-information lower bound (entropy='kt_mi').
 mutual_information_kt / _upper bracket full-sniff information; the separate
 conditional_entropy_response records Bernoulli uncertainty, not signal. Final
 mutual_information_counting_mm samples stochastic outputs and subtracts this term.
 identity_channel conditions on the full ligand mask, while concentration_channel
-also includes readout uncertainty. Their exact entropy calculation is affordable
-here because there are only six cells; it is not required for larger-array MI.
+also includes response uncertainty. Their exact entropy calculation is affordable
+here because there are only eight cells; it is not required for larger-array MI.
 
   python3 convergence.py
   ../../run_remote.sh cells/convergence convergence.py 0
@@ -27,7 +28,10 @@ from src.run import SweepRunner
 N_LIG      = 100      # approximate singleton identity reference: log2(N_LIG)
 N_CELLS    = 8
 N_GENES    = 10
-GENES_CELL = 1      # every cell expresses exactly this many genes
+K_SUB      = 5
+# Cell c contains exactly one homomer made from gene c. Declaring the repertoires
+# directly avoids duplicate cells from independent random gene-set sampling.
+CELL_RECEPTORS = tuple((((gene,) * K_SUB),) for gene in range(N_CELLS))
 MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
                 "mutual_information_kt", "mutual_information_kt_upper",
                 "identity_channel", "concentration_channel", "codeword_entropy")
@@ -61,16 +65,18 @@ def main():
         conc_std        = (1e-4,) * N_LIG,  # ~fixed: contributes ~0 bits
 
         # --- Physics ---
-        n_genes=N_GENES, k_sub=5, temperature=0.05,
+        n_genes=N_GENES, k_sub=K_SUB, temperature=0.05,
         affinity_kernel="gaussian", kernel_params=(1.0,),
 
         # --- Cells ---
-        n_cells                = N_CELLS,
-        cell_sampling_strategy = "size_pmf",
-        cell_size_pmf          = (0.0,) * (GENES_CELL - 1) + (1.0,),
-        cell_sampling_seed     = 0,
-        cell_stoichiometry     = "multinomial",
-        cell_readout           = "threshold",
+        #n_cells                = N_CELLS,
+        #cell_sampling_strategy = "size_pmf",
+        #cell_size_pmf          = (0.0,) * (GENES_CELL - 1) + (1.0,),
+        #cell_sampling_seed     = 0,
+        #cell_stoichiometry     = "multinomial",
+        #cell_readout           = "threshold",
+        cell_receptors = CELL_RECEPTORS,
+        cell_readout   = "mean",
 
         # --- Loss ---
         entropy="kt_mi",
@@ -88,8 +94,8 @@ def main():
     )
 
     print(config)
-    print(f"APPROXIMATE TARGET: mutual_information_kt -> {math.log2(N_LIG):.4f} bits, "
-          f"hard K_hat -> {N_LIG}; the structured repertoire may limit attainment")
+    print(f"APPROXIMATE TARGET: ligand-identity information -> "
+          f"{math.log2(N_LIG):.4f} bits; the structured repertoire may limit attainment")
 
     t0 = time.time()
     SweepRunner(config).execute()

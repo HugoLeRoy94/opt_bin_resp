@@ -2,8 +2,8 @@
 """Everything the two equivalence runs must share, in one place.
 
 Both runs share the receptor list, initial world seed, and KT mutual-information
-objective. This is a qualitative comparison of optimized endpoints: cell calibration
-consumes additional sniffs and threshold cells have a second sharpening phase.
+objective. The cell run uses the mean readout with one receptor per cell, making its
+forward map identical to the receptor run when W is the identity.
 """
 import sys
 sys.path.append('/app')
@@ -26,7 +26,7 @@ RECEPTORS = tuple(sorted([
 ]))
 
 N_GENES = 5
-SEED    = 0        # fixes the initial world; calibration changes subsequent RNG draws
+SEED    = 0        # fixes the initial world and subsequent sniff sequence
 N_LIG = 100
 
 MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
@@ -61,18 +61,6 @@ COMMON = dict(
     n_genes=N_GENES, k_sub=5, temperature=0.05,
     affinity_kernel="gaussian", kernel_params=(1.0,),
 
-    # --- Cell readout (ignored by the receptor run) ---
-    # phase 1 = 80% of epochs, matching the receptor run's own annealing window, so the
-    # receptor temperature follows a comparable schedule in both. The remaining 20% is where
-    # the receptor run merely holds T at its final value while the cell run additionally
-    # hardens its readout — the one structural difference, and an unavoidable one: the
-    # receptor array is already binarised by its own temperature and has nothing to
-    # harden. See the note in as_cells.py.
-    cell_phase_split = 0.5,
-    # Receptor MOLECULES per cell. Floors theta at 1/N, which is what makes the
-    # threshold readout track the receptor code at all (doc/theory/09 §9.8.1).
-    cell_n_molecules = 1e4,
-
     # --- Loss / training ---
     entropy="kt_mi",
     epochs=5000, lr=1e-2, use_scheduler=False,
@@ -86,5 +74,5 @@ COMMON = dict(
 
 
 def seed_everything():
-    """Share the initial world; later sniff sequences may differ due to calibration."""
+    """Give both scripts the same initial world and sniff sequence."""
     torch.manual_seed(SEED)

@@ -16,7 +16,7 @@ from src.run import SweepRunner
 N_LIG = 100
 N_CELLS = 10
 N_GENES = 3
-MEAN_GENES = [1, 2, 3, 4, 5]
+MEAN_GENES = list(range(1, N_GENES + 1))
 CELL_SEED = 0
 WORLD_SEED = 0
 MEASUREMENTS = (

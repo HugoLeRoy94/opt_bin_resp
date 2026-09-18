@@ -29,27 +29,28 @@ From `opt_bin_resp/` (after making the new task available on the cluster):
 
 ```bash
 bash tasks/run_remote.sh cells/gene_expression gene_expression.py 0
+bash tasks/run_remote.sh cells/gene_expression gene_expression_homomers.py 0
 bash tasks/cells/gene_expression/sync.sh
-python3 tasks/cells/gene_expression/analysis/gene_expression.py
 ```
+
+`gene_expression_homomers.py` repeats the same expression-level sweep but passes
+explicit `cell_receptors`: a cell expressing genes `{u, v}` contains only homomers
+`[u,u,u,u,u]` and `[v,v,v,v,v]`. Thus no heteromers are assembled. Explicit
+repertoires use the uniform weights defined by `CellArray`; the list of five complete
+repertoire configurations is consumed directly as a zipped `RunConfig` sweep axis.
 
 Alternatively run the simulation directly in the container:
 
 ```bash
 python3 /app/tasks/cells/gene_expression/scripts/gene_expression.py
+python3 /app/tasks/cells/gene_expression/scripts/gene_expression_homomers.py
 ```
 
-Analysis selects the newest sweep, prints skipped incomplete runs, and saves
-`summary.csv`, `information_vs_genes.png`, and `training_curves.png` under
-`figures/<sweep-name>/`. It plots identity MI, KT MI bounds, counting MI, conditional
-response entropy, hard-code entropy, and receptor-pool size. Hard codes are a
-diagnostic, not a convergence requirement for the stochastic mean readout.
+Open `analysis/gene_expression.py` in the IDE and execute its `# %%` cells, like
+the convergence analysis. It selects the latest sweep, prints the final metrics,
+then displays the across-sweep comparison and training trajectories. The figure
+save lines are present but commented out. Hard codes are a diagnostic, not a
+convergence requirement for the stochastic mean readout.
 
-```bash
-python3 tasks/cells/gene_expression/analysis/gene_expression.py \
-  --sweep data/gene_expression/cell_gene_expression_YYYYMMDD_HHMMSS --no-show
-```
-
-Analysis reads saved configs/results directly and does not require torch or an
-up-to-date database. Curation and synchronization use the shared `gene_expression`
-data goal through `manage_data.py`.
+Curation and synchronization use the shared `gene_expression` data goal through
+`manage_data.py`.

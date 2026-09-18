@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Cell convergence swept over the number of genes expressed per cell.
-
-Each cell expresses exactly the swept number of genes. Gene identities are
-sampled with a fixed seed; different cells may share a repertoire.
-"""
+"""Sweep genes expressed per cell while allowing homomeric receptors only."""
 import sys
 import time
 import torch
 
 sys.path.append('/app')
 
+from src.cells import sample_gene_sets_by_size
 from src.config import RunConfig
 from src.run import SweepRunner
 
 N_LIG = 100
 N_CELLS = 10
 N_GENES = 3
+K_SUB = 5
 MEAN_GENES = [1, 2, 3, 4, 5]
 CELL_SEED = 0
 WORLD_SEED = 0
@@ -26,8 +24,23 @@ MEASUREMENTS = (
 )
 
 
+def homomer_repertoires(genes_per_cell):
+    """Sample expressed genes, then give each cell only their homomers."""
+    size_pmf = (0.0,) * (genes_per_cell - 1) + (1.0,)
+    gene_sets = sample_gene_sets_by_size(
+        N_CELLS, N_GENES, size_pmf, seed=CELL_SEED
+    )
+    return tuple(
+        tuple((gene,) * K_SUB for gene in genes)
+        for genes in gene_sets
+    )
+
+
+# A list is a SweepRunner axis; each tuple is one complete cell array.
+CELL_RECEPTOR_SWEEP = [homomer_repertoires(g) for g in MEAN_GENES]
+
+
 def main():
-    # Seed the sequence, not each run: worlds are independent across sweep points.
     torch.manual_seed(WORLD_SEED)
 
     config = RunConfig(
@@ -56,16 +69,13 @@ def main():
         conc_std        = (1.,) * N_LIG,
 
         # --- Physics ---
-        n_genes=N_GENES, k_sub=5, temperature=0.05, initial_temperature=3.0,
+        n_genes=N_GENES, k_sub=K_SUB, temperature=0.05,
+        initial_temperature=3.0,
         affinity_kernel="gaussian", kernel_params=(1.0,),
 
-        # --- Cells: the list of PMF tuples is the runner's sweep axis ---
-        n_cells                = N_CELLS,
-        cell_sampling_strategy = "size_pmf",
-        cell_size_pmf          = [(0.0,) * (g - 1) + (1.0,) for g in MEAN_GENES],
-        cell_sampling_seed     = CELL_SEED,
-        cell_stoichiometry     = "multinomial",
-        cell_readout           = "mean",
+        # --- Cells: explicit homomer-only repertoires; the list is the sweep ---
+        cell_receptors = CELL_RECEPTOR_SWEEP,
+        cell_readout   = "mean",
 
         # --- Loss ---
         entropy="kt_mi",
@@ -77,18 +87,20 @@ def main():
         final_measurement_fns=MEASUREMENTS + ("mutual_information_counting",),
 
         # --- Sweep ---
-        sweep_name  = "cell_gene_expression",
+        sweep_name  = "homomer_gene_expression",
         base_folder = "/app/data/gene_expression",
         warm_start  = False,
     )
 
     print(config)
-    print(f"Mean genes/cell: {MEAN_GENES}; {N_CELLS} cells, {N_GENES} available genes")
+    print(f"Genes/cell: {MEAN_GENES}; homomers only; "
+          f"{N_CELLS} cells, {N_GENES} available genes")
     t0 = time.time()
     SweepRunner(config).execute()
     h, rem = divmod(time.time() - t0, 3600)
     m, s = divmod(rem, 60)
-    print(f"\nGene-expression sweep complete!  {int(h)}h {int(m)}m {s:.0f}s")
+    print(f"\nHomomer-only gene-expression sweep complete! "
+          f"{int(h)}h {int(m)}m {s:.0f}s")
 
 
 if __name__ == "__main__":

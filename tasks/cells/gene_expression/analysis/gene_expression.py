@@ -1,5 +1,9 @@
 # %%
-"""Analyse the sweep over the number of genes expressed per cell."""
+"""Compare the latest full-repertoire and homomer-only gene-expression sweeps.
+
+Run the cells in order. Worlds are independent across sweep points and conditions,
+so these figures are descriptive rather than paired estimates of a heteromer effect.
+"""
 import sys
 from pathlib import Path
 sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
@@ -19,111 +23,124 @@ from src.analysis_helper import (build_latent_umap, plot_latent_umap,
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
-SWEEP = find_latest_sweep(
-    str(DATA_ROOT / "gene_expression"), prefix="cell_gene_expression"
-)[0]
-
-# This task gives every cell in a run the same number of genes. Use the resolved
-# gene sets saved in config.json rather than reconstructing the sweep settings.
-RUNS = []
-for cfg, run_dir in SweepLoader(SWEEP).iter_run_dirs():
-    genes_per_cell = len(cfg.cell_gene_sets[0])
-    assert all(len(genes) == genes_per_cell for genes in cfg.cell_gene_sets)
-    RUNS.append((genes_per_cell, cfg, run_dir))
-RUNS.sort()
-
-print(f"sweep: {SWEEP}")
-for genes_per_cell, cfg, run_dir in RUNS:
-    print(f"{genes_per_cell} genes/cell, "
-          f"{len(cfg.receptor_indices)} pooled receptors: {run_dir}")
+CONDITIONS = (
+    ("Full repertoire", "cell_gene_expression"),
+    ("Homomers only", "homomer_gene_expression"),
+)
+RUNS = {}
+for condition, prefix in CONDITIONS:
+    sweep = find_latest_sweep(str(DATA_ROOT / "gene_expression"), prefix=prefix)[0]
+    loader = SweepLoader(sweep)
+    runs = []
+    for cfg, run_dir in loader.iter_run_dirs():
+        if not all((Path(run_dir) / name).is_file() for name in
+                   ("test_results.json", "stats.csv", "best_model.pt")):
+            print(f"Skipping incomplete run: {run_dir}")
+            continue
+        genes_per_cell = len(cfg.cell_gene_sets[0])
+        assert all(len(genes) == genes_per_cell for genes in cfg.cell_gene_sets)
+        runs.append((genes_per_cell, cfg, run_dir))
+    runs.sort(key=lambda run: run[0])
+    RUNS[condition] = runs
+    print(f"{condition}: {sweep}")
+    print(f"  completed genes/cell: {[run[0] for run in runs]}")
+    if loader.config is not None:
+        expected = len(loader.config._axes().get(
+            "cell_receptors" if prefix == "homomer_gene_expression" else "cell_size_pmf", []
+        ))
+        if len(runs) < expected:
+            print(f"  INCOMPLETE SWEEP: {len(runs)}/{expected} runs available")
 
 # %%
-# ── final information across expression levels ──────────────────────────────
-rows = []
-for genes_per_cell, cfg, run_dir in RUNS:
-    with open(Path(run_dir) / "test_results.json") as stream:
-        test = json.load(stream)
-    rows.append({
-        "genes_per_cell": genes_per_cell,
-        "receptor_pool": len(cfg.receptor_indices),
-        "identity MI": np.mean(test["identity_channel"]),
-        "KT MI lower": np.mean(test["mutual_information_kt"]),
-        "KT MI upper": np.mean(test["mutual_information_kt_upper"]),
-        "counting MI": np.mean(test["mutual_information_counting_mm"]),
-        "response noise": np.mean(test["conditional_entropy_response"]),
-    })
-summary = pd.DataFrame(rows)
-display(summary) if "display" in globals() else print(summary.to_string(index=False))
+# ── final information: the same three panels for each condition ─────────────
+SUMMARIES = {}
+fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+for row, (condition, _) in enumerate(CONDITIONS):
+    rows = []
+    for genes_per_cell, cfg, run_dir in RUNS[condition]:
+        with open(Path(run_dir) / "test_results.json") as stream:
+            test = json.load(stream)
+        rows.append({
+            "genes_per_cell": genes_per_cell,
+            "receptor_pool": len(cfg.receptor_indices),
+            "identity MI": np.mean(test["identity_channel"]),
+            "KT MI lower": np.mean(test["mutual_information_kt"]),
+            "KT MI upper": np.mean(test["mutual_information_kt_upper"]),
+            "counting MI": np.mean(test["mutual_information_counting_mm"]),
+            "response noise": np.mean(test["conditional_entropy_response"]),
+        })
+    summary = pd.DataFrame(rows)
+    SUMMARIES[condition] = summary
+    print(f"\n{condition}\n{summary.to_string(index=False)}")
+    if summary.empty:
+        continue
 
-fig, (ax_mi, ax_noise, ax_pool) = plt.subplots(1, 3, figsize=(15, 4.5))
-for metric, style in (
-    ("identity MI", "o-"),
-    ("KT MI lower", "s-"),
-    ("KT MI upper", "s--"),
-    ("counting MI", "^:"),
-):
-    ax_mi.plot(summary["genes_per_cell"], summary[metric], style, label=metric)
-ax_mi.set_ylabel("mutual information [bits]")
-ax_mi.legend(fontsize=8)
+    ax_mi, ax_noise, ax_pool = axes[row]
+    for metric, style in (
+        ("identity MI", "o-"), ("KT MI lower", "s-"),
+        ("KT MI upper", "s--"), ("counting MI", "^:"),
+    ):
+        ax_mi.plot(summary["genes_per_cell"], summary[metric], style, label=metric)
+    ax_mi.set_ylabel(f"{condition}\nmutual information [bits]")
+    ax_mi.legend(fontsize=8)
+    ax_noise.plot(summary["genes_per_cell"], summary["response noise"], "o-")
+    ax_noise.set_ylabel("H(response | sniff) [bits]")
+    ax_pool.plot(summary["genes_per_cell"], summary["receptor_pool"], "o-")
+    ax_pool.set_ylabel("distinct receptors in pool")
 
-ax_noise.plot(summary["genes_per_cell"], summary["response noise"], "o-")
-ax_noise.set_ylabel("H(response | sniff) [bits]")
-
-ax_pool.plot(summary["genes_per_cell"], summary["receptor_pool"], "o-")
-ax_pool.set_ylabel("distinct receptors in pool")
-
-for ax in (ax_mi, ax_noise, ax_pool):
+for ax in axes.flat:
     ax.set_xlabel("genes expressed per cell")
     ax.grid(axis="y", alpha=.2)
 fig.tight_layout()
-# fig.savefig(FIGURES / "gene_expression_final.png", dpi=180, bbox_inches="tight")
+# fig.savefig(FIGURES / "gene_expression_both_final.png", dpi=180, bbox_inches="tight")
 plt.show()
 
 # %%
-# ── training trajectories ───────────────────────────────────────────────────
-fig, (ax_mi, ax_noise) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
-for genes_per_cell, cfg, run_dir in RUNS:
-    history = SingleRunLoader(run_dir).load_history()
-    steps = history["epoch"].to_numpy()
-    if np.array_equal(steps, np.arange(len(history))):
-        steps = steps * max(1, cfg.epochs // 100)  # legacy logging indices
-    label = f"{genes_per_cell} genes/cell"
-    ax_mi.plot(steps, history["mutual_information_kt"], label=label)
-    ax_noise.plot(steps, history["conditional_entropy_response"], label=label)
-
-ax_mi.set_ylabel("KT MI lower [bits]")
-ax_noise.set_ylabel("H(response | sniff) [bits]")
-ax_noise.set_xlabel("optimization update")
-for ax in (ax_mi, ax_noise):
-    ax.legend(fontsize=8)
+# ── training trajectories, one column per condition ────────────────────────
+fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharex="col")
+for col, (condition, _) in enumerate(CONDITIONS):
+    for genes_per_cell, cfg, run_dir in RUNS[condition]:
+        history = SingleRunLoader(run_dir).load_history()
+        steps = history["epoch"].to_numpy()
+        if np.array_equal(steps, np.arange(len(history))):
+            steps = steps * max(1, cfg.epochs // 100)  # legacy logging indices
+        label = f"{genes_per_cell} genes/cell"
+        axes[0, col].plot(steps, history["mutual_information_kt"], label=label)
+        axes[1, col].plot(steps, history["conditional_entropy_response"], label=label)
+    axes[0, col].set_title(condition)
+    axes[0, col].legend(fontsize=8)
+    axes[1, col].legend(fontsize=8)
+    axes[1, col].set_xlabel("optimization update")
+axes[0, 0].set_ylabel("KT MI lower [bits]")
+axes[1, 0].set_ylabel("H(response | sniff) [bits]")
+for ax in axes.flat:
     ax.grid(axis="y", alpha=.2)
 fig.tight_layout()
-# fig.savefig(FIGURES / "gene_expression_training.png", dpi=180, bbox_inches="tight")
+# fig.savefig(FIGURES / "gene_expression_both_training.png", dpi=180, bbox_inches="tight")
 plt.show()
 
 # %%
-# ── one latent-space UMAP for every expression level ────────────────────────
+# ── one latent UMAP per completed run in both conditions ────────────────────
 MODELS = []
-for genes_per_cell, cfg, run_dir in RUNS:
-    env, physics, receptor_indices = load_model(run_dir=run_dir)
-    gene_homomers = torch.arange(env.n_genes)[:, None].expand(-1, cfg.k_sub)
-    embedding = build_latent_umap(env, gene_homomers)
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    plot_latent_umap(env, gene_homomers, ax=ax, embedding=embedding)
-    ax.set_title(f"Latent-space UMAP — {genes_per_cell} genes/cell")
-    fig.tight_layout()
-    # fig.savefig(FIGURES / f"latent_umap_g{genes_per_cell}.png",
-    #             dpi=180, bbox_inches="tight")
-    plt.show()
-
-    MODELS.append((genes_per_cell, cfg, run_dir, env, physics,
-                   receptor_indices, embedding))
+for condition, _ in CONDITIONS:
+    for genes_per_cell, cfg, run_dir in RUNS[condition]:
+        env, physics, receptor_indices = load_model(run_dir=run_dir)
+        gene_homomers = torch.arange(env.n_genes)[:, None].expand(-1, cfg.k_sub)
+        embedding = build_latent_umap(env, gene_homomers)
+        fig, ax = plt.subplots(figsize=(9, 7))
+        plot_latent_umap(env, gene_homomers, ax=ax, embedding=embedding)
+        ax.set_title(f"{condition} — {genes_per_cell} genes/cell")
+        fig.tight_layout()
+        # fig.savefig(FIGURES / f"latent_umap_{condition}_{genes_per_cell}.png",
+        #             dpi=180, bbox_inches="tight")
+        plt.show()
+        MODELS.append((condition, genes_per_cell, cfg, run_dir, env, physics,
+                       receptor_indices, embedding))
 
 # %%
-# ── one five-cell response UMAP for every expression level ──────────────────
+# ── one per-cell response UMAP per completed run ────────────────────────────
 CONCENTRATION = 1.0
-for (genes_per_cell, cfg, run_dir, env, physics,
+for (condition, genes_per_cell, cfg, run_dir, env, physics,
      receptor_indices, embedding) in MODELS:
     checkpoint = SingleRunLoader(run_dir).load_checkpoint(map_location="cpu")
     readout = CellReadout(
@@ -133,18 +150,15 @@ for (genes_per_cell, cfg, run_dir, env, physics,
     )
     readout.load_state_dict(checkpoint["readout_state"])
     readout.eval()
-
     responses = cell_ligand_responses(
         env, physics, receptor_indices, readout, CONCENTRATION
     )
     fig, axes = plot_cell_response_umap(
         embedding, responses, cfg.cell_gene_sets, concentration=CONCENTRATION
     )
-    fig.suptitle(
-        f"{genes_per_cell} genes expressed per cell\n"
-        f"Single-ligand responses at concentration {CONCENTRATION:g}"
-    )
-    # fig.savefig(FIGURES / f"response_umap_g{genes_per_cell}.png",
+    fig.suptitle(f"{condition} — {genes_per_cell} genes/cell\n"
+                 f"Single-ligand responses at concentration {CONCENTRATION:g}")
+    # fig.savefig(FIGURES / f"response_umap_{condition}_{genes_per_cell}.png",
     #             dpi=180, bbox_inches="tight")
     plt.show()
 

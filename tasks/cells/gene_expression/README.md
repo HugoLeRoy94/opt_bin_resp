@@ -36,8 +36,10 @@ bash tasks/cells/gene_expression/sync.sh
 `gene_expression_homomers.py` repeats the same expression-level sweep but passes
 explicit `cell_receptors`: a cell expressing genes `{u, v}` contains only homomers
 `[u,u,u,u,u]` and `[v,v,v,v,v]`. Thus no heteromers are assembled. Explicit
-repertoires use the uniform weights defined by `CellArray`; the list of five complete
+repertoires use the uniform weights defined by `CellArray`; the list of complete
 repertoire configurations is consumed directly as a zipped `RunConfig` sweep axis.
+Run folders use `receptors_per_cell_1`, `receptors_per_cell_2`, etc.; exact receptor
+identities are saved in the JSON configs, so no separate naming parameter is needed.
 
 Alternatively run the simulation directly in the container:
 

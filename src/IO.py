@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import numpy as np
 from datetime import datetime
-from src.config import SingleRunConfig, RunConfig, _TUPLE_FIELDS
+from src.config import SingleRunConfig, RunConfig, _TUPLE_FIELDS, _NESTED_TUPLE_FIELDS
 
 
 # ==========================================
@@ -36,17 +36,25 @@ def _run_rel_path(run_config: RunConfig, single_cfg: SingleRunConfig, run_timest
         {scalar_axis_1}_{val}/ ... {scalar_axis_N}_{val}/   (sorted alphabetically)
         run_{timestamp}/
 
-    Only scalar-valued axes appear in directory names; tuple-typed axes
-    (conc_mean, conc_std, kernel_params, measurement_fns) are
-    too large for path components and are identified from the saved config.json.
+    Explicit cell repertoires are labelled by receptors per cell (a single
+    count when uniform, otherwise hyphen-separated counts in cell order).
+    Other array-valued axes are identified from the saved config.json.
     The timestamp leaf guarantees uniqueness when identical parameters are run
     multiple times.
     """
     axes = run_config._axes()
     parts = []
-    for k in sorted(axes.keys()):
+    path_fields = set(axes)
+    if single_cfg.cell_receptors is not None:
+        path_fields.add("cell_receptors")
+    for k in sorted(path_fields):
+        if k == "cell_receptors" and single_cfg.cell_receptors is not None:
+            counts = [len(cell) for cell in single_cfg.cell_receptors]
+            label = (str(counts[0]) if counts and len(set(counts)) == 1
+                     else "-".join(map(str, counts)))
+            parts.append(f"receptors_per_cell_{label}")
         # Skip array-valued axes — they don't fit in directory names
-        if k not in _TUPLE_FIELDS:
+        elif k not in _TUPLE_FIELDS | _NESTED_TUPLE_FIELDS:
             parts.append(f"{k}_{getattr(single_cfg, k)}")
     parts.append(f"run_{run_timestamp}")
     return os.path.join(*parts) if parts else f"run_{run_timestamp}"

@@ -31,7 +31,7 @@ _TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "final_measuremen
 _NESTED_TUPLE_FIELDS = frozenset({"cell_gene_sets", "receptor_indices"})
 
 # cell_receptors is nested one level deeper still (cells -> receptors -> subunits).
-# Fixed-only: it is never a sweep axis, so the round-trip always rebuilds tuples.
+# Tuple = fixed array; list of such tuples = sweep axis.
 _DEEP_TUPLE_FIELDS = frozenset({"cell_receptors"})
 
 
@@ -364,10 +364,10 @@ class RunConfig:
     # they follow the _TUPLE_FIELDS convention: tuple = fixed, list-of-tuples = axis.
     cell_gene_sets:  Union[Optional[Tuple[Tuple[int, ...], ...]],
                            List[Tuple[Tuple[int, ...], ...]]] = None
-    # Fixed only (not a sweep axis): nested three deep, so a list here would be
-    # mis-read as an iteration axis. Build it as a tuple, e.g. for one receptor per
-    # cell: tuple((r,) for r in RECEPTORS).
-    cell_receptors:  Optional[Tuple[Tuple[Tuple[int, ...], ...], ...]] = None
+    # Tuple = one fixed array, e.g. tuple((r,) for r in RECEPTORS).
+    # List of complete arrays = sweep axis, zipped with the other axes.
+    cell_receptors:  Union[Optional[Tuple[Tuple[Tuple[int, ...], ...], ...]],
+                           List[Tuple[Tuple[Tuple[int, ...], ...], ...]]] = None
     n_cells:         Union[Optional[int], List[Optional[int]]] = None
     cell_sampling_strategy: Union[str, List[str]] = "bernoulli"
     cell_gene_probs: Union[Optional[Tuple[float, ...]], List[Tuple[float, ...]]] = None
@@ -528,12 +528,18 @@ class RunConfig:
                     # single fixed tuple
                     d[fname] = tuple(d[fname])
 
-        # cell_receptors: always fixed, always three deep -> tuples all the way down,
-        # so _axes() cannot mistake the outer list for an iteration axis.
+        # cell_receptors: three levels for a fixed array, four for a sweep.
+        # Preserve the outer list only for a sweep so _axes() can identify it.
         for fname in _DEEP_TUPLE_FIELDS:
             v = d.get(fname)
             if isinstance(v, list) and v:
-                d[fname] = tuple(tuple(tuple(r) for r in cell) for cell in v)
+                is_axis = (isinstance(v[0], list) and v[0]
+                           and isinstance(v[0][0], list) and v[0][0]
+                           and isinstance(v[0][0][0], list))
+                def as_repertoire(value):
+                    return tuple(tuple(tuple(r) for r in cell) for cell in value)
+                d[fname] = ([as_repertoire(step) for step in v] if is_axis
+                            else as_repertoire(v))
 
         # cell_gene_sets: [[0,2],[1]] (fixed) vs [[[0,2],[1]], ...] (axis)
         for fname in _NESTED_TUPLE_FIELDS:

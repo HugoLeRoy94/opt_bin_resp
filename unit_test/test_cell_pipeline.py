@@ -1,5 +1,6 @@
 """Small regressions for threshold-cell construction and numerical execution paths."""
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -7,9 +8,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.cells import CellArray, CellReadout, cell_activity
-from src.config import SingleRunConfig
+from src.config import RunConfig, SingleRunConfig
 from src.environment import LigandEnvironment, LogNormalConcentration
-from src.IO import ExperimentLogger
+from src.IO import ExperimentLogger, SweepLogger, SweepLoader, SingleRunLoader
 from src.physics import BinaryReceptor
 from src.run import SimulationRunner
 from tasks.cells.equivalence.scripts._shared import COMMON, RECEPTORS
@@ -22,6 +23,32 @@ def _config(**overrides):
                   cell_receptors=tuple((r,) for r in RECEPTORS))
     values.update(overrides)
     return SingleRunConfig(**values)
+
+
+@pytest.mark.parametrize("swept", [False, True])
+def test_explicit_repertoire_config_roundtrip_and_logging(tmp_path, swept):
+    # Ten cells with three pentamers each exceeded the old filename limit.
+    uniform = (tuple(RECEPTORS[:3]),) * 10
+    mixed = (tuple(RECEPTORS[:1]), tuple(RECEPTORS[:2]))
+    repertoires = [uniform, mixed] if swept else uniform
+    config = RunConfig(**{**COMMON, "base_folder": str(tmp_path),
+                          "cell_receptors": repertoires})
+    restored = RunConfig.from_dict(json.loads(json.dumps(config.to_dict())))
+    assert restored.cell_receptors == repertoires
+    assert restored.is_sweep() == swept
+    original_steps = next(config.generate_trajectories())
+    restored_steps = next(restored.generate_trajectories())
+    assert restored_steps == original_steps
+
+    logger = SweepLogger(restored)
+    expected_labels = ["receptors_per_cell_3", "receptors_per_cell_1-2"]
+    for step, label in zip(restored_steps, expected_labels):
+        run_logger = logger.get_run_logger(step, "20260921_120000")
+        assert Path(run_logger.run_dir).parent.name == label
+        assert SingleRunLoader(run_logger.run_dir).load_config() == step
+    loaded = SweepLoader(logger.sweep_root)
+    assert loaded.config.cell_receptors == repertoires
+    assert len(list(loaded.iter_run_dirs())) == len(original_steps)
 
 
 @pytest.mark.parametrize("interface", [False, True])

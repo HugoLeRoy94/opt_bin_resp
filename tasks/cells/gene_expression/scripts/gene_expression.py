@@ -20,8 +20,7 @@ MEAN_GENES = list(range(1, N_GENES + 1))
 CELL_SEED = 0
 WORLD_SEED = 0
 MEASUREMENTS = (
-    "entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
-    "mutual_information_kt", "mutual_information_kt_upper",
+    "full_array_entropy", "grouped_information", "conditional_entropy_response",
     "identity_channel", "concentration_channel", "codeword_entropy",
 )
 
@@ -68,7 +67,7 @@ def main():
         cell_readout           = "mean",
 
         # --- Loss ---
-        entropy="kt_mi",
+        entropy="grouped_mi",
 
         # --- Training ---
         epochs=5000, lr=1e-2, use_scheduler=False,

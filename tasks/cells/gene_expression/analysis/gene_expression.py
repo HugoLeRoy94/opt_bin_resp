@@ -64,8 +64,11 @@ for row, (condition, _) in enumerate(CONDITIONS):
             "genes_per_cell": genes_per_cell,
             "receptor_pool": len(cfg.receptor_indices),
             "identity MI": np.mean(test["identity_channel"]),
-            "KT MI lower": np.mean(test["mutual_information_kt"]),
-            "KT MI upper": np.mean(test["mutual_information_kt_upper"]),
+            "grouped MI": np.mean(test.get("mutual_information_grouped", [np.nan])),
+            "KT MI lower": np.mean(test.get("mutual_information_kt", [np.nan])),
+            "KT MI upper": np.mean(test.get("mutual_information_kt_upper", [np.nan])),
+            "count entropy": np.mean(test.get("grouped_count_entropy", [np.nan])),
+            "count entropy ceiling": np.mean(test.get("grouped_count_entropy_upper", [np.nan])),
             "counting MI": np.mean(test["mutual_information_counting_mm"]),
             "response noise": np.mean(test["conditional_entropy_response"]),
         })
@@ -77,10 +80,11 @@ for row, (condition, _) in enumerate(CONDITIONS):
 
     ax_mi, ax_noise, ax_pool = axes[row]
     for metric, style in (
-        ("identity MI", "o-"), ("KT MI lower", "s-"),
+        ("identity MI", "o-"), ("grouped MI", "s-"), ("KT MI lower", "s-"),
         ("KT MI upper", "s--"), ("counting MI", "^:"),
     ):
-        ax_mi.plot(summary["genes_per_cell"], summary[metric], style, label=metric)
+        if summary[metric].notna().any():
+            ax_mi.plot(summary["genes_per_cell"], summary[metric], style, label=metric)
     ax_mi.set_ylabel(f"{condition}\nmutual information [bits]")
     ax_mi.legend(fontsize=8)
     ax_noise.plot(summary["genes_per_cell"], summary["response noise"], "o-")
@@ -105,13 +109,16 @@ for col, (condition, _) in enumerate(CONDITIONS):
         if np.array_equal(steps, np.arange(len(history))):
             steps = steps * max(1, cfg.epochs // 100)  # legacy logging indices
         label = f"{genes_per_cell} genes/cell"
-        axes[0, col].plot(steps, history["mutual_information_kt"], label=label)
+        mi_key = ("mutual_information_grouped" if "mutual_information_grouped" in history
+                  else "mutual_information_kt")
+        estimator = "grouped" if mi_key == "mutual_information_grouped" else "KT lower"
+        axes[0, col].plot(steps, history[mi_key], label=f"{label} ({estimator})")
         axes[1, col].plot(steps, history["conditional_entropy_response"], label=label)
     axes[0, col].set_title(condition)
     axes[0, col].legend(fontsize=8)
     axes[1, col].legend(fontsize=8)
     axes[1, col].set_xlabel("optimization update")
-axes[0, 0].set_ylabel("KT MI lower [bits]")
+axes[0, 0].set_ylabel("mutual information [bits]")
 axes[1, 0].set_ylabel("H(response | sniff) [bits]")
 for ax in axes.flat:
     ax.grid(axis="y", alpha=.2)

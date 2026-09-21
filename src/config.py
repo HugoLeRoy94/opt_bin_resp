@@ -83,7 +83,7 @@ class SingleRunConfig:
     batch_size: Union[int, str]
 
     # --- Loss ---
-    entropy:      str  # 'kt_mi' maximizes full-sniff MI; 'kt' retains entropy training
+    entropy:      str  # 'kt_mi' or cell-only 'grouped_mi': full-sniff MI
 
     # --- Training ---
     epochs:          int
@@ -200,12 +200,21 @@ class SingleRunConfig:
     # 1e4 is an order-of-magnitude placeholder; replace it with a measured copy number.
     # None disables the floor (the pre-floor behaviour; expect the degeneracy).
     cell_n_molecules: Optional[float] = 1e4
+    # Allocation guard for exact count enumeration, prod_j(group_size_j + 1).
+    # Used by entropy='grouped_mi' and measurement 'grouped_information'.
+    cell_grouped_max_states: int = 65536
 
     def is_cell_mode(self) -> bool:
         return (self.cell_gene_sets is not None or self.n_cells is not None
                 or self.cell_receptors is not None)
 
     def __post_init__(self):
+        if self.cell_grouped_max_states <= 0:
+            raise ValueError("cell_grouped_max_states must be positive.")
+        wants_grouped = (self.entropy == 'grouped_mi' or 'grouped_information' in
+                         (*(self.measurement_fns or ()), *(self.final_measurement_fns or ())))
+        if wants_grouped and not self.is_cell_mode():
+            raise ValueError("grouped_mi / grouped_information require cell mode.")
         if self.final_test_batch_size is not None and self.final_test_batch_size <= 0:
             raise ValueError("final_test_batch_size must be positive.")
         if self.is_cell_mode():
@@ -384,6 +393,7 @@ class RunConfig:
     cell_phase_split: Union[float, List[float]] = 0.5
     cell_recalibrate_every: Union[int, List[int]] = 25
     cell_n_molecules: Union[Optional[float], List[Optional[float]]] = 1e4
+    cell_grouped_max_states: Union[int, List[int]] = 65536
 
     # --- Sweep control (never forwarded to SingleRunConfig) ---
     sweep_name:  str  = "run"

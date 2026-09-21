@@ -28,6 +28,28 @@ from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entro
                           compute_blocked_entropy, compute_kt_entropy,
                           compute_kt_upper_entropy, compute_response_conditional_entropy,
                           KT_EPS)
+from src.grouped_loss import GroupedCellMutualInformationLoss
+
+
+def _conditional_entropy_fn(loss_fn):
+    """Entropy of labeled responses from soft assignments, including grouped cells."""
+    if isinstance(loss_fn, GroupedCellMutualInformationLoss):
+        return lambda soft: loss_fn.compute_entropy(soft[..., 1])
+    return (compute_collision_entropy
+            if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
+            else compute_shannon_joint_entropy)
+
+
+@torch.no_grad()
+def grouped_information(activity, loss_fn):
+    """Count entropies, reconstructed labeled entropies, and unchanged cell MI.
+
+    The runner can also request this with another training loss: it supplies its
+    separate W-based grouped estimator and streams the whole evaluation batch.
+    """
+    if not isinstance(loss_fn, GroupedCellMutualInformationLoss):
+        raise ValueError("grouped_information needs a W-based grouped cell estimator.")
+    return {key: value.item() for key, value in loss_fn.compute_metrics(activity).items()}
 
 
 @torch.no_grad()
@@ -906,9 +928,7 @@ def conditional_entropy_ligand(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     B, n_ligands = mixture_masks.shape[0], mixture_masks.shape[1]
     total_cond_h = 0.0
@@ -937,9 +957,7 @@ def mutual_information_ligand(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_m = conditional_entropy_ligand(activity, mixture_masks, loss_fn)
@@ -982,9 +1000,7 @@ def conditional_entropy_concentration(activity, concs_dense, mixture_masks, loss
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     L = mixture_masks.shape[1]
     total_cond_h, scored = 0.0, 0
@@ -1016,9 +1032,7 @@ def mutual_information_concentration(activity, concs_dense, mixture_masks, loss_
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     L = mixture_masks.shape[1]
     total_mi, scored = 0.0, 0
@@ -1057,9 +1071,7 @@ def concentration_channel(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     B = activity.shape[0]
     _, inverse = torch.unique(mixture_masks.bool(), dim=0, return_inverse=True)
@@ -1084,9 +1096,7 @@ def identity_channel(activity, mixture_masks, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     return h_a_val - concentration_channel(activity, mixture_masks, loss_fn)
@@ -1111,9 +1121,7 @@ def conditional_entropy_family(activity, family_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     B, n_fam = family_labels.shape
     total_cond_h = 0.0
@@ -1143,9 +1151,7 @@ def mutual_information_family(activity, family_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_f = conditional_entropy_family(activity, family_labels, loss_fn)
@@ -1176,9 +1182,7 @@ def conditional_entropy_block(activity, block_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
 
     B, n_blocks = block_labels.shape
     total_cond_h = 0.0
@@ -1211,9 +1215,7 @@ def mutual_information_block(activity, block_labels, loss_fn):
         return 0.0
 
     soft_assign = loss_fn.compute_soft_assignment(activity)
-    entropy_fn = (compute_collision_entropy
-                  if getattr(loss_fn, 'entropy_type', 'shannon') == 'collision'
-                  else compute_shannon_joint_entropy)
+    entropy_fn = _conditional_entropy_fn(loss_fn)
     h_a = entropy_fn(soft_assign)
     h_a_val = h_a.item() if isinstance(h_a, torch.Tensor) else h_a
     h_a_given_b = conditional_entropy_block(activity, block_labels, loss_fn)

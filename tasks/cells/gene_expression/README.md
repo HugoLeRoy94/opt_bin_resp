@@ -5,10 +5,10 @@ This task extends `cells/convergence` using `RunConfig`'s existing series API:
 `SweepRunner(config).execute()` executes the entire series; there is no manual
 simulation loop. All list-valued axes in this runner are zipped, not crossed.
 
-The defaults use eight cells, ten available genes, 100 almost-singleton ligands,
+The defaults use ten cells, three available genes, 100 almost-singleton ligands,
 interface binding, multinomial receptor abundance, `cell_readout="mean"`, and
-`entropy="kt_mi"`. Edit `MEAN_GENES` in `scripts/gene_expression.py` to choose the
-series (default `[1, 2, 3, 4, 5]`, integer counts from 1 to `N_GENES`). Each cell
+`entropy="grouped_mi"`. Edit `MEAN_GENES` in `scripts/gene_expression.py` to choose the
+series (default `[1, 2, 3]`, integer counts from 1 to `N_GENES`). Each cell
 expresses exactly that many genes. As in the other simulation scripts, `main()`
 declares `RunConfig` directly and passes it to `SweepRunner`: no config builder or
 custom PMF helper. For non-integer expected sizes, edit `cell_size_pmf` directly
@@ -23,7 +23,7 @@ replicate-averaged estimates of an expression effect. Test repeats in a run aver
 measurement noise, not optimization or repertoire variability.
 
 Larger expressed gene sets generate rapidly growing receptor pools. The default
-stops at five genes per cell; raising it increases memory and computation costs.
+stops at three genes per cell; raising it increases memory and computation costs.
 
 From `opt_bin_resp/` (after making the new task available on the cluster):
 
@@ -56,3 +56,27 @@ convergence requirement for the stochastic mean readout.
 
 Curation and synchronization use the shared `gene_expression` data goal through
 `manage_data.py`.
+
+
+Both scripts now optimize exact empirical-input MI through binomial counts of
+identical cells. `grouped_information` reports count entropy and its conditional
+entropy, plus reconstructed full labeled-response entropies and MI.
+`full_array_entropy` retains its meaning: it is full response entropy, not count
+entropy. Receptor-mode calculations are unchanged. The default alphabet guard
+`cell_grouped_max_states=65536` rejects excessively large enumerations; increase
+it only with an appropriate input batch budget, or use `kt_mi` for larger alphabets.
+
+For the current three expression levels, the count alphabets have 72, 80, and 11
+states. Grouping requires exactly identical abundance rows, not merely similar
+responses. Output enumeration is exact; environmental averages still require
+independent input samples and simulation repetitions. No new simulations or
+changes to saved results are implied by changing these scripts.
+
+The analysis accepts both new grouped-MI results and older KT runs. KT bounds are
+plotted only when present, and training curves identify their estimator. It prints
+count entropy and its alphabet ceiling separately from MI. Final stochastic
+counting remains an independent diagnostic; its finite-sample bias is unchanged.
+
+See `doc/theory/08_environmental_entropy_limits.md` §7 for the cell-specific bounds
+and §09.12 for the full metric names. These theory files live at the project root,
+one directory above this repository.

@@ -343,8 +343,10 @@ class CellReadout(nn.Module):
       saturates toward 1 for cells with large repertoires.
 
     mode='mean':
-        A_bc = S_bc.  Simplest; note a mean of probabilities is not a firing
-      probability, so the entropy estimators over-read it.  Diagnostic use.
+        A_bc = S_bc. A stochastic cell with firing probability equal to the
+      weighted receptor open fraction. MI estimators subtract its response noise;
+      an entropy-only objective would also reward that noise. With one receptor
+      type per cell, this preserves the receptor model exactly.
 
     theta is a SINGLE SCALAR shared by every cell, learnable by default.  Sharing it
     is what lets cell-to-cell heterogeneity be real: with a per-cell threshold every

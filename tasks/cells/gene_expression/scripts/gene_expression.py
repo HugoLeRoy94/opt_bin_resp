@@ -67,7 +67,7 @@ def main():
         cell_readout           = "mean",
 
         # --- Loss ---
-        entropy="grouped_mi",
+        entropy="kt_mi",
 
         # --- Training ---
         epochs=5000, lr=1e-2, use_scheduler=False,

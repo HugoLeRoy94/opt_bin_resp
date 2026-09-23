@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 import torch
 
 from src.cells import CellReadout, cell_activity
-from src.grouped_loss import GroupedCellMutualInformationLoss
+from src.grouped_loss import GroupedCellMutualInformationLoss, GroupedResponseCounter
+from src.response_groups import CellGrouping
 from src.IO import SingleRunLoader
 from src.plotlib import load_model
 
@@ -25,10 +26,15 @@ def evaluate_budgets(env, physics, ri, readout, estimator, budgets, repeats, see
         raise ValueError("Budgets, repeats, and chunk sizes must be positive.")
     budgets = sorted(set(budgets))
     records = []
+    counting = isinstance(estimator, CellGrouping)
     for repeat in range(repeats):
         torch.manual_seed(seed + repeat)
-        probability_sum = torch.zeros(estimator.n_states, dtype=torch.float64, device=ri.device)
-        conditional_sum = torch.zeros((), dtype=torch.float64, device=ri.device)
+        if counting:
+            counter = GroupedResponseCounter(estimator)
+            generator = torch.Generator(device=ri.device).manual_seed(seed + repeat + 104729)
+        else:
+            probability_sum = torch.zeros(estimator.n_states, dtype=torch.float64, device=ri.device)
+            conditional_sum = torch.zeros((), dtype=torch.float64, device=ri.device)
         n_have = 0
         for budget in budgets:
             while n_have < budget:
@@ -38,14 +44,19 @@ def evaluate_budgets(env, physics, ri, readout, estimator, budgets, repeats, see
                     physics, readout, E, concentrations, ri,
                     pre_gathered=env.use_interface_model, composition=env.composition,
                     chunk_size=pool_chunk)
-                p_sum, h_sum = estimator.sufficient_statistics(activity)
-                probability_sum += p_sum.double()
-                conditional_sum += h_sum.double()
+                if counting:
+                    counter.update(activity, generator)
+                else:
+                    p_sum, h_sum = estimator.sufficient_statistics(activity)
+                    probability_sum += p_sum.double()
+                    conditional_sum += h_sum.double()
                 n_have += n
-            metrics = estimator.metrics_from_statistics(probability_sum, conditional_sum, n_have)
+            metrics = (counter.metrics() if counting else
+                       estimator.metrics_from_statistics(probability_sum, conditional_sum, n_have))
             records.append(dict(samples=n_have, repeat=repeat, seed=seed + repeat,
                                 input_sample_ceiling=math.log2(n_have),
-                                **{k: v.item() for k, v in metrics.items()}))
+                                **{k: v.item() if isinstance(v, torch.Tensor) else v
+                                   for k, v in metrics.items()}))
     return records
 
 
@@ -58,6 +69,7 @@ def main(argv=None):
     parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--pool_chunk", type=int, default=128)
     parser.add_argument("--max_states", type=int, default=None)
+    parser.add_argument("--estimator", choices=("exact", "counting"), default="exact")
     parser.add_argument("--device", choices=("cpu", "cuda"), default=None)
     args = parser.parse_args(argv)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -76,8 +88,9 @@ def main(argv=None):
         readout.load_state_dict(checkpoint["readout_state"])
         readout.eval()
         env.bind_receptors(ri)
-        estimator = GroupedCellMutualInformationLoss(
-            readout.W, cfg.cell_grouped_max_states if args.max_states is None else args.max_states).to(device)
+        grouping = CellGrouping(readout.W).to(device)
+        estimator = (grouping if args.estimator == "counting" else GroupedCellMutualInformationLoss(
+            grouping, cfg.cell_grouped_max_states if args.max_states is None else args.max_states).to(device))
         records = evaluate_budgets(env, physics, ri, readout, estimator, args.budgets,
                                    args.repeats, args.seed, args.chunk_size, args.pool_chunk)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
@@ -86,9 +99,11 @@ def main(argv=None):
                                          n_groups=estimator.n_groups, n_states=estimator.n_states,
                                          records=records), indent=2))
         print(f"Saved {output}")
+        mi_key = ("mutual_information_grouped_counting_plugin" if args.estimator == "counting"
+                  else "mutual_information_grouped")
         for row in records:
             print(f"  B={row['samples']:>7} repeat={row['repeat']}: "
-                  f"MI={row['mutual_information_grouped']:.6f} bits")
+                  f"MI ({args.estimator})={row[mi_key]:.6f} bits")
 
 
 if __name__ == "__main__":

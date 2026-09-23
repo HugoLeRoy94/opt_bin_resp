@@ -28,7 +28,9 @@ from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entro
                           compute_blocked_entropy, compute_kt_entropy,
                           compute_kt_upper_entropy, compute_response_conditional_entropy,
                           KT_EPS)
-from src.grouped_loss import GroupedCellMutualInformationLoss
+from src.grouped_loss import (GroupedCellMutualInformationLoss, GroupedKTMutualInformationLoss,
+                              GroupedResponseCounter)
+from src.counting import entropy_from_counts
 
 
 def _conditional_entropy_fn(loss_fn):
@@ -50,6 +52,16 @@ def grouped_information(activity, loss_fn):
     if not isinstance(loss_fn, GroupedCellMutualInformationLoss):
         raise ValueError("grouped_information needs a W-based grouped cell estimator.")
     return {key: value.item() for key, value in loss_fn.compute_metrics(activity).items()}
+
+
+@torch.no_grad()
+def grouped_counting(activity, loss_fn):
+    """Sample integer group counts; runner also supports an independent grouping."""
+    if not hasattr(loss_fn, 'grouping'):
+        raise ValueError("grouped_counting requires cell grouping metadata.")
+    counter = GroupedResponseCounter(loss_fn.grouping)
+    counter.update(activity)
+    return counter.metrics()
 
 
 @torch.no_grad()
@@ -740,10 +752,7 @@ def miller_madow_entropy(activity: torch.Tensor):
     B, R = activity.shape
     codes = (activity > 0.5).long()
     _, counts = torch.unique(codes, dim=0, return_counts=True)
-    K_hat = counts.numel()
-    p = counts.float() / B
-    H_plugin = -(p * torch.log2(p.clamp(min=1e-12))).sum().item()
-    H_MM = H_plugin + (K_hat - 1) / (2 * B * math.log(2))
+    H_plugin, H_MM, K_hat, _ = entropy_from_counts(counts)
     return H_plugin, H_MM, K_hat, math.log2(B), math.ldexp(float(K_hat), -R)
 
 
@@ -754,6 +763,8 @@ def _measure_entropy(loss_fn, act, entropy_type):
     compute_entropy default: collision for a collision loss, blocked for annealed,
     blocked_corrected for blocked_to_corrected, kt for a kt loss, …)."""
     if entropy_type == 'kt':
+        if isinstance(loss_fn, GroupedKTMutualInformationLoss):
+            return loss_fn.bound(act).item()
         # Not exposed via compute_entropy on every loss (AnnealedEntropyLoss rejects
         # it), so go through the soft assignment. Measured on ALL samples given (KT
         # tiles internally, so its memory is bounded by chunk_size, not B); the
@@ -762,6 +773,8 @@ def _measure_entropy(loss_fn, act, entropy_type):
         soft = loss_fn.compute_soft_assignment(act)
         return compute_kt_entropy(soft).item()
     if entropy_type == 'kt_upper':
+        if isinstance(loss_fn, GroupedKTMutualInformationLoss):
+            return loss_fn.bound(act, upper=True).item()
         # KT certified UPPER bound (KL kernel) — same all-pairs cost, all samples.
         soft = loss_fn.compute_soft_assignment(act)
         return compute_kt_upper_entropy(soft).item()
@@ -839,11 +852,15 @@ def conditional_entropy_response(activity):
 
 def mutual_information_kt(activity, loss_fn):
     """KT lower bound on information about the complete sampled input."""
+    if isinstance(loss_fn, GroupedKTMutualInformationLoss):
+        return loss_fn.bound(activity, return_mi=True).item()
     return compute_kt_entropy(loss_fn.compute_soft_assignment(activity), return_mi=True).item()
 
 
 def mutual_information_kt_upper(activity, loss_fn):
     """KT upper bound on information about the complete sampled input."""
+    if isinstance(loss_fn, GroupedKTMutualInformationLoss):
+        return loss_fn.bound(activity, upper=True, return_mi=True).item()
     return compute_kt_upper_entropy(loss_fn.compute_soft_assignment(activity), return_mi=True).item()
 
 

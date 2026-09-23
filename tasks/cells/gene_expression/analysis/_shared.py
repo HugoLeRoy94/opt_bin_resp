@@ -8,7 +8,7 @@ import pandas as pd
 from tasks.cells.gene_expression._experiments import run_key
 
 
-POINT = ["coverage", "n_genes", "n_cells", "genes_per_cell", "profile"]
+POINT = ["coverage", "n_genes", "n_cells", "genes_per_cell", "profile", "mi_estimator"]
 
 
 def load_study(data_root, experiment, sweep_dirs=None):
@@ -52,6 +52,11 @@ def load_study(data_root, experiment, sweep_dirs=None):
             if cfg["cell_gene_sets"] != [list(g) for g in point["cell_gene_sets"]]:
                 raise ValueError(f"Gene sets differ from the recorded design: {path.parent}")
             test = json.loads(path.read_text())
+            counting = metadata.get("arguments", {}).get("evaluation", "exact") == "counting"
+            mi_key = "mutual_information_grouped_counting_plugin" if counting else "mutual_information_grouped"
+            noise_key = "conditional_entropy_response_grouped_counting" if counting else "conditional_entropy_response_grouped"
+            count_key = "grouped_count_entropy_counting_plugin" if counting else "grouped_count_entropy"
+            response_key = "response_entropy_grouped_counting_plugin" if counting else "response_entropy_grouped"
             mean = lambda name: float(np.mean(test[name]))
             genes = np.asarray(cfg["cell_gene_sets"], dtype=int)
             records.append(dict(
@@ -60,10 +65,10 @@ def load_study(data_root, experiment, sweep_dirs=None):
                 world_seed=metadata["world_seed"], profile=point["profile"],
                 n_genes=cfg["n_genes"], n_cells=cfg["n_cells"], genes_per_cell=genes.shape[1],
                 fraction_expressed=genes.shape[1] / cfg["n_genes"],
-                mi=mean("mutual_information_grouped"),
-                response_noise=mean("conditional_entropy_response_grouped"),
-                count_entropy=mean("grouped_count_entropy"),
-                full_entropy=mean("response_entropy_grouped"),
+                mi_estimator="grouped counting (plug-in)" if counting else "exact grouped",
+                mi=mean(mi_key), response_noise=mean(noise_key),
+                count_entropy=mean(count_key), full_entropy=mean(response_key),
+                counting_unique_fraction=mean("grouped_counting_unique_fraction") if counting else np.nan,
                 hard_entropy=mean("codeword_entropy_plugin") if "codeword_entropy_plugin" in test else np.nan,
                 count_states=mean("grouped_n_states"),
                 count_ceiling=mean("grouped_count_entropy_upper"),
@@ -93,10 +98,11 @@ def summarize(runs):
         noise_mean=("response_noise", "mean"), count_entropy_mean=("count_entropy", "mean"),
         full_entropy_mean=("full_entropy", "mean"), hard_entropy_mean=("hard_entropy", "mean"),
         represented_mean=("genes_represented", "mean"), represented_min=("genes_represented", "min"),
+        counting_unique_fraction_mean=("counting_unique_fraction", "mean"),
         states_max=("count_states", "max"), pool_mean=("receptor_pool", "mean"),
         input_sample_ceiling=("input_sample_ceiling", "min"))
     summary["mi_sem"] = summary["mi_sd"] / np.sqrt(summary["n"])
-    baseline_keys = ["condition", "coverage", "n_genes", "n_cells", "profile"]
+    baseline_keys = ["condition", "coverage", "n_genes", "n_cells", "profile", "mi_estimator"]
     baseline = summary[summary.genes_per_cell == 1][baseline_keys + ["mi_mean", "n"]].rename(
         columns={"mi_mean": "baseline_mi", "n": "baseline_n"})
     summary = summary.merge(baseline, on=baseline_keys, how="left", validate="many_to_one")
@@ -124,6 +130,8 @@ def plot_curves(ax, frame, x, y, group=("condition", "coverage"), error=None):
     for labels, part in frame.groupby(list(group), sort=False):
         labels = labels if isinstance(labels, tuple) else (labels,)
         label = ", ".join(f"G={v}" if k == "n_genes" else str(v) for k, v in zip(group, labels))
+        if 'mi_estimator' in part and (part.mi_estimator == 'grouped counting (plug-in)').all():
+            label += ", counting (plug-in)"
         part = part.sort_values(x)
         ax.plot(part[x], part[y], "o-", label=label)
         if error is not None:
@@ -139,6 +147,9 @@ def report(summary):
         return
     print(summary.to_string(index=False))
     print("MI mean ± SEM across independent optimizations; n does not count repeated test batches.")
+    if (summary.mi_estimator == "grouped counting (plug-in)").any():
+        print("Sampled grouped counting: plug-in MI can be biased downward or negative; "
+              "check sample-budget convergence separately from world-to-world SEM.")
     print("Retention is the ratio of means to each strategy's own one-gene baseline; no error bars propagated.")
     if summary.baseline_mi.isna().any():
         print("Missing one-gene baselines: corresponding retention values remain NaN.")

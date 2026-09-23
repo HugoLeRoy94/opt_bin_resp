@@ -83,7 +83,7 @@ class SingleRunConfig:
     batch_size: Union[int, str]
 
     # --- Loss ---
-    entropy:      str  # 'kt_mi' or cell-only 'grouped_mi': full-sniff MI
+    entropy:      str  # 'kt_mi', cell-only 'grouped_mi' / 'grouped_kt_mi': full-sniff MI
 
     # --- Training ---
     epochs:          int
@@ -201,6 +201,7 @@ class SingleRunConfig:
     # None disables the floor (the pre-floor behaviour; expect the degeneracy).
     cell_n_molecules: Optional[float] = 1e4
     # Allocation guard for exact count enumeration, prod_j(group_size_j + 1).
+    # Exact enumeration only: grouped_kt_mi / grouped_counting do not use this guard.
     # Used by entropy='grouped_mi' and measurement 'grouped_information'.
     cell_grouped_max_states: int = 65536
 
@@ -211,10 +212,11 @@ class SingleRunConfig:
     def __post_init__(self):
         if self.cell_grouped_max_states <= 0:
             raise ValueError("cell_grouped_max_states must be positive.")
-        wants_grouped = (self.entropy == 'grouped_mi' or 'grouped_information' in
-                         (*(self.measurement_fns or ()), *(self.final_measurement_fns or ())))
+        wants_grouped = (self.entropy in ('grouped_mi', 'grouped_kt_mi') or
+                         bool({'grouped_information', 'grouped_counting'} &
+                              set((*(self.measurement_fns or ()), *(self.final_measurement_fns or ())))))
         if wants_grouped and not self.is_cell_mode():
-            raise ValueError("grouped_mi / grouped_information require cell mode.")
+            raise ValueError("Grouped losses and measurements require cell mode.")
         if self.final_test_batch_size is not None and self.final_test_batch_size <= 0:
             raise ValueError("final_test_batch_size must be positive.")
         if self.is_cell_mode():

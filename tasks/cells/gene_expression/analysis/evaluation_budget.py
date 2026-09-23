@@ -12,15 +12,21 @@ DATA = ROOT / "data" / "gene_expression"
 # Set explicit report paths to compare older evaluations. Otherwise latest per model.
 REPORTS = None
 paths = list(map(Path, REPORTS)) if REPORTS is not None else sorted(DATA.rglob("grouped_evaluation_budget_*.json"))
-latest = {path.parent: path for path in paths}
-rows = []
-for path in latest.values():
+latest = {}
+for path in paths:
     report = json.loads(path.read_text())
+    estimator = report.get("arguments", {}).get("estimator", "exact")
+    latest[(path.parent, estimator)] = (path, report)
+rows = []
+for (_, estimator), (path, report) in latest.items():
     cfg = json.loads((path.parent / "config.json").read_text())
     g = len(cfg["cell_gene_sets"][0])
     condition = "homomers" if cfg.get("cell_receptors") is not None else "heteromers"
-    label = f"{condition}, G={cfg['n_genes']}, g={g}, {path.parent.name}"
-    rows.extend(dict(row, run_dir=str(path.parent), label=label) for row in report["records"])
+    label = f"{condition}, G={cfg['n_genes']}, g={g}, {estimator}, {path.parent.name}"
+    mi_key = "mutual_information_grouped" if estimator == "exact" else "mutual_information_grouped_counting_plugin"
+    h_key = "response_entropy_grouped" if estimator == "exact" else "response_entropy_grouped_counting_plugin"
+    rows.extend(dict(row, run_dir=str(path.parent), label=label, estimator=estimator,
+                     mi=row[mi_key], response_entropy=row[h_key]) for row in report["records"])
 RESULTS = pd.DataFrame(rows)
 if RESULTS.empty:
     print("No evaluation-budget reports found. Run scripts/evaluation_budget.py on saved run folders.")
@@ -28,11 +34,14 @@ if RESULTS.empty:
 # %%
 if not RESULTS.empty:
     SUMMARY = RESULTS.groupby(["run_dir", "label", "samples"], as_index=False).agg(
-        mi_mean=("mutual_information_grouped", "mean"), mi_sd=("mutual_information_grouped", "std"),
-        repeats=("repeat", "size"), response_entropy=("response_entropy_grouped", "mean"))
+        mi_mean=("mi", "mean"), mi_sd=("mi", "std"),
+        repeats=("repeat", "size"), response_entropy=("response_entropy", "mean"))
     SUMMARY["mi_sem"] = SUMMARY.mi_sd / np.sqrt(SUMMARY.repeats)
     print(SUMMARY.to_string(index=False))
     print("Error bars are input-sampling SEM for fixed models, not independent-world uncertainty.")
+    if (RESULTS.estimator == "counting").any():
+        print("Counting uses plug-in MI; errors also include output sampling. "
+              "Small SEM does not rule out unseen-state bias. Compare convergence and exact reports.")
     fig, ax = plt.subplots(figsize=(11, 6))
     for (_, label), part in SUMMARY.groupby(["run_dir", "label"]):
         part = part.sort_values("samples")

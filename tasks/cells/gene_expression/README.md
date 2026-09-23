@@ -218,6 +218,72 @@ raw difference of environmental means, with unpaired SEM. Coverage diagnostics
 expose gains due to recruiting previously missing genes. Figure saves and summary
 CSV exports are commented out, like the original analysis.
 
+Scaling curves use **genes expressed per cell** on the horizontal axis. Receptor
+pool size counts distinct types in the **whole array**: with complete coverage,
+homomers already have all `G` types at the one-gene baseline, even though types
+per cell increase from 1 to `g`. Count-alphabet size is a separate computational
+diagnostic: `S = product(n_j + 1)` for identical-cell group sizes `n_j`, with the
+largest `S` across replicates plotted. `log2(S)` bounds count entropy; it does not
+predict MI, which also subtracts conditional count entropy.
+
+The environment baseline figure compares categorical profiles at one gene per
+cell. At this point both strategies contain only homomers; differences come from
+independent worlds and optimizations. A baseline-only campaign has no retention
+curve across expression levels, and the final analysis cell explains this. Omit
+`--baseline_only` for both conditions to obtain that curve.
+
+### Grouped KT and counting for larger cell arrays
+
+Grouping is shared across exact enumeration, KT and sampled counting. The existing
+defaults remain `--entropy grouped_mi --evaluation exact`. To avoid enumerating
+the joint count alphabet during **both training and evaluation**, use:
+
+```bash
+bash tasks/run_remote.sh cells/gene_expression replicates.py 0 -- \
+  --condition heteromers --coverage complete --n_genes 5 --n_cells 30 \
+  --replicates 5 --entropy grouped_kt_mi --evaluation counting
+
+bash tasks/run_remote.sh cells/gene_expression replicates.py 1 -- \
+  --condition homomers --coverage complete --n_genes 5 --n_cells 30 \
+  --replicates 5 --entropy grouped_kt_mi --evaluation counting
+```
+
+The same options work with `scaling.py` and `environment.py`. Grouped KT reuses
+the ordinary KT kernels, with multiplicity weights: its values and gradients
+match binary KT, with pairwise work proportional to the number of groups instead
+of cells. It optimizes a lower bound, while exact grouped training optimizes the
+empirical MI itself. Native entropy retains the labeled-response meaning.
+
+`--evaluation counting` samples binomial group counts and stores frequencies of
+observed integer vectors on CPU. It reports plug-in and Miller–Madow MI, analytical
+conditional entropy, reconstructed full response entropy, and unique-count
+coverage. It does not sample or store the irrelevant identities of firing cells.
+The analysis uses **plug-in counting MI**, explicitly labels the estimator, and
+does not pool it with exact results. Count entropy and labeled-response entropy
+remain separate metrics; no exact results are overwritten or relabeled.
+
+`--max_states` is enforced only if training or evaluation requests exact
+enumeration. Thus grouped KT plus counting needs no increase to that guard.
+Grouped KT plus the default exact evaluation still enforces it. Counting-only
+measurement requests omit `full_array_entropy`, which would otherwise calculate
+the training loss's native entropy (a KT bound for grouped KT).
+
+Counting needs its own convergence test; convergence of exact evaluation only
+checks input sampling. On saved models, select:
+
+```bash
+python3 tasks/cells/gene_expression/scripts/evaluation_budget.py \
+  --run_dirs /path/to/saved/run --estimator counting \
+  --budgets 4096 16384 65536 --repeats 3 --chunk_size 512
+```
+
+Use `--estimator exact` (the default) for an exact reference where enumeration
+fits. The analysis retains the latest report **per model and estimator**, so
+both can be plotted together. Counting errors include output sampling; small SEM
+does not exclude systematic unseen-state bias, and negative MI estimates are
+retained. The frequency table itself grows with the number of observed distinct
+vectors. Neither KT nor counting removes receptor-physics costs.
+
 ### Input-budget convergence on saved models
 
 Pass saved run folders, locally or on the cluster:
@@ -234,10 +300,35 @@ a timestamped `grouped_evaluation_budget_*.json` alongside the original results,
 without replacing them. `--device cpu` is supported; CUDA is used when available.
 `--max_states` can override the saved config's guard.
 
-The matching analysis selects the latest report per model, plots MI against
+The matching analysis selects the latest report per model and estimator, plots MI against
 budget and `log2(B)`, and labels its errors as **evaluation-sampling** uncertainty.
 It does not measure optimized-world variability or cure a training objective
 saturated at its own `log2(batch_size)` ceiling. Main analyses flag final MI within
 one bit of `log2(B)` as a reason to inspect this convergence. To test the training
 budget, rerun a selected pilot with larger `--batch_size`, keeping its analysis
 separate from the original protocol.
+
+A focused convergence pilot for the six-gene, eighteen-cell sweep is:
+
+1. Select saved models at **1, 2, 3, and 6 genes per cell**, for both strategies:
+   baseline, observed peak, initial decline, and the identical-cell endpoint.
+   Start with the first replicate at every point rather than choosing the best;
+   extend to all independent replicates to check the environmental mean.
+2. Evaluate at **4,096, 16,384, and 65,536 inputs**, with **3 repeats** and
+   `--chunk_size 512`. Add **262,144** if MI has not stabilized. An operational
+   target is a change below **0.02–0.05 bits** at the last doubling/quadrupling,
+   small repeat scatter, and stable differences between expression levels.
+   This tolerance is a practical choice, not a statistical guarantee.
+3. Separately test optimization with training `--batch_size 4096`, `8192`, and
+   `16384`, using the same selected design and **65,536 final evaluation inputs**.
+   Keep the epoch count fixed to compare gradient quality at equal update count;
+   larger batches also consume more total inputs and compute. Analyze each
+   training budget separately because the loader rejects mixed protocols.
+
+Evaluation chunks are aggregated before taking entropy: a chunk of 512 does not
+impose a 9-bit ceiling when the total evaluation budget is larger. Increasing the
+receptor pool does not itself require proportionally more input samples: all
+receptor contributions are computed, and grouped conditional probabilities are
+enumerated rather than estimated by sampling binary output patterns. Input
+convergence depends on the stimulus-dependent response distribution. Being well
+below `log2(B)` is useful but does not establish convergence.

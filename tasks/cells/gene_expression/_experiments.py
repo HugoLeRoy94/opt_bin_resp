@@ -14,6 +14,15 @@ from src.run import SweepRunner
 
 MEASUREMENTS = ("grouped_information", "full_array_entropy",
                 "conditional_entropy_response", "codeword_entropy")
+
+
+def measurements(args):
+    """Choose evaluation independently of training; counting never requests enumeration."""
+    if args.evaluation == "counting":
+        return ("grouped_counting", "conditional_entropy_response", "codeword_entropy")
+    return MEASUREMENTS
+
+
 BASE_ENVIRONMENT = dict(profile="base", n_ligands=100, latent_dim=6,
                         family_spread=.1, mu_ligands_per_source=1e-6)
 
@@ -26,8 +35,10 @@ def argument_parser(description, default_coverage="complete"):
     parser.add_argument("--replicate_start", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0, help="Seed the sweep; recorded in experiment.json.")
     parser.add_argument("--epochs", type=int, default=5000)
-    parser.add_argument("--entropy", choices=("grouped_mi", "kt_mi"), default="grouped_mi",
-                        help="Training objective; final grouped MI remains the common measurement.")
+    parser.add_argument("--entropy", choices=("grouped_mi", "kt_mi", "grouped_kt_mi"), default="grouped_mi",
+                        help="Training objective; grouped_kt_mi avoids joint state enumeration.")
+    parser.add_argument("--evaluation", choices=("exact", "counting"), default="exact",
+                        help="Final estimator: exact count enumeration or sampled group counts.")
     parser.add_argument("--batch_size", type=int, default=4096)
     parser.add_argument("--test_batch_size", type=int, default=4096)
     parser.add_argument("--final_batch_size", type=int, default=16384)
@@ -86,7 +97,7 @@ def make_rows(args, gene_counts, environments, *, n_cells=None, cells_per_gene=3
                     sets = expression_sets(n_genes, cells, g, seed, args.coverage)
                     multiplicities = Counter(sets)
                     states = math.prod(n + 1 for n in multiplicities.values())
-                    if states > args.max_states:
+                    if states > args.max_states and (args.entropy == "grouped_mi" or args.evaluation == "exact"):
                         raise ValueError(f"G={n_genes}, C={cells}, g={g}, replicate={replicate}: "
                                          f"{states} count states exceed --max_states={args.max_states}.")
                     rows.append(dict(environment, replicate=replicate, cell_sampling_seed=seed,
@@ -137,9 +148,15 @@ def launch(config, args, rows, experiment):
                     rows=rows)
     print(f"{experiment}: {args.condition}, {args.coverage} coverage, {len(rows)} independent optimizations")
     print(f"World seed: {world_seed}; no warm start or matched worlds; {args.replicates} replicates/point")
-    print(f"Largest count alphabet: {max(r['count_states'] for r in rows):,}; "
-          f"largest single fp32 (batch,states) table: "
-          f"{args.batch_size * max(r['count_states'] for r in rows) * 4 / 2**30:.2f} GiB before gradients")
+    largest = max(r['count_states'] for r in rows)
+    print(f"Largest count alphabet: {largest:,}")
+    if args.entropy == "grouped_mi":
+        print(f"Largest single fp32 training (batch,states) table: "
+              f"{args.batch_size * largest * 4 / 2**30:.2f} GiB before gradients")
+    if args.evaluation == "exact":
+        print("Final evaluation enumerates joint count states in input chunks.")
+    elif args.entropy != "grouped_mi":
+        print("No joint count enumeration in training or evaluation; --max_states does not apply.")
     if args.dry_run:
         print("G  C  g  profile  count_states  genes_represented  replicate")
         for r in rows:

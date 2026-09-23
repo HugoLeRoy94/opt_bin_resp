@@ -37,6 +37,7 @@ from src.physics import compute_initial_temperature
 from src.analysis_helper import (
     full_array_entropy,
     grouped_information,
+    grouped_counting,
     entropy_collision,
     entropy_blocked,
     entropy_blocked_corrected,
@@ -70,7 +71,9 @@ from src.bin_loss import (DiscreteExactLoss, KTMutualInformationLoss, KT_EPS,
                           compute_kt_entropy, compute_kt_upper_entropy,
                           compute_response_conditional_entropy)
 from src.annealed_loss import AnnealedEntropyLoss, BlockedToCorrectedLoss
-from src.grouped_loss import GroupedCellMutualInformationLoss
+from src.grouped_loss import (GroupedCellMutualInformationLoss, GroupedKTMutualInformationLoss,
+                              GroupedResponseCounter)
+from src.response_groups import CellGrouping
 from src.family_mi_loss import MaximizeMutualInformationLigandLoss
 from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 
@@ -81,6 +84,7 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 MEASUREMENT_REGISTRY = {
     "full_array_entropy":                full_array_entropy,
     "grouped_information":               grouped_information,
+    "grouped_counting":                  grouped_counting,
     "entropy_collision":                 entropy_collision,
     "entropy_blocked":                   entropy_blocked,
     "entropy_blocked_corrected":         entropy_blocked_corrected,
@@ -150,6 +154,7 @@ def resolve_batch_sizes(
     test_max_batch: Optional[int] = None,
     n_physics_receptors: Optional[int] = None,
     grouped_n_states: Optional[int] = None,
+    grouped_n_groups: Optional[int] = None,
 ) -> tuple:
     """Returns (batch_size, test_perepoch, test_final, collision_chunk_size).
 
@@ -162,6 +167,9 @@ def resolve_batch_sizes(
     own cap (memory model in parentheses):
       shannon   : B = 2^R coverage, capped by (B, 2^R) float32.        — only R<~15
       grouped_mi: count alphabet S, capped by (B,S); requires grouped_n_states.
+      grouped_kt_mi: same KT kernel with J weighted columns; requires both
+                  grouped_n_groups and grouped_n_states. J sets pairwise work,
+                  S sets the sampling heuristic, without enumerating states.
       collision : B = 16·√(2^R), rounded to multiple of m_max, physics-capped.
                   Memory for collision is per-chunk (R, m, m), not (B, B).
       blocked   : capped by ceil(R/block_size)·n_partitions histograms of
@@ -186,8 +194,13 @@ def resolve_batch_sizes(
     (4 × batch_size, capped at test_final) and the single final measurement uses
     test_final (= min(2^R, memory)). An explicit test_batch_size is used for both.
     """
+    grouped_kt = entropy_type == 'grouped_kt_mi'
+    if grouped_kt and (grouped_n_groups is None or grouped_n_groups < 1 or
+                       grouped_n_states is None or grouped_n_states < 1):
+        raise ValueError('grouped_kt_mi requires grouped_n_groups and grouped_n_states.')
+    kt_width = grouped_n_groups if grouped_kt else n_receptors
     # KT entropy and information share the same pairwise work and memory budget.
-    if entropy_type == 'kt_mi':
+    if entropy_type in ('kt_mi', 'grouped_kt_mi'):
         entropy_type = 'kt'
     B_min = 512
     collision_chunk_size = None
@@ -220,16 +233,21 @@ def resolve_batch_sizes(
     # for R ≥ block_size each block has 2^block_size states. Collision at small R
     # also benefits from the same 100-samples-per-state floor before the
     # large-R heuristic (16·√(2^R)) takes over.
-    bin_dim   = min(n_receptors, block_size)
-    stats_cap = {
-        "shannon":  max(B_min, 100 * (1 << n_receptors)),
-        "collision": max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
-        "kt":        max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
-        "blocked":              max(B_min, 100 * (1 << bin_dim)),
-        "blocked_corrected":    max(B_min, 100 * (1 << bin_dim)),
-        "annealed":             max(B_min, 100 * (1 << bin_dim)),
-        "blocked_to_corrected": max(B_min, 100 * (1 << bin_dim)),
-    }.get(entropy_type, max(B_min, 200 * n_receptors))
+    if grouped_kt:
+        # Groups are categorical counts, not J binary outputs. S controls the
+        # sampling heuristic; J controls pairwise work. No allocation of S states.
+        stats_cap = max(B_min, 100 * grouped_n_states)
+    else:
+        bin_dim   = min(n_receptors, block_size)
+        stats_cap = {
+            "shannon":  max(B_min, 100 * (1 << n_receptors)),
+            "collision": max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
+            "kt":        max(B_min, max(100 * (1 << bin_dim), 16 * int(2 ** (n_receptors / 2)))),
+            "blocked":              max(B_min, 100 * (1 << bin_dim)),
+            "blocked_corrected":    max(B_min, 100 * (1 << bin_dim)),
+            "annealed":             max(B_min, 100 * (1 << bin_dim)),
+            "blocked_to_corrected": max(B_min, 100 * (1 << bin_dim)),
+        }.get(entropy_type, max(B_min, 200 * n_receptors))
 
     if entropy_type == "shannon":
         b_train = stats_cap
@@ -258,10 +276,10 @@ def resolve_batch_sizes(
             # Checkpointing the inner loop drops the retained graph to O(B·R), so
             # memory no longer binds — the O(B²·R) COMPUTE does. Cap the work instead
             # (physics_cap below still guards forward memory). Same sqrt(1/R) shape.
-            b_cap = max(B_min, int(math.sqrt(KT_COMPUTE_BUDGET / n_receptors)))
+            b_cap = max(B_min, int(math.sqrt(KT_COMPUTE_BUDGET / kt_width)))
         else:
             SAFETY = 3
-            b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (n_receptors * 4 * SAFETY))))
+            b_cap = max(B_min, int(math.sqrt(mem_budget_bytes / (kt_width * 4 * SAFETY))))
         b_train = min(stats_cap, b_cap)
         # But do NOT run a single b_train-sized chunk: that also materialises a
         # full-size (B,B,R) torch.log transient AND its backward gradient (~3× the
@@ -314,7 +332,8 @@ def resolve_batch_sizes(
     #                  logged epoch. Capped at test_final.
     EVAL_TILE = 2048
     eval_mem_cap  = max(B_min, mem_budget_bytes // (EVAL_TILE * 4 * 4))
-    test_final    = max(b_train, min(1 << n_receptors, eval_mem_cap))
+    alphabet_size = grouped_n_states if grouped_kt else (1 << n_receptors)
+    test_final    = max(b_train, min(alphabet_size, eval_mem_cap))
     # Optional user cap on the final measurement, to bound the O(B²) KT cost at high R
     # (keep it ≥ b_train so the final is never smaller than a training batch).
     if test_max_batch is not None:
@@ -330,6 +349,12 @@ ENV_REGISTRY = {
 
 def _build_loss(cfg, collision_chunk_size: int = 2048, cell_weights=None) -> nn.Module:
     """Dispatch on cfg.entropy to construct the appropriate loss module."""
+    if cfg.entropy == 'grouped_kt_mi':
+        if cell_weights is None or not cfg.is_cell_mode():
+            raise ValueError("grouped_kt_mi requires cell mode and the cell abundance matrix.")
+        return GroupedKTMutualInformationLoss(
+            cell_weights, collision_chunk_size=collision_chunk_size,
+            recompute_backward=cfg.recompute_backward, compile_kt=cfg.compile_kt)
     if cfg.entropy == 'grouped_mi':
         if cell_weights is None or not cfg.is_cell_mode():
             raise ValueError("grouped_mi requires cell mode and the cell abundance matrix.")
@@ -370,7 +395,7 @@ def _build_loss(cfg, collision_chunk_size: int = 2048, cell_weights=None) -> nn.
     else:
         raise ValueError(f"Unknown entropy: {cfg.entropy!r}. "
                          f"Choose from {DiscreteExactLoss._ENTROPY_FNS} or "
-                         f"'kt_mi' / 'grouped_mi' / 'annealed' / 'mi_ligand' / 'mi_conc'.")
+                         f"'kt_mi' / 'grouped_kt_mi' / 'grouped_mi' / 'annealed' / 'mi_ligand' / 'mi_conc'.")
 
 CONC_REGISTRY = {
     "lognormal": lambda cfg: LogNormalConcentration(
@@ -395,6 +420,7 @@ class SimulationRunner:
         self.cell_array = None   # set by _initialize when config.is_cell_mode()
         self.readout    = None
         self.grouped_estimator = None
+        self.cell_grouping = None
 
     def _initialize(self, prev_env=None):
         """Builds all components. receptor_indices are always derived from config."""
@@ -430,13 +456,15 @@ class SimulationRunner:
                 learnable_threshold=self.config.cell_threshold_learnable,
             ).to(self.device)
 
+        self.cell_grouping = (CellGrouping(self.cell_array.W).to(self.device)
+                              if self.cell_array is not None else None)
         self.grouped_estimator = None
         if (self.config.entropy == 'grouped_mi' or 'grouped_information' in
                 (*(self.config.measurement_fns or ()), *(self.config.final_measurement_fns or ()))):
             if self.cell_array is None:
                 raise ValueError("Grouped information requires cell mode.")
             self.grouped_estimator = GroupedCellMutualInformationLoss(
-                self.cell_array.W, self.config.cell_grouped_max_states).to(self.device)
+                self.cell_grouping, self.config.cell_grouped_max_states).to(self.device)
             print(f"[cell grouping] {self.grouped_estimator.n_cells} cells → "
                   f"{self.grouped_estimator.n_groups} groups, "
                   f"{self.grouped_estimator.n_states} count states")
@@ -461,8 +489,8 @@ class SimulationRunner:
             recompute_backward=self.config.recompute_backward,
             test_max_batch=self.config.test_max_batch,
             n_physics_receptors=n_pool,
-            grouped_n_states=(self.grouped_estimator.n_states
-                              if self.grouped_estimator is not None else None),
+            grouped_n_states=(self.cell_grouping.n_states if self.cell_grouping is not None else None),
+            grouped_n_groups=(self.cell_grouping.n_groups if self.cell_grouping is not None else None),
         )
         if self.config.batch_size == "auto" or self.config.test_batch_size == "auto":
             if self.config.batch_size == "auto":
@@ -553,7 +581,8 @@ class SimulationRunner:
         else:
             env.unbind()
         loss_fn = (self.grouped_estimator if self.config.entropy == 'grouped_mi' else
-                   _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048).to(self.device))
+                   _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048,
+                               cell_weights=self.cell_grouping).to(self.device))
 
         # Dampen LR when picking up from a previous env to preserve learned representations
         lr = self.config.lr if prev_env is None else self.config.lr * 0.1
@@ -624,9 +653,11 @@ class SimulationRunner:
         requested = set(measurements)
         batch_metrics = {'entropy_kt', 'entropy_kt_upper', 'conditional_entropy_response',
                          'mutual_information_kt', 'mutual_information_kt_upper',
-                         'codeword_entropy', 'mutual_information_counting', 'grouped_information'}
+                         'codeword_entropy', 'mutual_information_counting', 'grouped_information',
+                         'grouped_counting'}
         native_grouped = isinstance(loss_fn, GroupedCellMutualInformationLoss)
-        if native_grouped:
+        native_grouped_kt = isinstance(loss_fn, GroupedKTMutualInformationLoss)
+        if native_grouped or native_grouped_kt:
             batch_metrics.add('full_array_entropy')
         want_grouped = ('grouped_information' in requested or
                         (native_grouped and 'full_array_entropy' in requested))
@@ -637,10 +668,19 @@ class SimulationRunner:
             grouped_estimator = GroupedCellMutualInformationLoss(
                 self.cell_array.W, self.config.cell_grouped_max_states).to(self.device)
             self.grouped_estimator = grouped_estimator
-        want_lower = bool(requested & {'entropy_kt', 'mutual_information_kt'})
+        want_lower = (bool(requested & {'entropy_kt', 'mutual_information_kt'}) or
+                      (native_grouped_kt and 'full_array_entropy' in requested))
         want_upper = bool(requested & {'entropy_kt_upper', 'mutual_information_kt_upper'})
         want_kt = want_lower or want_upper
         want_counting = 'mutual_information_counting' in requested
+        want_grouped_counting = 'grouped_counting' in requested
+        grouped_counter = None
+        if want_grouped_counting:
+            if self.cell_array is None:
+                raise ValueError("grouped_counting requires cell mode.")
+            if self.cell_grouping is None:
+                self.cell_grouping = CellGrouping(self.cell_array.W).to(self.device)
+            grouped_counter = GroupedResponseCounter(self.cell_grouping)
         want_hard = 'codeword_entropy' in requested
 
         ri_for_batch = receptor_indices if env.use_interface_model else None
@@ -701,7 +741,7 @@ class SimulationRunner:
                         grouped_estimator.n_states, dtype=torch.float64, device=activity.device)
                     grouped_conditional_sum = torch.zeros((), dtype=torch.float64, device=activity.device)
                 cond_sum = torch.zeros((), dtype=torch.float64, device=activity.device)
-                if want_counting and not hasattr(self, '_response_generator'):
+                if (want_counting or want_grouped_counting) and not hasattr(self, '_response_generator'):
                     # Output sampling must not perturb the world's/training RNG.
                     self._response_generator = torch.Generator(device=activity.device)
                     self._response_generator.manual_seed((torch.initial_seed() + 104729) % (2**63))
@@ -714,7 +754,10 @@ class SimulationRunner:
                         grouped_probability_sum += probability_sum.double()
                         grouped_conditional_sum += conditional_sum.double()
                     if want_kt:
-                        acts.append(activity)
+                        acts.append(loss_fn.grouping.probabilities(activity)
+                                    if native_grouped_kt else activity)
+                    if want_grouped_counting:
+                        grouped_counter.update(activity, self._response_generator)
                     if want_hard:
                         hard_codes.append((activity > 0.5).cpu())
                     if want_counting:
@@ -747,20 +790,27 @@ class SimulationRunner:
                     stat.update(codeword_entropy(torch.cat(hard_codes)))
                 if want_counting:
                     stat.update(response_counting_metrics(torch.cat(sampled_codes), h_cond))
+                if want_grouped_counting:
+                    stat.update(grouped_counter.metrics())
                 if want_kt:
                     big_soft = loss_fn.compute_soft_assignment(torch.cat(acts))
+                    multiplicities = loss_fn.grouping.group_sizes if native_grouped_kt else None
                     with record_function("prof:eval_kt"):
                         if want_lower:
                             i_lower = compute_kt_entropy(
                                 big_soft, chunk_size=2048, return_mi=True,
-                                use_compile=getattr(loss_fn, 'compile_kt', False)).item()
+                                use_compile=getattr(loss_fn, 'compile_kt', False),
+                                multiplicities=multiplicities).item()
+                            if native_grouped_kt and 'full_array_entropy' in requested:
+                                stat['full_array_entropy'] = i_lower + h_cond
                             if 'entropy_kt' in requested:
                                 stat['full_array_entropy_kt'] = i_lower + h_cond
                             if 'mutual_information_kt' in requested:
                                 stat['mutual_information_kt'] = i_lower
                         if want_upper:
                             i_upper = compute_kt_upper_entropy(
-                                big_soft, chunk_size=2048, return_mi=True).item()
+                                big_soft, chunk_size=2048, return_mi=True,
+                                multiplicities=multiplicities).item()
                             if 'entropy_kt_upper' in requested:
                                 stat['full_array_entropy_kt_upper'] = i_upper + h_cond
                             if 'mutual_information_kt_upper' in requested:

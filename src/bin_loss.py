@@ -119,7 +119,7 @@ def compute_collision_entropy(
     return -log_mean_coll_prob_nats / math.log(2)
 
 
-def _kt_logbc_tile(sqrt_A_i, sqrt_1A_i, sqrt_A_j, sqrt_1A_j):
+def _kt_logbc_tile(sqrt_A_i, sqrt_1A_i, sqrt_A_j, sqrt_1A_j, multiplicities=None):
     """One (m,n) tile of log-Bhattacharyya: Σ_R log( √(A_iA_j) + √((1-A_i)(1-A_j)) ).
 
     Inputs (m,R) and (n,R); output (m,n). This is a pure elementwise+reduction chain
@@ -130,7 +130,10 @@ def _kt_logbc_tile(sqrt_A_i, sqrt_1A_i, sqrt_A_j, sqrt_1A_j):
     """
     bc = (sqrt_A_i.unsqueeze(1) * sqrt_A_j.unsqueeze(0)
           + sqrt_1A_i.unsqueeze(1) * sqrt_1A_j.unsqueeze(0))   # (m, n, R)
-    return torch.log(bc).sum(dim=2)                            # (m, n)
+    log_bc = torch.log(bc)
+    if multiplicities is not None:
+        log_bc = log_bc * multiplicities
+    return log_bc.sum(dim=2)                                  # (m, n)
 
 
 _kt_tile_compiled = None   # module-level cache for the torch.compile'd tile kernel
@@ -149,7 +152,7 @@ def _kt_tile_fn(use_compile: bool):
 
 
 def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size,
-                         tile_fn=_kt_logbc_tile):
+                         tile_fn=_kt_logbc_tile, multiplicities=None):
     """Sum over the rows in one i-chunk of ( logsumexp_j logBC[i,:] - log_B ).
 
     Factored out of compute_kt_entropy so it can be gradient-checkpointed: its
@@ -163,7 +166,8 @@ def _kt_row_contribution(sqrt_A_i, sqrt_1A_i, sqrt_A, sqrt_1A, log_B, chunk_size
     row_blocks = []
     for j0 in range(0, B, chunk_size):
         j1 = min(j0 + chunk_size, B)
-        row_blocks.append(tile_fn(sqrt_A_i, sqrt_1A_i, sqrt_A[j0:j1], sqrt_1A[j0:j1]))  # (m, n)
+        row_blocks.append(tile_fn(sqrt_A_i, sqrt_1A_i, sqrt_A[j0:j1], sqrt_1A[j0:j1],
+                                  multiplicities))  # (m, n)
     full_row = torch.cat(row_blocks, dim=1)                            # (m, B)
     return (torch.logsumexp(full_row, dim=1) - log_B).sum()
 
@@ -172,14 +176,18 @@ KT_EPS = 1e-6
 
 
 def compute_response_conditional_entropy(activity: torch.Tensor,
-                                         eps: float = KT_EPS) -> torch.Tensor:
+                                         eps: float = KT_EPS,
+                                         multiplicities=None) -> torch.Tensor:
     """Mean H(Y|X) for conditionally independent Bernoulli outputs, in bits.
 
     X includes the full sampled input, including any observation-noise realization.
     KT and stochastic counting evaluation use this same probability clamp.
     """
     a = activity.clamp(eps, 1.0 - eps)
-    return (-(a * torch.log2(a) + (1.0 - a) * torch.log2(1.0 - a))).sum(-1).mean()
+    entropy = -(a * torch.log2(a) + (1.0 - a) * torch.log2(1.0 - a))
+    if multiplicities is not None:
+        entropy = entropy * multiplicities
+    return entropy.sum(-1).mean()
 
 
 def compute_kt_entropy(
@@ -187,8 +195,9 @@ def compute_kt_entropy(
     chunk_size: int = 512,
     eps: float = KT_EPS,
     recompute: bool = False,
-    use_compile: bool = False,
+        use_compile: bool = False,
     return_mi: bool = False,
+    multiplicities=None,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey Bhattacharyya LOWER bound on the joint Shannon entropy.
 
@@ -222,6 +231,9 @@ def compute_kt_entropy(
         eps:         clamp A into [eps, 1-eps] for log/sqrt stability.
         return_mi:   return the separation term alone, bounding I(Y;X) for the
                      empirical mixture. Avoids subtracting two large entropy terms.
+        multiplicities: optional positive cell counts for structurally identical
+                     Bernoulli columns. Weights log-BC and conditional entropy;
+                     entropy still refers to all labeled binary outputs.
         recompute:   if True, gradient-checkpoint each i-chunk's contribution so its
                      (m, n, R) / (m, B) tensors are recomputed in backward instead of
                      retained. Retained graph drops O(B²·R) → O(B·R), so the training
@@ -236,7 +248,9 @@ def compute_kt_entropy(
     A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)   # (B, R)
 
     # Conditional (mean per-component) entropy in bits.
-    h_cond = None if return_mi else compute_response_conditional_entropy(A, eps)
+    # Repeated identical Bernoulli factors can be represented by one column with
+    # its multiplicity. Binomial BC equals the single-cell BC to this power.
+    h_cond = None if return_mi else compute_response_conditional_entropy(A, eps, multiplicities)
 
     sqrt_A  = torch.sqrt(A)                            # (B, R)
     sqrt_1A = torch.sqrt(1.0 - A)                      # (B, R)
@@ -253,9 +267,10 @@ def compute_kt_entropy(
         sa_i, s1a_i = sqrt_A[i0:i1], sqrt_1A[i0:i1]   # (m, R)
         if do_ckpt:
             contrib = checkpoint(_kt_row_contribution, sa_i, s1a_i, sqrt_A, sqrt_1A,
-                                 log_B, chunk_size, tile_fn, use_reentrant=False)
+                                 log_B, chunk_size, tile_fn, multiplicities, use_reentrant=False)
         else:
-            contrib = _kt_row_contribution(sa_i, s1a_i, sqrt_A, sqrt_1A, log_B, chunk_size, tile_fn)
+            contrib = _kt_row_contribution(sa_i, s1a_i, sqrt_A, sqrt_1A, log_B, chunk_size,
+                                           tile_fn, multiplicities)
         inter_nats = inter_nats + contrib
 
     inter_bits = (inter_nats / B) / math.log(2)
@@ -267,6 +282,7 @@ def compute_kt_upper_entropy(
     chunk_size: int = 512,
     eps: float = KT_EPS,
     return_mi: bool = False,
+    multiplicities=None,
 ) -> torch.Tensor:
     """Kolchinsky-Tracey UPPER bound on the joint Shannon entropy H(s).
 
@@ -294,15 +310,19 @@ def compute_kt_upper_entropy(
         chunk_size:  edge length m of the (m, n) blocks.
         eps:         clamp A into [eps, 1-eps] for log stability.
         return_mi:   return the upper bound on I(Y;X), including the C-H(Y|X) cap.
+        multiplicities: optional counts of identical cells represented by each
+                     column. Weights KL and entropy; the binary cap is sum(counts).
     """
     B, R, _ = soft_assign.shape
     A = soft_assign[:, :, 1].clamp(eps, 1.0 - eps)            # (B, R)
 
-    h_cond = compute_response_conditional_entropy(A, eps)
+    h_cond = compute_response_conditional_entropy(A, eps, multiplicities)
+    weights = A.new_ones(R) if multiplicities is None else multiplicities.to(A)
+    n_outputs = weights.sum()
 
     log_A  = torch.log(A)                                     # (B, R)
     log_1A = torch.log1p(-A)                                  # (B, R) = log(1-A)
-    ent    = (A * log_A + (1.0 - A) * log_1A).sum(dim=1)      # (B,)  self term (nats)
+    ent    = ((A * log_A + (1.0 - A) * log_1A) * weights).sum(dim=1)
     log_B  = math.log(B)
 
     inter_nats = soft_assign.new_zeros(())
@@ -316,7 +336,7 @@ def compute_kt_upper_entropy(
             j1 = min(j0 + chunk_size, B)
             log_A_j  = log_A[j0:j1].unsqueeze(0)              # (1, n, R)
             log_1A_j = log_1A[j0:j1].unsqueeze(0)             # (1, n, R)
-            cross = (A_i * log_A_j + one_A_i * log_1A_j).sum(dim=2)   # (m, n)
+            cross = ((A_i * log_A_j + one_A_i * log_1A_j) * weights).sum(dim=2)
             row_blocks.append(cross - ent_i)                 # (m, n) = -KL(i||j)
         full_row = torch.cat(row_blocks, dim=1)              # (m, B)
         inter_nats = inter_nats + (torch.logsumexp(full_row, dim=1) - log_B).sum()
@@ -325,8 +345,8 @@ def compute_kt_upper_entropy(
     # H(s) of R binary receptors is <= R bits, so clamp: min of two valid upper
     # bounds is still an upper bound, and tighter in the overlapping regime.
     if return_mi:
-        return torch.minimum(-inter_bits, R - h_cond)
-    return (h_cond - inter_bits).clamp(max=float(R))
+        return torch.minimum(-inter_bits, n_outputs - h_cond)
+    return torch.minimum(h_cond - inter_bits, n_outputs)
 
 
 def compute_correlation_aware_partition(

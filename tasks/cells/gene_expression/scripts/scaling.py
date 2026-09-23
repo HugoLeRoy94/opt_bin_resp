@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.config import RunConfig
 from tasks.cells.gene_expression._experiments import (
-    BASE_ENVIRONMENT, MEASUREMENTS, argument_parser, cell_axes, launch, make_rows,
+    BASE_ENVIRONMENT, measurements, argument_parser, cell_axes, launch, make_rows,
 )
 
 
@@ -56,8 +56,8 @@ def main(argv=None):
         epochs=args.epochs, lr=1e-2, use_scheduler=False,
         batch_size=args.batch_size, test_batch_size=args.test_batch_size,
         final_test_batch_size=args.final_batch_size, eval_chunk_size=args.eval_chunk_size,
-        per_epoch_measure=False, measurement_fns=MEASUREMENTS,
-        final_measurement_fns=MEASUREMENTS,
+        per_epoch_measure=False, measurement_fns=measurements(args),
+        final_measurement_fns=measurements(args),
 
         # --- Sweep: one runner, fresh environment and optimizer at every point ---
         sweep_name=f"scaling_{args.condition}_{args.coverage}",

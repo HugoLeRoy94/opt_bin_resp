@@ -313,6 +313,69 @@ does not exclude systematic unseen-state bias, and negative MI estimates are
 retained. The frequency table itself grows with the number of observed distinct
 vectors. Neither KT nor counting removes receptor-physics costs.
 
+### Is the exact/KT difference the optimizer or the estimator?
+
+The two `replicates` sweeps at G=5, C=30 report different MI, but they differ in
+**two** things at once: the training objective (`grouped_mi` against
+`grouped_kt_mi`) and the evaluation estimator (exact enumeration against sampled
+counting). Their reported gap cannot say which is responsible.
+
+`scripts/estimator_crosscheck.py` settles it **without retraining**. It re-measures
+both sweeps' saved checkpoints with both estimators, filling a 2x2 per design
+point:
+
+|            | eval exact | eval counting |
+|---|---|---|
+| train exact | A | B |
+| train KT    | C | D |
+
+`A - C` is the optimization loss, judged by an unbiased estimator. `A - B` is the
+estimator bias, measured on a single model. `A - D` is the number the two sweeps
+actually print. The two sweeps share a world seed, gene sets, batch size and epoch
+count, so the comparison is paired.
+
+```bash
+python3 tasks/cells/gene_expression/scripts/estimator_crosscheck.py \
+  --exact_sweep data/gene_expression/replicates_heteromers_complete_20260923_112537 \
+  --kt_sweep    data/gene_expression/replicates_heteromers_complete_20260923_135950 \
+  --budgets 16384 65536 262144
+```
+
+Read the report with `analysis/estimator_crosscheck.py`, which prints the
+decomposition and states which knob to turn.
+
+Measured at g=3, replicate 0, the level with the largest gap:
+
+| evaluation inputs | A train exact / eval exact | B train exact / eval counting | C train KT / eval exact | optimization loss A-C | estimator bias A-B |
+|---|---|---|---|---|---|
+| 16,384 | 5.672 | 3.868 | 5.668 | **0.004** | **1.805** |
+| 65,536 | 5.677 | 4.785 | 5.675 | **0.002** | **0.892** |
+
+Training on the KT bound costs 0.004 bits. The whole difference is sampled
+counting under-reading the entropy, and quadrupling the evaluation budget halves
+it. The exact column moves by 0.005 bits over the same range, which is the noise
+floor. Miller-Madow (`..._counting_mm`, already recorded) recovers only about a
+quarter of the bias, because it corrects by the number of symbols *seen* rather
+than the number that exist.
+
+### Retraining at several training batch sizes
+
+`scripts/training_batch.py` retrains at a range of gradient batch sizes and judges
+**every** run with the exact estimator, so a difference between batch sizes is a
+difference between models rather than between measurements. `grouped_counting` is
+recorded alongside purely as a reference.
+
+Run `estimator_crosscheck.py` first. If it reports an optimization loss near zero,
+the KT objective already reaches the same optimum and this sweep has nothing to
+find. Exact evaluation also caps the design: the count alphabet reaches about
+4.6e5 for G=5, C=30 complete coverage, and `--dry_run` prints it with the table
+size before anything is committed.
+
+```bash
+python3 tasks/cells/gene_expression/scripts/training_batch.py --dry_run
+python3 tasks/cells/gene_expression/scripts/training_batch.py --batch_sizes 1024 4096 16384
+```
+
 ### Input-budget convergence on saved models
 
 Pass saved run folders, locally or on the cluster:

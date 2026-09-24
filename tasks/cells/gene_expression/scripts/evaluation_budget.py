@@ -60,6 +60,40 @@ def evaluate_budgets(env, physics, ri, readout, estimator, budgets, repeats, see
     return records
 
 
+def prepare_run(run_dir, device, estimator="exact", max_states=None):
+    """Rebuild one saved run ready for re-measurement, without retraining.
+
+    Returns (env, physics, receptor_indices, readout, estimator, cfg). `estimator`
+    is the CellGrouping itself for sampled counting, or the exact enumerating loss.
+    Shared with estimator_crosscheck.py so both scripts restore a checkpoint the
+    same way; any divergence there would masquerade as an estimator difference.
+    """
+    run_dir = Path(run_dir).resolve()
+    loader = SingleRunLoader(str(run_dir))
+    cfg = loader.load_config()
+    if not cfg.is_cell_mode():
+        raise ValueError(f"This evaluation is cell-only: {run_dir}")
+    env, physics, ri = load_model(run_dir=str(run_dir), device=device)
+    checkpoint = loader.load_checkpoint(map_location=device)
+    readout = CellReadout(
+        checkpoint["readout_state"]["W"], mode=checkpoint["readout_mode"],
+        temperature=checkpoint["readout_temperature"], k_sub=cfg.k_sub,
+        learnable_threshold=cfg.cell_threshold_learnable).to(device)
+    readout.load_state_dict(checkpoint["readout_state"])
+    readout.eval()
+    env.bind_receptors(ri)
+    grouping = CellGrouping(readout.W).to(device)
+    if estimator == "counting":
+        return env, physics, ri, readout, grouping, cfg
+    limit = cfg.cell_grouped_max_states if max_states is None else max_states
+    return (env, physics, ri, readout,
+            GroupedCellMutualInformationLoss(grouping, limit).to(device), cfg)
+
+
+MI_KEY = {"exact": "mutual_information_grouped",
+          "counting": "mutual_information_grouped_counting_plugin"}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dirs", nargs="+", required=True)
@@ -75,22 +109,8 @@ def main(argv=None):
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     for folder in args.run_dirs:
         run_dir = Path(folder).resolve()
-        loader = SingleRunLoader(str(run_dir))
-        cfg = loader.load_config()
-        if not cfg.is_cell_mode():
-            raise ValueError(f"This evaluation is cell-only: {run_dir}")
-        env, physics, ri = load_model(run_dir=str(run_dir), device=device)
-        checkpoint = loader.load_checkpoint(map_location=device)
-        readout = CellReadout(
-            checkpoint["readout_state"]["W"], mode=checkpoint["readout_mode"],
-            temperature=checkpoint["readout_temperature"], k_sub=cfg.k_sub,
-            learnable_threshold=cfg.cell_threshold_learnable).to(device)
-        readout.load_state_dict(checkpoint["readout_state"])
-        readout.eval()
-        env.bind_receptors(ri)
-        grouping = CellGrouping(readout.W).to(device)
-        estimator = (grouping if args.estimator == "counting" else GroupedCellMutualInformationLoss(
-            grouping, cfg.cell_grouped_max_states if args.max_states is None else args.max_states).to(device))
+        env, physics, ri, readout, estimator, cfg = prepare_run(
+            run_dir, device, args.estimator, args.max_states)
         records = evaluate_budgets(env, physics, ri, readout, estimator, args.budgets,
                                    args.repeats, args.seed, args.chunk_size, args.pool_chunk)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
@@ -99,8 +119,7 @@ def main(argv=None):
                                          n_groups=estimator.n_groups, n_states=estimator.n_states,
                                          records=records), indent=2))
         print(f"Saved {output}")
-        mi_key = ("mutual_information_grouped_counting_plugin" if args.estimator == "counting"
-                  else "mutual_information_grouped")
+        mi_key = MI_KEY[args.estimator]
         for row in records:
             print(f"  B={row['samples']:>7} repeat={row['repeat']}: "
                   f"MI ({args.estimator})={row[mi_key]:.6f} bits")

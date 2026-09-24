@@ -65,10 +65,47 @@ design. Two consequences, both unavoidable:
   enumeration is impossible**. Training uses `entropy='grouped_kt_mi'` and
   evaluation uses `grouped_counting`. Both are estimates, not exact values.
 - Sampled counting is biased **downward** when the symbol space is undersampled.
-  The analysis flags any point with `grouped_counting_unique_fraction > 0.5` or
-  MI within one bit of `log2(evaluation inputs)`. Treat those as measurements of
-  the budget, not of the array, and re-check them with a larger
-  `--final_batch_size`.
+  The analysis plots the **Good-Turing missing mass** `grouped_counting_missing_mass`
+  ($f_1/B$, the share of observations that are the only sighting of their symbol)
+  beside the MI, and MI against it. There is no pass/fail threshold: the quantity
+  is continuous, and a point sitting at a high missing mass is partly a
+  measurement of `--final_batch_size` rather than of the array.
+
+### How big does the evaluation batch need to be
+
+`tasks/cells/gene_expression/scripts/estimator_crosscheck.py` measured this bias
+against exact enumeration, on 5 expression levels x 3 budgets of the G=5, C=30
+arrays. Over those 12 points:
+
+```
+bias [bits]  ~=  3.34 * (B / 2^H(K)) ** -0.92
+```
+
+What matters is the **ratio of budget to effective alphabet** `2^H(K)`, not the
+budget alone. Bias falls below 0.1 bits at a ratio of about 46, and below 0.05 at
+about 98.
+
+Two consequences, both printed by `--dry_run`:
+
+**Repeats are not budget.** The final measurement is repeated `--final_repeats`
+times. Repeats show evaluation noise, and cannot touch a systematic bias that
+depends only on the batch size. Ten repeats of 16k carry exactly the bias of one.
+At equal total cost, few repeats of a large batch win: on the G=5, C=30 g=3 arrays,
+spending 163,840 inputs as 10 x 16,384 gives 1.82 bits of bias, and as 1 x 163,840
+gives 0.51. The defaults here are therefore 2 repeats of 524,288.
+
+**The cell count is the strongest lever, not the budget.** `H(K) = MI + H(K|X)`,
+and `H(K|X)` grows with C because every cell contributes its own output noise,
+close to half a bit each under the `mean` readout. So `2^H(K)` grows
+*exponentially* in C, while the budget you can afford grows linearly. At C=30 the
+projection is `H(K)` near 17-20 bits, needing millions to tens of millions of
+inputs for 0.1 bits of bias. **Halving `--n_cells` cuts `H(K)` by roughly 7 bits,
+worth more than a 100x budget increase.** Since the MI peak is set by G and not by
+C (see above), C=15-20 costs little scientifically and makes the measurement
+honest.
+
+Run one replicate at one G first, read `grouped_count_entropy_counting_plugin` and
+`grouped_counting_missing_mass` out of it, then set the budget for the full sweep.
 
 The receptor pool is the memory bottleneck and grows fast: G=8 at mean 3 reaches
 about 2200 receptors against 629 for the whole of the old G=5 sweep. `--max_pool`

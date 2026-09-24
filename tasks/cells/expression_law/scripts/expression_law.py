@@ -19,8 +19,10 @@ the number of cells.
 import argparse
 import hashlib
 import json
+import math
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 sys.path.append('/app')
@@ -34,6 +36,11 @@ from src.config import RunConfig
 from src.run import SweepRunner
 
 K_SUB = 5
+# Measured on the G=5, C=30 arrays: H(Y|X)/C = 0.441 bits per cell, MI ~ 6 bits.
+CELL_FIRING_P = 0.0905
+TYPICAL_MI = 6.0
+# pool-weighted forward inputs per second, from the measured KT sweep
+CLUSTER_RATE = 1.08e8
 
 
 def parse_args(argv=None):
@@ -57,8 +64,9 @@ def parse_args(argv=None):
     p.add_argument("--epochs", type=int, default=5000)
     p.add_argument("--batch_size", type=int, default=4096)
     p.add_argument("--test_batch_size", type=int, default=4096)
-    p.add_argument("--final_batch_size", type=int, default=65536,
-                   help="Sampled counting needs a large final batch; see --dry_run output.")
+    p.add_argument("--final_batch_size", type=int, default=16777216,
+                   help="Inputs per final measurement. Sampled counting is biased DOWN and the "
+                        "bias falls only with this number; --dry_run projects it.")
     p.add_argument("--eval_chunk_size", type=int, default=512)
     p.add_argument("--max_pool", type=int, default=4096,
                    help="Refuse points whose receptor pool exceeds this; it is the memory bottleneck.")
@@ -107,6 +115,79 @@ def design(args):
     if not rows:
         raise ValueError("No design points: every requested mean exceeds its gene pool.")
     return rows
+
+
+def _binomial_entropy(n, p):
+    terms = [math.comb(n, k) * p ** k * (1 - p) ** (n - k) for k in range(n + 1)]
+    return -sum(q * math.log2(q) for q in terms if q > 0)
+
+
+def report_expected_bias(args, rows):
+    """Project the counting bias per design point, before committing the sweep.
+
+    tasks/cells/gene_expression/scripts/estimator_crosscheck.py measured the bias of
+    sampled counting against exact enumeration over 5 expression levels x 3 budgets
+    of the G=5, C=30 arrays. Across those 12 points,
+
+        bias [bits] ~= 3.34 * (B / 2^H(K)) ** -0.92
+
+    so it is the ratio of budget to EFFECTIVE ALPHABET 2^H(K) that matters, not the
+    budget alone. H(K) = MI + H(K|X), and H(K|X) is the sum over groups of a
+    binomial entropy, which this computes from the gene sets actually drawn. The
+    per-cell firing noise and MI are taken from the measured G=5, C=30 arrays, so
+    the projection is an extrapolation and not a guarantee: the dry run is for
+    sizing the budget, the plotted Good-Turing missing mass is the real check.
+    """
+    print(f"\nFinal measurement: one pass over {args.final_batch_size:,} inputs per run.")
+    print("Not repeated: repeats show evaluation noise and cannot reduce a bias that\n"
+          "falls only with the batch size.\n")
+    print(f"{'G':>3} {'mean':>5} {'groups':>7} {'H(K|X)':>8} {'H(K)~':>7} "
+          f"{'bias at B':>11} {'B for 0.1 bits':>16}")
+    worst = 0.0
+    for row in rows:
+        if row["replicate"] != rows[0]["replicate"]:
+            continue                       # the design repeats across replicates
+        sizes = Counter(row["cell_gene_sets"]).values()
+        h_kx = sum(_binomial_entropy(n, CELL_FIRING_P) for n in sizes)
+        h_k = TYPICAL_MI + h_kx
+        bias = 3.34 * (args.final_batch_size / 2 ** h_k) ** -0.92
+        worst = max(worst, bias)
+        print(f"{row['n_genes']:>3} {row['target_mean_genes']:>5.1f} "
+              f"{len(list(sizes)):>7} {h_kx:>8.1f} {h_k:>7.1f} {bias:>10.2f}b "
+              f"{46 * 2 ** h_k:>16,.0f}")
+    # Cost is the physics forward pass, linear in the receptor pool. CLUSTER_RATE is
+    # calibrated on the measured gene_expression KT sweep: 25 runs in 1.26 h at mean
+    # R_pool 331, 5000 epochs of batch 4096, final measurement 163,840 inputs. A
+    # backward pass counts as two extra forwards.
+    seconds = sum(
+        r["receptor_pool"] * (args.epochs * args.batch_size * 3 + args.final_batch_size)
+        for r in rows) / CLUSTER_RATE
+    train_share = args.epochs * args.batch_size * 3
+    print(f"\nProjected cost for this sweep: {seconds / 3600:.1f} h for one condition, "
+          f"{2 * seconds / 3600:.1f} h for both.")
+    print(f"  training is {100 * train_share / (train_share + args.final_batch_size):.0f}% "
+          f"of it, the final measurement "
+          f"{100 * args.final_batch_size / (train_share + args.final_batch_size):.0f}%.")
+    print(f"  (calibrated on the measured gene_expression KT sweep, 3.0 min/run; "
+          f"scale if the hardware differs)")
+    print(f"Symbol counting is linear and negligible: "
+          f"{args.final_batch_size * 8 / 2 ** 20:.0f} MiB of int64 keys per run.")
+    # The other ceiling, which the missing mass says nothing about. KT measures
+    # information about the EMPIRICAL distribution of the training batch, whose
+    # entropy is log2(batch_size), so the objective cannot express more than that
+    # however large the array is. Compare train_mutual_information in stats.csv
+    # against this line after the run; approaching it means the TRAINING batch is
+    # the limit, and no evaluation diagnostic will reveal it.
+    print(f"\nTraining ceiling: the KT objective cannot exceed "
+          f"log2(batch_size) = {math.log2(args.batch_size):.0f} bits. "
+          f"Expect MI near {TYPICAL_MI:.0f}.")
+    print(f"\nWorst projected bias: {worst:.2f} bits.")
+    if worst > 0.2:
+        print("Above ~0.2 bits the curve shape is distorted, because the bias differs\n"
+              "between design points. Either raise --final_batch_size or lower --n_cells:\n"
+              "H(K|X) is a sum over cells, so 2^H(K) grows close to exponentially in C\n"
+              "while an affordable budget grows linearly. Grouping only blunts this once\n"
+              "cells start duplicating, which needs C well above 2^G - 1.")
 
 
 def build_config(args, rows):
@@ -178,9 +259,8 @@ def main(argv=None):
     print(f"most distinct cell types: {max(r['distinct_gene_sets'] for r in rows)}"
           f" of {args.n_cells} cells")
     print("Independent sampling leaves few identical cells, so exact count enumeration\n"
-          "is out of reach: training uses the KT bound and evaluation sampled counting.\n"
-          f"Both are estimates. Check convergence at {args.final_batch_size} evaluation\n"
-          "inputs with analysis/evaluation_budget before trusting small differences.")
+          "is out of reach: training uses the KT bound and evaluation sampled counting.")
+    report_expected_bias(args, rows)
 
     config = build_config(args, rows)
     manifest = {

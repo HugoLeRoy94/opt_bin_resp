@@ -75,6 +75,21 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def validate(args):
+    """Reject flag combinations that quietly do nothing.
+
+    `gene_ratio` is P(first gene)/P(last gene), so ratio 1 IS the uniform law.
+    Asking for an exponential gene law at ratio 1 would produce a sweep identical
+    to the uniform one but labelled exponential, which is worse than an error.
+    """
+    if args.gene_family == "exponential" and args.gene_ratio <= 1.0:
+        raise ValueError(
+            f"--gene_family exponential needs --gene_ratio > 1 (got {args.gene_ratio}). "
+            "Ratio 1 is exactly the uniform law, so the sweep would be mislabelled.")
+    if args.gene_family == "uniform" and args.gene_ratio != 1.0:
+        raise ValueError("--gene_ratio only applies to --gene_family exponential.")
+
+
 def design(args):
     """One row per planned run, with its gene sets already drawn.
 
@@ -233,13 +248,15 @@ def build_config(args, rows):
         measurement_fns=measurements, final_measurement_fns=measurements,
 
         # --- Sweep
-        sweep_name=f"expression_law_{args.condition}_{args.size_family}_{args.gene_family}",
+        sweep_name=(f"expression_law_{args.condition}_{args.size_family}_{args.gene_family}"
+                    + (f"_r{args.gene_ratio:g}" if args.gene_ratio != 1.0 else "")),
         base_folder=args.base_folder, warm_start=False,
     )
 
 
 def main(argv=None):
     args = parse_args(argv)
+    validate(args)
     rows = design(args)
     seed_key = (f"expression_law:{args.condition}:{args.size_family}:{args.gene_family}:"
                 f"{args.gene_ratio}:{args.seed}:{args.replicate_start}")

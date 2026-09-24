@@ -177,3 +177,27 @@ def test_grouped_counter_reports_missing_mass():
     metrics = counter.metrics()
     assert 0.0 <= metrics["grouped_counting_missing_mass"] <= 1.0
     assert "grouped_counting_unique_fraction" in metrics
+
+
+def test_exponential_gene_law_requires_a_real_skew():
+    """ratio 1 IS the uniform law, so accepting it would mislabel a sweep."""
+    from tasks.cells.expression_law.scripts.expression_law import parse_args, validate
+    with pytest.raises(ValueError, match="needs --gene_ratio > 1"):
+        validate(parse_args(["--gene_family", "exponential"]))
+    with pytest.raises(ValueError, match="only applies to"):
+        validate(parse_args(["--gene_ratio", "5"]))
+    validate(parse_args(["--gene_family", "exponential", "--gene_ratio", "10"]))
+    validate(parse_args([]))
+
+
+def test_gene_ratio_reaches_the_sweep_folder_name():
+    """Two ratios are different experiments and must not share a folder name."""
+    from tasks.cells.expression_law.scripts.expression_law import (
+        build_config, design, parse_args)
+    names = set()
+    for ratio in ("2", "20"):
+        args = parse_args(["--gene_family", "exponential", "--gene_ratio", ratio,
+                           "--n_genes", "3", "--means", "1.0", "--replicates", "1",
+                           "--n_cells", "8"])
+        names.add(build_config(args, design(args)).sweep_name)
+    assert len(names) == 2, names

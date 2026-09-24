@@ -107,6 +107,7 @@ for sweep_name in SWEEPS:
             "C": cfg.n_cells,
             "size_law": manifest["size_family"],
             "gene_law": manifest["gene_family"],
+            "gene_ratio": manifest["gene_ratio"],
             "target_mean": design["target_mean_genes"],
             # measured from the array actually drawn, not the target requested
             "mean_genes": float(np.mean(sizes)),
@@ -135,7 +136,9 @@ if runs.empty:
 # ════════════════════════════════════════════════════════════════════════════
 # 3. ONE ROW PER POINT  (second average: independent optimizations -> 1 number)
 # ════════════════════════════════════════════════════════════════════════════
-CURVE = ["condition", "G", "size_law", "gene_law"]
+# gene_ratio is part of the curve identity: an exponential gene law at ratio 2
+# and at ratio 20 are different experiments, and ratio 1 is the uniform law.
+CURVE = ["condition", "G", "size_law", "gene_law", "gene_ratio"]
 POINT = CURVE + ["target_mean"]
 
 points = runs.groupby(POINT).agg(
@@ -165,10 +168,11 @@ points["sample_ceiling"] = np.log2(points.eval_inputs)
 # ════════════════════════════════════════════════════════════════════════════
 curves = list(points.groupby(CURVE, sort=False))
 print(f"\n{len(curves)} curves:\n")
-for (condition, G, size_law, gene_law), curve in curves:
+for (condition, G, size_law, gene_law, gene_ratio), curve in curves:
     curve = curve.sort_values("mean_genes")
     peak = curve.loc[curve.mi_mean.idxmax()]
-    print(f"  {condition} | G={G} | size {size_law} | gene {gene_law}")
+    ratio = f" r={gene_ratio:g}" if gene_ratio != 1.0 else ""
+    print(f"  {condition} | G={G} | size {size_law} | gene {gene_law}{ratio}")
     print(f"      x  mean genes/cell : {[round(v, 2) for v in curve.mean_genes]}")
     print(f"      y  mi_mean         : {[round(v, 3) for v in curve.mi_mean]}")
     print(f"         +- sem          : {[round(v, 3) for v in curve.mi_sem]}")
@@ -187,7 +191,7 @@ MARK = {3: "o", 5: "s", 8: "^"}
 DASH = {"uniform": "-", "exponential": "--"}
 
 
-def style(condition, G, size_law, gene_law):
+def style(condition, G, size_law, gene_law, gene_ratio=1.0):
     return {"color": COLOR.get(condition, "gray"),
             "marker": MARK.get(int(G), "D"),
             "linestyle": DASH.get(size_law, ":")}
@@ -195,7 +199,7 @@ def style(condition, G, size_law, gene_law):
 
 def draw(ax, column, ylabel, error=None):
     for key, curve in points.groupby(CURVE, sort=False):
-        condition, G, size_law, gene_law = key
+        condition, G, size_law, gene_law = key[:4]
         curve = curve.sort_values("mean_genes")
         kw = style(*key)
         ax.plot(curve.mean_genes, curve[column],
@@ -258,8 +262,8 @@ else:
 # Peak position against G: the actual test. If the peak is combinatorial it
 # follows G/2; if it is a property of the physics it stays put.
 fig, ax = plt.subplots(figsize=(7, 5))
-for (condition, size_law, gene_law), part in points.groupby(
-        ["condition", "size_law", "gene_law"], sort=False):
+for (condition, size_law, gene_law, gene_ratio), part in points.groupby(
+        ["condition", "size_law", "gene_law", "gene_ratio"], sort=False):
     peaks = part.loc[part.groupby("G").mi_mean.idxmax()].sort_values("G")
     ax.plot(peaks.G, peaks.mean_genes, "o-", color=COLOR.get(condition, "gray"),
             linestyle=DASH.get(size_law, ":"),

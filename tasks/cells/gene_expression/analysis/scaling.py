@@ -58,3 +58,5 @@ if not SUMMARY.empty:
           "genes gives g homomer types per cell, but still G across the array.")
     fig.tight_layout()
     plt.show()
+
+# %%

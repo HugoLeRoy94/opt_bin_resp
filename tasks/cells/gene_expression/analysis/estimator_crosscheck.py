@@ -196,3 +196,5 @@ else:
             print(f"\n{column} against measured bias:")
             print(part[[column, "bias"]].sort_values(column)
                   .to_string(index=False, float_format=lambda v: f"{v:7.3f}"))
+
+# %%

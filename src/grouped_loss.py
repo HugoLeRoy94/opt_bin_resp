@@ -127,7 +127,9 @@ class GroupedResponseCounter:
     """Stream binomial draws and analytical noise; never enumerate joint states."""
     def __init__(self, grouping):
         self.grouping = grouping
-        self.counter = SymbolCounter()
+        # Group counts are bounded by n_j, so a response packs into one int64
+        # whenever prod(n_j+1) allows. SymbolCounter falls back to row storage.
+        self.counter = SymbolCounter((grouping.group_sizes + 1).tolist())
         self.conditional_sum = 0.0
         self.response_conditional_sum = 0.0
 

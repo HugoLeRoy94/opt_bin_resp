@@ -177,7 +177,7 @@ def test_runner_trains_mi_and_honors_final_only_counting(tmp_path, periodic):
     runner = SimulationRunner(cfg, ExperimentLogger(str(tmp_path)))
     runner.run()
     result = json.loads((tmp_path / 'test_results.json').read_text())
-    assert result['response_counting_samples'] == [17] * 10
+    assert result['response_counting_samples'] == [17]   # one final measurement, not repeated
     assert 'mutual_information_counting_mm' in result
     assert 'mutual_information_kt' not in result
     history = (tmp_path / 'stats.csv').read_text()

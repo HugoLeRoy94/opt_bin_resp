@@ -147,8 +147,8 @@ def test_runner_trains_and_persists_grouped_measurements(tmp_path, periodic):
     runner = SimulationRunner(cfg, ExperimentLogger(str(tmp_path)))
     runner.run()
     result = json.loads((tmp_path / 'test_results.json').read_text())
-    assert result['response_evaluation_samples'] == [17] * 10
-    assert result['grouped_n_states'] == [6] * 10
+    assert result['response_evaluation_samples'] == [17]   # one final measurement, not repeated
+    assert result['grouped_n_states'] == [6]
     assert result['full_array_entropy'] == result['response_entropy_grouped']
     history = (tmp_path / 'stats.csv').read_text()
     assert 'train_mutual_information' in history

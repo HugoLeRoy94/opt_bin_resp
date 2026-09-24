@@ -110,7 +110,7 @@ def test_final_cell_temperature_is_used_and_saved(tmp_path, monkeypatch, epochs,
         seen_temperatures.append(runner.readout.temperature)
         return original_activity(*a, **kw)
 
-    def final_test(env, physics, loss_fn, receptor_indices, n_samples):
+    def final_test(env, physics, loss_fn, receptor_indices, n_samples, **kwargs):
         assert physics.temperature == cfg.temperature
         assert runner.readout.temperature == pytest.approx(.1 * cfg.cell_temperature)
         return {}

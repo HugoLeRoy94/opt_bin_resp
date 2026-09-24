@@ -121,8 +121,8 @@ def test_runner_grouped_kt_counting_bypasses_guard_and_persists(tmp_path):
     runner.run()
     assert runner.grouped_estimator is None
     results = json.loads((tmp_path / 'test_results.json').read_text())
-    assert results['grouped_counting_samples'] == [17] * 10
-    assert results['grouped_n_states'] == [6] * 10
+    assert results['grouped_counting_samples'] == [17]   # one final measurement, not repeated
+    assert results['grouped_n_states'] == [6]
     for h, hc, mi in zip(results['full_array_entropy'],
                          results['conditional_entropy_response'], results['mutual_information_kt']):
         assert h - hc == pytest.approx(mi)

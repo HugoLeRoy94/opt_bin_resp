@@ -1038,13 +1038,22 @@ class SimulationRunner:
 
         return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}
 
-    def _test(self, env, physics, loss_fn, receptor_indices, n_samples: int, test_epochs: int = 10):
-        stats = [
-            self._eval_stats(env, physics, loss_fn, receptor_indices, n_samples, i,
-                             measurement_fns=self.config.final_measurement_fns)
-            for i in range(test_epochs)
-        ]
-        return {key: [s[key] for s in stats] for key in stats[0]} if stats else {}
+    def _test(self, env, physics, loss_fn, receptor_indices, n_samples: int):
+        """One final measurement over n_samples inputs.
+
+        Deliberately not repeated. Repeats would show evaluation NOISE, but a
+        frequency-based entropy estimate is biased downward by an amount fixed by
+        n_samples, so repeating a small batch carries exactly the bias of one. At
+        equal cost, put everything into final_test_batch_size. Re-measure a saved
+        checkpoint with tasks/cells/gene_expression/scripts/evaluation_budget.py if
+        repeat scatter is wanted.
+
+        Values are still stored as one-element lists so every consumer keeps its
+        existing "mean over the final measurement" shape.
+        """
+        stat = self._eval_stats(env, physics, loss_fn, receptor_indices, n_samples, 0,
+                                measurement_fns=self.config.final_measurement_fns)
+        return {key: [value] for key, value in stat.items()}
 
     def run(self, prev_env=None):
         """Executes the full training → checkpoint → test pipeline."""

@@ -119,3 +119,61 @@ def test_design_builds_and_stays_within_its_pool_cap():
     tight = parse_args(["--n_genes", "8", "--means", "3.0", "--max_pool", "10"])
     with pytest.raises(ValueError, match="exceeds --max_pool"):
         design(tight)
+
+
+# ---------------------------------------------------------------------------
+# Good-Turing missing mass: the coverage diagnostic for sampled counting
+# ---------------------------------------------------------------------------
+
+def test_missing_mass_is_zero_when_every_symbol_recurs():
+    import torch
+    from src.counting import entropy_from_counts
+    assert entropy_from_counts(torch.tensor([50, 50, 50, 50]))[4] == pytest.approx(0.0)
+
+
+def test_missing_mass_is_one_when_every_symbol_is_a_singleton():
+    import torch
+    from src.counting import entropy_from_counts
+    assert entropy_from_counts(torch.ones(200, dtype=torch.int64))[4] == pytest.approx(1.0)
+
+
+def test_missing_mass_counts_singletons_not_distinct_symbols():
+    """f1/n, not U/n: the two differ whenever some symbols recur and others do not."""
+    import torch
+    from src.counting import entropy_from_counts
+    counts = torch.tensor([10, 10, 1, 1, 1])        # n=23, U=5, f1=3
+    _, _, unique, _, missing = entropy_from_counts(counts)
+    assert unique == 5
+    assert missing == pytest.approx(3 / 23)
+    assert missing != pytest.approx(unique / 23)
+
+
+def test_missing_mass_tracks_undersampling_and_plugin_bias():
+    import math
+    import torch
+    from src.counting import SymbolCounter
+    generator = torch.Generator().manual_seed(0)
+
+    covered = SymbolCounter()
+    covered.update(torch.randint(0, 3, (2000, 4), generator=generator))
+    plugin_ok, _, _, _, missing_ok = covered.entropy()
+
+    sparse = SymbolCounter()
+    sparse.update(torch.randint(0, 200, (2000, 4), generator=generator))
+    plugin_bad, _, _, _, missing_bad = sparse.entropy()
+
+    assert missing_ok < 0.01 and plugin_ok == pytest.approx(math.log2(81), abs=0.1)
+    assert missing_bad > 0.9 and plugin_bad < 4 * math.log2(200) - 10
+
+
+def test_grouped_counter_reports_missing_mass():
+    import torch
+    from src.grouped_loss import GroupedResponseCounter
+    from src.response_groups import CellGrouping
+    grouping = CellGrouping(torch.tensor([[1., 0.], [1., 0.], [0., 1.]]))
+    counter = GroupedResponseCounter(grouping)
+    counter.update(torch.rand(256, 3).clamp(0.2, 0.8),
+                   torch.Generator().manual_seed(3))
+    metrics = counter.metrics()
+    assert 0.0 <= metrics["grouped_counting_missing_mass"] <= 1.0
+    assert "grouped_counting_unique_fraction" in metrics

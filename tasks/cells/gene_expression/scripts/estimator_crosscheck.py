@@ -118,7 +118,8 @@ def main(argv=None):
                         trained_on=training, evaluated_with=estimator,
                         mi=row[MI_KEY[estimator]], samples=row["samples"],
                         repeat=row["repeat"], run_dir=str(runs[(seed, g)]),
-                        unique_fraction=row.get("grouped_counting_unique_fraction")))
+                        unique_fraction=row.get("grouped_counting_unique_fraction"),
+                        missing_mass=row.get("grouped_counting_missing_mass")))
                 print(f"  seed={seed} g={g} trained={training:5} eval={estimator:8} "
                       + "  ".join(f"B={r['samples']}: {r[MI_KEY[estimator]]:.3f}" for r in rows))
                 del env, physics, readout, est

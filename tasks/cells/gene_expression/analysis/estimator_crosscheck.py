@@ -153,3 +153,46 @@ fig.tight_layout()
 if SAVE_FIGURES:
     fig.savefig(HERE / "estimator_crosscheck.png", dpi=180)
 plt.show()
+
+
+# %%
+# ════════════════════════════════════════════════════════════════════════════
+# 5. CALIBRATING THE MISSING MASS
+# ════════════════════════════════════════════════════════════════════════════
+# This report is the only place where the counting bias is MEASURED rather than
+# guessed, because the exact estimator supplies the truth for the same model. So
+# it is the right place to see what the Good-Turing missing mass f1/B is worth as
+# a warning sign. Older reports carry only unique_fraction; both are plotted if
+# present, but f1/B is the one with theory behind it.
+counting = runs[runs.evaluated_with == "counting"].copy()
+truth = (runs[runs.evaluated_with == "exact"]
+         .groupby(["genes_per_cell", "samples", "trained_on", "cell_sampling_seed"]).mi.mean())
+counting["bias"] = counting.apply(
+    lambda r: truth.get((r.genes_per_cell, r.samples, r.trained_on, r.cell_sampling_seed),
+                        np.nan) - r.mi, axis=1)
+
+available = [c for c in ("missing_mass", "unique_fraction")
+             if c in counting and counting[c].notna().any()]
+if not available:
+    print("No coverage diagnostic in this report.")
+else:
+    fig, axes = plt.subplots(1, len(available), figsize=(6 * len(available), 4.5), squeeze=False)
+    for ax, column in zip(axes.flat, available):
+        for g, part in counting.groupby("genes_per_cell"):
+            ax.scatter(part[column], part.bias, label=f"g={g}", alpha=.8)
+        ax.set(xlabel=column, ylabel="measured counting bias [bits]",
+               title=f"bias against {column}")
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=8)
+    fig.suptitle("Bias is measured as (exact - counting) on the SAME trained model", fontsize=10)
+    fig.tight_layout()
+    if SAVE_FIGURES:
+        fig.savefig(HERE / "estimator_crosscheck_calibration.png", dpi=180)
+    plt.show()
+
+    for column in available:
+        part = counting.dropna(subset=[column, "bias"])
+        if len(part) > 2:
+            print(f"\n{column} against measured bias:")
+            print(part[[column, "bias"]].sort_values(column)
+                  .to_string(index=False, float_format=lambda v: f"{v:7.3f}"))

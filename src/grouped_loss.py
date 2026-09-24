@@ -141,7 +141,7 @@ class GroupedResponseCounter:
         self.counter.update(self.grouping.sample(p, generator))
 
     def metrics(self):
-        plugin, mm, unique, log_n = self.counter.entropy()
+        plugin, mm, unique, log_n, missing = self.counter.entropy()
         n = self.counter.n_samples
         hc = self.conditional_sum / n
         hyc = self.response_conditional_sum / n
@@ -158,6 +158,7 @@ class GroupedResponseCounter:
             mutual_information_grouped_counting_mm=mm - hc,
             grouped_counting_K_hat=unique,
             grouped_counting_unique_fraction=unique / n,
+            grouped_counting_missing_mass=missing,
             grouped_counting_samples=n,
             grouped_counting_log2B=log_n,
             **self.grouping.diagnostics())

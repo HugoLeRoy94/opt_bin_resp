@@ -75,7 +75,9 @@ print(available().to_string(index=False) if len(available()) else "  (none)")
 # ════════════════════════════════════════════════════════════════════════════
 # These sweeps use sampled counting, so the MI key carries the estimator name.
 # The plug-in estimator is biased DOWNWARD when the symbol space is undersampled,
-# which is why grouped_counting_unique_fraction is carried through to step 4.
+# which is why the Good-Turing missing mass is carried through and plotted: it is
+# the share of probability never sampled, estimated as f1/B from the symbols seen
+# exactly once. Read the MI panel together with it, not on its own.
 MI_KEY = "mutual_information_grouped_counting_plugin"
 NOISE_KEY = "conditional_entropy_response_grouped_counting"
 
@@ -112,7 +114,9 @@ for sweep_name in SWEEPS:
             #  ↓ THE FIRST AVERAGE: 10 measurements of ONE trained model
             "mi": float(np.mean(results[MI_KEY])),
             "noise": float(np.mean(results[NOISE_KEY])),
-            "unique_fraction": float(np.mean(results["grouped_counting_unique_fraction"])),
+            # older runs predate the Good-Turing metric; leave a hole rather than a guess
+            "missing_mass": float(np.mean(results["grouped_counting_missing_mass"]))
+            if "grouped_counting_missing_mass" in results else np.nan,
             "eval_inputs": int(np.mean(results["response_evaluation_samples"])),
             "cell_types": len({tuple(g) for g in cfg.cell_gene_sets}),
             "genes_seen": len({g for cell in cfg.cell_gene_sets for g in cell}),
@@ -138,7 +142,7 @@ points = runs.groupby(POINT).agg(
     n=("mi", "size"), mi_mean=("mi", "mean"), mi_sd=("mi", "std"),
     mean_genes=("mean_genes", "mean"), noise_mean=("noise", "mean"),
     cell_types=("cell_types", "mean"), genes_seen=("genes_seen", "mean"),
-    pool=("pool", "mean"), unique_fraction=("unique_fraction", "mean"),
+    pool=("pool", "mean"), missing_mass=("missing_mass", "mean"),
     eval_inputs=("eval_inputs", "min"),
 ).reset_index()
 points["mi_sem"] = points.mi_sd / np.sqrt(points.n)
@@ -150,14 +154,9 @@ points["types_available"] = [math.comb(int(G), int(round(m)))
                              for G, m in zip(points.G, points.mean_genes)]
 points["log2_types"] = np.log2(points.types_available)
 
-# Sampled counting saturates when almost every evaluation input gives a symbol seen
-# once. Then the plug-in entropy is an artefact of the budget, not of the array.
-suspect = points[(points.unique_fraction > 0.5) |
-                 (points.mi_mean >= np.log2(points.eval_inputs) - 1)]
-if not suspect.empty:
-    print("\nWARNING: undersampled counting or MI near log2(evaluation inputs).")
-    print("These points measure the evaluation budget as much as the array:")
-    print(suspect[POINT + ["mi_mean", "unique_fraction", "eval_inputs"]].to_string(index=False))
+# No pass/fail threshold on the missing mass: it is a continuous quantity and the
+# honest thing is to show it next to the MI it qualifies. Section 5 plots it.
+points["sample_ceiling"] = np.log2(points.eval_inputs)
 
 
 # %%
@@ -222,6 +221,37 @@ fig.tight_layout()
 if SAVE_FIGURES:
     fig.savefig(HERE / "expression_law.png", dpi=180)
 plt.show()
+
+
+# %%
+# How much of the response distribution was never sampled. f1/B, from the symbols
+# seen exactly once, is the Good-Turing estimate of unobserved probability mass.
+# Sampled counting under-reads entropy in proportion to it, so an MI point sitting
+# at a high missing mass is partly a measurement of the evaluation budget.
+if points.missing_mass.notna().any():
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    for key, curve in points.groupby(CURVE, sort=False):
+        curve = curve.sort_values("mean_genes")
+        kw = style(*key)
+        axes[0].plot(curve.mean_genes, curve.missing_mass,
+                     label=f"{key[0]}, G={key[1]}", **kw)
+        axes[1].scatter(curve.missing_mass, curve.mi_mean,
+                        color=kw["color"], marker=kw["marker"],
+                        label=f"{key[0]}, G={key[1]}")
+    axes[0].set(xlabel="mean genes expressed per cell",
+                ylabel="Good-Turing missing mass  f1/B",
+                title=f"Unsampled mass at {int(points.eval_inputs.min()):,} evaluation inputs")
+    axes[1].set(xlabel="Good-Turing missing mass  f1/B", ylabel="MI [bits]",
+                title="MI against how much was never sampled")
+    for ax in axes:
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    if SAVE_FIGURES:
+        fig.savefig(HERE / "expression_law_missing_mass.png", dpi=180)
+    plt.show()
+else:
+    print("No missing-mass metric in these runs: they predate grouped_counting_missing_mass.")
 
 
 # %%

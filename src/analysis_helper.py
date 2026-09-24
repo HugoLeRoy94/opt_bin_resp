@@ -743,8 +743,8 @@ def miller_madow_entropy(activity: torch.Tensor):
     B, R = activity.shape
     codes = (activity > 0.5).long()
     _, counts = torch.unique(codes, dim=0, return_counts=True)
-    H_plugin, H_MM, K_hat, _ = entropy_from_counts(counts)
-    return H_plugin, H_MM, K_hat, math.log2(B), math.ldexp(float(K_hat), -R)
+    H_plugin, H_MM, K_hat, _, missing = entropy_from_counts(counts)
+    return H_plugin, H_MM, K_hat, math.log2(B), math.ldexp(float(K_hat), -R), missing
 
 
 @torch.no_grad()
@@ -861,7 +861,7 @@ def response_counting_metrics(codes, h_cond):
     Negative estimates are retained: finite-sample bias or Monte Carlo error must
     not be hidden by clamping. K_hat / B diagnoses sparse observed-code coverage.
     """
-    plugin, mm, k_hat, log2_b, _ = miller_madow_entropy(codes)
+    plugin, mm, k_hat, log2_b, _, missing = miller_madow_entropy(codes)
     return {
         'response_entropy_plugin': plugin,
         'response_entropy_mm': mm,
@@ -870,6 +870,7 @@ def response_counting_metrics(codes, h_cond):
         'conditional_entropy_response': h_cond,
         'response_counting_K_hat': float(k_hat),
         'response_counting_unique_fraction': k_hat / codes.shape[0],
+        'response_counting_missing_mass': missing,
         'response_counting_samples': int(codes.shape[0]),
         'response_counting_log2B': log2_b,
     }
@@ -898,19 +899,21 @@ def codeword_entropy(activity):
       'codeword_entropy_log2B'  — log₂(B), trivial ceiling for the plugin
       'codeword_entropy_K_hat'  — number of distinct codewords observed
       'codeword_entropy_K_frac' — K_hat / 2^R, fraction of alphabet sampled
+      'codeword_entropy_missing_mass' — Good-Turing f1/B: mass never sampled
 
     Add 'codeword_entropy' to measurement_fns to opt in.
     When eval_chunk_size < test_batch_size, _eval_stats accumulates hard codes
     across all chunks so that the full test_batch_size budget is used here.
     """
     act = activity.detach()
-    H_plugin, H_MM, K_hat, log2_B, K_frac = miller_madow_entropy(act)
+    H_plugin, H_MM, K_hat, log2_B, K_frac, missing = miller_madow_entropy(act)
     return {
         'codeword_entropy_plugin': H_plugin,
         'codeword_entropy_mm':     H_MM,
         'codeword_entropy_log2B':  log2_B,
         'codeword_entropy_K_hat':  float(K_hat),
         'codeword_entropy_K_frac': K_frac,
+        'codeword_entropy_missing_mass': missing,
     }
 
 @torch.no_grad()

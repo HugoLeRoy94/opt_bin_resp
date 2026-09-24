@@ -284,25 +284,41 @@ row cannot stop a run from being indexed.
 
 Worked example: `tasks/cells/gene_expression/analysis/replicates.py`.
 
+`replicates.py` is deliberately SELF-CONTAINED: it imports no shared analysis
+helper, so changing what it plots cannot change another figure. Duplication
+between analysis scripts is accepted for that reason. `scaling.py`,
+`environment.py` and `_method_comparison.py` still share `analysis/_shared.py`.
+
 ### Step 1 — select sweeps
 
-`load_study(DATA, "replicates", SWEEPS)`. With `SWEEPS = None` it lists
-`data/gene_expression/replicates_*/`, reads each `experiment.json`, and keeps the
-**newest sweep per (condition, coverage) pair**.
+A literal list of folder names at the top of the file:
 
-> This automatic selection is how incompatible sweeps end up in one figure without
-> anyone noticing. Passing an explicit list of folder names is safer.
+```python
+SWEEPS = [
+    "replicates_heteromers_complete_20260923_112537",   # grouped_mi   / exact
+    "replicates_homomers_complete_20260923_112624",     # grouped_mi   / exact
+    "replicates_heteromers_complete_20260923_135950",   # grouped_kt_mi / counting
+]
+```
+
+There is no "pick the latest" rule. Automatic selection is what once put a
+KT-trained sweep on the same axis as three exactly-trained ones unnoticed. The
+script first prints `available()`: every sweep on disk for this experiment, its
+condition, coverage, training objective, evaluation estimator, array size and
+planned run count, with the selected ones marked.
 
 ### Step 2 — read every finished run
 
-Via `src.IO.SweepLoader.iter_run_dirs`, for each run holding both
-`test_results.json` and `best_model.pt`:
+Via `src.IO.SweepLoader.iter_run_dirs`, for each run holding `test_results.json`:
 
 - load `config.json` as a `SingleRunConfig`
-- check the run was in `experiment.json`'s plan
-- check its gene sets match the planned ones
-- load `test_results.json`
-- **take the mean of the 10 test repeats** for each metric
+- check the run appears in `experiment.json`'s plan, keyed by
+  (`cell_sampling_seed`, genes per cell)
+- check its gene sets on disk match the planned ones
+- pick the metric key for how it was measured: `mutual_information_grouped` for
+  exact enumeration, `mutual_information_grouped_counting_plugin` for sampled
+  counting
+- **take the mean of the 10 test repeats**
 
 Result: one row per run.
 
@@ -329,9 +345,10 @@ column `mi`               = 2.241878      MATCH
 
 ### Step 3 — collapse replicates
 
-`summarize()` groups by
-`(condition, coverage, n_genes, n_cells, genes_per_cell, profile, mi_estimator, training_entropy)`
-and averages. Verified:
+Groups by `(condition, array, method, genes_per_cell)` and averages, where
+`array` is `"G=5, C=30"` and `method` is `"grouped_mi / exact"`. Method is part of
+the identity, so two estimators can sit on one figure without their means ever
+being merged. Verified:
 
 ```
 the 5 runs at homomers / 5 genes / 5 genes-per-cell:
@@ -352,12 +369,14 @@ one point. **The error bar on the figure is the second one**, the spread across
 independent optimizations, which is the honest uncertainty.
 
 `retained` is this point's `mi_mean` divided by the `mi_mean` at
-`genes_per_cell == 1` for the same condition, array and method. 1.0 means as good
-as one gene per cell.
+`genes_per_cell == 1` **of the same curve**, so a method or array offset cannot
+leak into it. 1.0 means as good as one gene per cell.
 
 ### Step 4 — the panels
 
-`replicates.py` draws a 2 by 2 figure, x axis always `genes_per_cell`:
+Before drawing anything the script prints every curve: its x values, its y values,
+its error bars and its run count per point. Nothing reaches the figure without
+being printed first. It then draws a 2 by 2 figure, x axis always `genes_per_cell`:
 
 | panel | y | meaning |
 |---|---|---|
@@ -366,12 +385,14 @@ as one gene per cell.
 | bottom left | `noise_mean` | H(response given input), the array's response noise |
 | bottom right | `represented_mean` | distinct genes present in the array |
 
-Then a scatter of every individual run, unaveraged.
+Then a scatter of every individual run, unaveraged, so the replicate-to-replicate
+spread the error bars summarise is directly visible.
 
-`plot_curves` draws one line per `(condition, coverage)`, plus an extra split on
-any of `mi_estimator` or `training_entropy` that varies within the frame. Without
-that split a pooled frame would place two y values at the same x on one line and
-draw a zigzag that reads as noise.
+Curve style encodes the distinction that matters: **colour is the biological
+strategy** (heteromers against homomers, what the project actually asks about),
+**dashing is the estimator method** (an artefact of measurement, not biology), and
+**marker is the array size**. A method difference can then never be mistaken for a
+biological one at a glance.
 
 ### Step 5 — read the line labels before believing the figure
 

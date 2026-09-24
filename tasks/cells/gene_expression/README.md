@@ -91,7 +91,7 @@ The original two scripts remain available separately.
 
 | Script in `scripts/` | Default design | Matching IDE analysis in `analysis/` |
 |---|---|---|
-| `replicates.py` | 5 optimizations per expression level; 3 genes, 10 cells; random expression sets | `replicates.py` |
+| `replicates.py` | 5 optimizations per expression level; array size set by `--n_genes` / `--n_cells` | `replicates.py` (self-contained) |
 | `scaling.py` | 3, 4, 5, 6 genes with 3 cells per gene; complete gene coverage; fixed original environment | `scaling.py` |
 | `environment.py` | 6 genes, 18 cells; changes to ligand count, latent dimension, and mixture complexity | `environment.py` |
 | `evaluation_budget.py` | Re-measure saved models at 4,096, 16,384, and 65,536 inputs, with 3 evaluation repeats | `evaluation_budget.py` |
@@ -202,11 +202,20 @@ experiment, condition, coverage design, root seed, and starting replicate.
 One seeded sequence draws fresh worlds across the sweep; worlds are not matched.
 
 To extend a campaign, use `--replicate_start 5 --replicates 5`, or a new `--seed`.
-Exact reruns with identical seeds are not new independent replicates. The loader
-defaults to the latest sweep **per condition and coverage design**. Set `SWEEPS`
-in the `# %%` analysis file to explicit compatible folders to pool disjoint
-seed/replicate ranges or select older results. Different grids and budgets must
-be analyzed separately, including baseline-only versus full environment sweeps.
+Exact reruns with identical seeds are not new independent replicates.
+
+`analysis/replicates.py` is self-contained and names its sweeps explicitly in a
+`SWEEPS` list at the top, with no "latest sweep" rule; it prints every sweep on
+disk with its training objective, evaluation estimator and array size so the
+choice is made with the alternatives in view. One curve is drawn per
+(condition, array, method), so putting two estimators or two array sizes on one
+figure never merges their means. Colour is the biological strategy, dashing the
+estimator, marker the array size.
+
+`scaling.py`, `environment.py` and `estimator_comparison.py` still share
+`analysis/_shared.py`, which defaults to the latest sweep per condition and
+coverage design and warns, naming each differing setting, when the selected
+sweeps do not share a protocol.
 
 Each optimization contributes **one mean over its test repeats**. Error bars
 are SEM across independent optimizations, and printed `n` counts those runs.

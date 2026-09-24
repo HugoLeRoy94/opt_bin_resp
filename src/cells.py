@@ -249,14 +249,23 @@ def sample_gene_sets_bernoulli(n_cells: int, n_genes: int,
 
 def sample_gene_sets_by_size(n_cells: int, n_genes: int,
                              size_pmf: Sequence[float],
+                             gene_probs: Optional[Sequence[float]] = None,
                              seed: Optional[int] = None) -> List[Tuple[int, ...]]:
     """Two-stage sampler: draw the NUMBER of expressed genes, then which ones.
 
     size_pmf[i] is the (unnormalised) probability that a cell expresses i+1 genes,
     so len(size_pmf) sets the maximum.  This is the hook for an arbitrarily complex
     expression model — a distribution conditioned on how many genes are already
-    expressed is exactly a choice of size_pmf.  Given the size, the genes are drawn
-    uniformly without replacement.
+    expressed is exactly a choice of size_pmf.
+
+    gene_probs weights WHICH genes are drawn (successive weighted sampling without
+    replacement); None means uniform.  The two laws are independent, so the size
+    distribution and the gene-identity distribution can be varied separately.
+
+    Cells are drawn independently: no cell knows what any other cell expressed, and
+    a gene can end up expressed nowhere in the array.  Contrast the
+    "every gene expressed at least once" designs, which require exactly the kind of
+    coordination between cells that a developing tissue has no mechanism for.
     """
     rng = random.Random(seed)
     total = float(sum(size_pmf))
@@ -266,12 +275,105 @@ def sample_gene_sets_by_size(n_cells: int, n_genes: int,
     sizes = list(range(1, len(probs) + 1))
     if sizes[-1] > n_genes:
         raise ValueError(f"size_pmf allows {sizes[-1]} genes but only {n_genes} exist.")
+    if gene_probs is not None:
+        if len(gene_probs) != n_genes:
+            raise ValueError(f"gene_probs has length {len(gene_probs)}, expected {n_genes}.")
+        if min(gene_probs) < 0 or sum(gene_probs) <= 0:
+            raise ValueError("gene_probs must be non-negative with positive total.")
 
     cells = []
     for _ in range(n_cells):
         g = rng.choices(sizes, weights=probs, k=1)[0]
-        cells.append(tuple(sorted(rng.sample(range(n_genes), g))))
+        if gene_probs is None:
+            cells.append(tuple(sorted(rng.sample(range(n_genes), g))))
+            continue
+        pool, weights, chosen = list(range(n_genes)), list(gene_probs), []
+        for _ in range(g):
+            i = rng.choices(range(len(pool)), weights=weights, k=1)[0]
+            chosen.append(pool.pop(i))
+            weights.pop(i)
+        cells.append(tuple(sorted(chosen)))
     return cells
+
+
+def size_pmf_for_mean(n_genes: int, mean: float, family: str = "uniform",
+                      tol: float = 1e-10) -> List[float]:
+    """Distribution over the NUMBER of genes a cell expresses, with a target mean.
+
+    The mean is the experimental knob: it moves the array continuously from "one
+    gene per cell" to "everything everywhere", so curves from different laws can be
+    compared at matched expression level.
+
+    family='uniform'     flat over {1..M}.  Only means (M+1)/2 are reachable, i.e.
+                         1, 1.5, ..., (n_genes+1)/2.
+    family='exponential' p_i proportional to exp(lambda*i) over {1..n_genes}, with
+                         lambda solved for the requested mean.  lambda<0 favours
+                         small cells, lambda=0 is flat over the full range.  Any
+                         mean strictly inside (1, n_genes) is reachable.
+    """
+    if not 1 <= mean <= n_genes:
+        raise ValueError(f"mean must lie in [1, {n_genes}], got {mean}.")
+    sizes = list(range(1, n_genes + 1))
+
+    if family == "uniform":
+        m = 2 * mean - 1
+        if abs(m - round(m)) > 1e-9 or not 1 <= round(m) <= n_genes:
+            reachable = [(k + 1) / 2 for k in range(1, n_genes + 1)]
+            raise ValueError(f"family='uniform' cannot reach mean {mean}. "
+                             f"Reachable means: {reachable}.")
+        m = round(m)
+        return [1.0 / m if i <= m else 0.0 for i in sizes]
+
+    if family != "exponential":
+        raise ValueError(f"Unknown size family {family!r}. Use 'uniform' or 'exponential'.")
+
+    def weights_at(lam: float) -> List[float]:
+        logits = [lam * i for i in sizes]
+        shift = max(logits)                 # subtract the max: exp never overflows
+        return [math.exp(l - shift) for l in logits]
+
+    def mean_at(lam: float) -> float:
+        w = weights_at(lam)
+        return sum(i * x for i, x in zip(sizes, w)) / sum(w)
+
+    if abs(mean - 1) < tol:
+        return [1.0] + [0.0] * (n_genes - 1)
+    if abs(mean - n_genes) < tol:
+        return [0.0] * (n_genes - 1) + [1.0]
+    lo, hi = -1e3, 1e3                       # mean_at is increasing in lambda
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if mean_at(mid) < mean:
+            lo = mid
+        else:
+            hi = mid
+    w = weights_at(0.5 * (lo + hi))
+    total = sum(w)
+    return [x / total for x in w]
+
+
+def gene_expression_probs(n_genes: int, family: str = "uniform",
+                          ratio: float = 1.0) -> List[float]:
+    """How likely each GENE is to be picked, independent of how many are picked.
+
+    family='uniform'     every gene equally likely.
+    family='exponential' geometric decay across the gene index, with
+                         `ratio` = P(first gene) / P(last gene).  ratio=1 is uniform.
+
+    A skewed law makes some subunits common and others rare, so the array explores
+    a biased corner of receptor space rather than all of it evenly.
+    """
+    if n_genes < 1:
+        raise ValueError("n_genes must be positive.")
+    if family == "uniform" or n_genes == 1:
+        return [1.0 / n_genes] * n_genes
+    if family != "exponential":
+        raise ValueError(f"Unknown gene family {family!r}. Use 'uniform' or 'exponential'.")
+    if ratio <= 0:
+        raise ValueError("ratio must be positive.")
+    w = [ratio ** (-u / (n_genes - 1)) for u in range(n_genes)]
+    total = sum(w)
+    return [x / total for x in w]
 
 
 def build_cell_array(
@@ -293,7 +395,8 @@ def build_cell_array(
     repertoires wins if given (the receptor list per cell is stated outright);
     otherwise gene_sets; otherwise n_cells gene sets are sampled with `strategy`.
     strategy='bernoulli' uses gene_probs (defaults to uniform 2/n_genes, i.e. two
-    expressed genes per cell on average); strategy='size_pmf' uses size_pmf.
+    expressed genes per cell on average); strategy='size_pmf' uses size_pmf, and
+    gene_probs then weights WHICH genes are drawn at the chosen size.
     """
     if repertoires is not None:
         return CellArray(None, k_sub, use_interface_model=use_interface_model,
@@ -310,7 +413,8 @@ def build_cell_array(
         elif strategy == "size_pmf":
             if size_pmf is None:
                 raise ValueError("strategy='size_pmf' requires size_pmf.")
-            gene_sets = sample_gene_sets_by_size(n_cells, n_genes, size_pmf, seed=seed)
+            gene_sets = sample_gene_sets_by_size(n_cells, n_genes, size_pmf,
+                                                 gene_probs=gene_probs, seed=seed)
         else:
             raise ValueError(f"Unknown strategy {strategy!r}. Choose 'bernoulli' or 'size_pmf'.")
 

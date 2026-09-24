@@ -175,8 +175,12 @@ for scaling/environment. Replicates offers `--n_cells`; the others offer
 
 Training defaults to `--entropy grouped_mi`; `--entropy kt_mi` retains KT training
 with the **same final grouped-MI measurement**. Compare biological strategies with
-the same training objective. The analysis rejects accidental mixing of objectives
-or budgets. `full_array_entropy` retains its native meaning for the chosen loss;
+the same training objective. When sweeps with different protocols are loaded
+together the analysis warns and names every setting that differs, marking which
+ones it can keep apart and which it will pool; it does not refuse to load them.
+Training objective and evaluation estimator are always kept apart, as the
+`training_entropy` and `mi_estimator` columns, so two methods never collapse into
+one mean. `full_array_entropy` retains its native meaning for the chosen loss;
 the shared analysis uses `mutual_information_grouped` for comparable final values.
 
 These larger designs explicitly set `--max_states 262144`, above the core
@@ -233,6 +237,22 @@ curve across expression levels, and the final analysis cell explains this. Omit
 `--baseline_only` for both conditions to obtain that curve.
 
 ### Grouped KT and counting for larger cell arrays
+
+For side-by-side plots of saved exact and KT/counting campaigns, execute the
+`# %%` cells in `analysis/estimator_comparison.py`. It automatically selects the
+latest compatible replicates design with multiple methods, keeping array size,
+environment and budgets fixed while allowing training/evaluation methods and
+the enumeration guard to differ. It loads each method separately through the
+existing validation and replicate accounting. `SWEEPS` can select explicit folders.
+
+The first figure compares MI with independent-run SEM and individual run points;
+the second compares full response entropy and conditional response entropy.
+Axes and strategy colors match across panels. Missing strategies and incomplete
+replicate counts are shown. Training and evaluation methods appear in panel
+titles: their combined difference does not isolate optimization effects from
+counting bias. Printed summaries include the counting unique-vector fraction.
+Figures are saved beside the script as `estimator_comparison_mi.png` and
+`estimator_comparison_entropies.png`; set `SAVE_FIGURES=False` to only display them.
 
 Grouping is shared across exact enumeration, KT and sampled counting. The existing
 defaults remain `--entropy grouped_mi --evaluation exact`. To avoid enumerating
@@ -323,7 +343,8 @@ A focused convergence pilot for the six-gene, eighteen-cell sweep is:
    `16384`, using the same selected design and **65,536 final evaluation inputs**.
    Keep the epoch count fixed to compare gradient quality at equal update count;
    larger batches also consume more total inputs and compute. Analyze each
-   training budget separately because the loader rejects mixed protocols.
+   training budget separately: the loader warns about a mixed protocol and pools
+   runs that differ only in batch size, because batch size has no column.
 
 Evaluation chunks are aggregated before taking entropy: a chunk of 512 does not
 impose a 9-bit ceiling when the total evaluation budget is larger. Increasing the

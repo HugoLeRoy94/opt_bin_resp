@@ -7,15 +7,15 @@ From this directory, the complete user-facing workflow is:
 # Review unlabelled timestamped sweeps; choose keep/delete/skip.
 python manage_data.py curate [goal]
 
-# Apply confirmed delete labels on both machines, mirror cluster → local,
-# and rebuild the derived runs.db indexes.
+# Apply confirmed delete labels on both machines, then mirror cluster → local.
 python manage_data.py sync [goal]
 ```
 
 Execution state (`running`, `complete`, `failed`, `interrupted`) is recorded
 automatically. Curation defaults to `review`; explicit `keep`/`delete` decisions
 and short labels live in the Git-tracked `curation.csv`. See
-[`doc/db_cheatsheet.md`](doc/db_cheatsheet.md) for the concise reference.
+[`doc/curation_and_sync.md`](doc/curation_and_sync.md) for the concise reference,
+and [`doc/data_pipeline.md`](doc/data_pipeline.md) for how stored data becomes a plot.
 
 Cell experiments: [`cells/gene_expression`](tasks/cells/gene_expression/README.md)
 sweeps the mean number of genes expressed per cell using the mean readout and KT MI,

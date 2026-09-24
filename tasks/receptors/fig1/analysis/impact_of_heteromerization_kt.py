@@ -25,7 +25,7 @@ KT_LO  = "full_array_entropy_kt_mean"         # KT lower bound (reported MI)
 KT_UP  = "full_array_entropy_kt_upper_mean"   # KT upper bound (bracket top)
 RATIO_RANGE = range(1, 6)                     # R/n_genes levels to draw
 
-FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/fig1/figures")
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 hete = latest_sweep(load_runs(GOAL, receptor_type="heteromer"))

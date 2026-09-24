@@ -7,33 +7,34 @@ User workflow
     python manage_data.py sync [goal] [--yes]
 
 The cluster is authoritative for raw data.  ``curation.csv`` is authoritative
-for the human keep/delete decision.  ``runs.db`` is rebuilt automatically.
+for the human keep/delete decision.  Analyses read the run directories
+directly, so there is no index to rebuild.
 """
 from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime, timezone
-import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
-import sqlite3
-from statistics import fmean
 import subprocess
 import sys
 from typing import Iterable
 
+from src import curation
+
 
 ROOT = Path(__file__).resolve().parent
 LOCAL_DATA = Path(os.environ.get("OCTOPUS_DATA_ROOT", ROOT / "data")).resolve()
-CURATION_FILE = Path(os.environ.get("OCTOPUS_CURATION_FILE", ROOT / "curation.csv")).resolve()
+# src.curation owns the registry path so this tool and anything that reads a
+# sweep's curation state cannot end up looking at two different files.
+CURATION_FILE = Path(curation.CURATION_PATH).resolve()
 SERVER = os.environ.get("OCTOPUS_DATA_SERVER", "leroy@10.187.172.7")
 REMOTE_DATA = os.environ.get("OCTOPUS_REMOTE_DATA_ROOT", "/storage/leroy/data").rstrip("/")
 
-STATES = {"keep", "delete"}
+STATES = curation.CURATION_STATES
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TIMESTAMP_RE = re.compile(r"\d{8}_\d{6}")
 SSH_OPTIONS = [
@@ -63,20 +64,13 @@ def _validate_sweep_path(value: str) -> str:
 
 
 def load_curation() -> dict[str, tuple[str, str]]:
-    decisions: dict[str, tuple[str, str]] = {}
-    if not CURATION_FILE.exists():
-        return decisions
-    with CURATION_FILE.open(newline="") as f:
-        for row in csv.DictReader(f):
-            path = _validate_sweep_path(row.get("path", ""))
-            state = row.get("state", "").strip()
-            label = row.get("label", "").strip()
-            if state not in STATES:
-                raise ValueError(f"Invalid curation state {state!r} for {path}")
-            if state == "keep" and not label:
-                raise ValueError(f"A kept sweep needs a label: {path}")
-            decisions[path] = (state, label)
-    return decisions
+    """Strictly parsed registry, with every key checked as a safe GOAL/SWEEP path.
+
+    These keys are interpolated into a remote ``rm -rf``, so the shape check stays
+    here even though src.curation does the parsing.
+    """
+    return {_validate_sweep_path(path): decision
+            for path, decision in curation.read_curation(CURATION_FILE, strict=True).items()}
 
 
 def save_curation(decisions: dict[str, tuple[str, str]]) -> None:
@@ -153,31 +147,18 @@ def _execution_summary(sweep: Path) -> tuple[str, int, int]:
     return state, complete, len(configs)
 
 
-def _configured_curation(sweep: Path) -> tuple[str, str]:
-    config_path = sweep / "sweep_config.json"
-    try:
-        config = json.loads(config_path.read_text())
-    except (OSError, ValueError, TypeError):
-        return "review", ""
-    state = config.get("curation_state", "review")
-    label = str(config.get("curation_label", "")).strip()
-    if state == "keep" and label:
-        return state, label
-    if state == "delete":
-        return state, label
-    return "review", ""
-
-
 def _effective_decisions(
     goals: Iterable[str], overrides: dict[str, tuple[str, str]]
 ) -> dict[str, tuple[str, str]]:
-    """Merge config defaults with the tracked post-hoc overrides."""
+    """Merge each sweep's own default with the tracked post-hoc overrides.
+
+    Same precedence as src.curation.sweep_curation, which the run indexer applies.
+    """
     effective: dict[str, tuple[str, str]] = {}
     for sweep in _sweeps(goals):
-        key = f"{sweep.parent.name}/{sweep.name}"
-        configured = _configured_curation(sweep)
+        configured = curation.configured_curation(str(sweep))
         if configured[0] in STATES:
-            effective[key] = configured
+            effective[f"{sweep.parent.name}/{sweep.name}"] = configured
     effective.update(overrides)
     return effective
 
@@ -287,7 +268,17 @@ def _delete_decisions(
     return targets
 
 
-def _sync_goal(goal: str) -> None:
+RSYNC_FLAGS = ["-az", "--delete"]
+
+
+def _sync_goal(goal: str, assume_yes: bool) -> None:
+    """Mirror one goal from the cluster, which is authoritative for raw data.
+
+    --delete makes the local tree a true mirror, so a sweep that exists only
+    locally (produced by a local run, or already removed upstream) disappears.
+    That is silent data loss for anything never pushed, so a dry run reports the
+    local-only sweeps first and asks before any deletion.
+    """
     remote = f"{REMOTE_DATA}/{goal}"
     if not _remote_exists(remote):
         print(f"skip {goal}: no cluster directory")
@@ -295,108 +286,25 @@ def _sync_goal(goal: str) -> None:
     local = LOCAL_DATA / goal
     local.mkdir(parents=True, exist_ok=True)
     print(f"\nsync {goal}")
-    _run([
-        "rsync", "-az", "--delete", "--exclude=/runs.db",
-        "--exclude=/runs.db-wal", "--exclude=/runs.db-shm",
-        "-e", "ssh " + " ".join(SSH_OPTIONS),
-        f"{SERVER}:{remote}/", f"{local}/",
-    ])
-
-def _rebuild_goal(goal: str) -> None:
-    local = LOCAL_DATA / goal
-    local.mkdir(parents=True, exist_ok=True)
-    decisions = _effective_decisions([goal], load_curation())
-    rows: list[dict[str, object]] = []
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    git = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True, check=False,
-    ).stdout.strip() or None
-
-    for config_path in local.rglob("config.json"):
-        try:
-            config = json.loads(config_path.read_text())
-        except (OSError, ValueError, TypeError) as exc:
-            print(f"  skip invalid config {config_path}: {exc}")
-            continue
-        run_dir = config_path.parent
-        rel = run_dir.relative_to(local).as_posix()
-        sweep_folder = rel.split("/", 1)[0]
-        match = _TIMESTAMP_RE.search(sweep_folder)
-        test_path = run_dir / "test_results.json"
-        curation_state, curation_label = decisions.get(
-            f"{goal}/{sweep_folder}", ("review", "")
-        )
-        row: dict[str, object] = {
-            "path": rel,
-            "sweep_name": sweep_folder[:match.start()].rstrip("_") if match else sweep_folder,
-            "sweep_date": match.group(0) if match else None,
-            "sweep_folder": sweep_folder,
-            "receptor_type": "homomer" if config.get("n_receptors") is None else "heteromer",
-            "status": "complete" if test_path.is_file() else "partial",
-            "curation_state": curation_state,
-            "curation_label": curation_label,
-            "run_mtime": run_dir.stat().st_mtime,
-            "git_hash": git,
-            "created": now,
-            "modified": now,
-        }
-        for key, value in config.items():
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) and not isinstance(value, (list, dict)):
-                row.setdefault(key, int(value) if isinstance(value, bool) else value)
-        if test_path.is_file():
-            try:
-                results = json.loads(test_path.read_text())
-                for key, values in results.items():
-                    if (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)
-                            and isinstance(values, list) and values):
-                        row[f"{key}_mean"] = fmean(float(value) for value in values)
-            except (OSError, ValueError, TypeError) as exc:
-                print(f"  metrics unavailable for {rel}: {exc}")
-        rows.append(row)
-
-    base_types = {
-        "path": "TEXT PRIMARY KEY", "sweep_name": "TEXT", "sweep_date": "TEXT",
-        "sweep_folder": "TEXT", "receptor_type": "TEXT", "status": "TEXT",
-        "curation_state": "TEXT", "curation_label": "TEXT", "run_mtime": "REAL",
-        "git_hash": "TEXT", "created": "TEXT", "modified": "TEXT",
-    }
-    keys = list(base_types)
-    extras = sorted({key for row in rows for key in row if key not in base_types})
-    keys.extend(extras)
-
-    def sql_type(key: str) -> str:
-        if key in base_types:
-            return base_types[key]
-        values = [row[key] for row in rows if row.get(key) is not None]
-        if any(isinstance(value, str) for value in values):
-            return "TEXT"
-        if any(isinstance(value, float) for value in values):
-            return "REAL"
-        return "INTEGER"
-
-    db_path = local / "runs.db"
-    tmp = local / "runs.db.tmp"
-    if tmp.exists():
-        tmp.unlink()
-    quoted = lambda key: '"' + key.replace('"', '""') + '"'
-    with sqlite3.connect(tmp) as connection:
-        definitions = ", ".join(f"{quoted(key)} {sql_type(key)}" for key in keys)
-        connection.execute(f"CREATE TABLE runs ({definitions})")
-        if rows:
-            columns = ", ".join(quoted(key) for key in keys)
-            placeholders = ", ".join("?" for _ in keys)
-            connection.executemany(
-                f"INSERT INTO runs ({columns}) VALUES ({placeholders})",
-                [[row.get(key) for key in keys] for row in rows],
-            )
-    for suffix in ("", "-wal", "-shm"):
-        old = Path(str(db_path) + suffix)
-        if old.exists():
-            old.unlink()
-    os.replace(tmp, db_path)
-    print(f"Indexed {len(rows)} run(s) -> {db_path}")
-
+    transfer = ["-e", "ssh " + " ".join(SSH_OPTIONS), f"{SERVER}:{remote}/", f"{local}/"]
+    preview = subprocess.run(
+        ["rsync", *RSYNC_FLAGS, "--dry-run", "--out-format=%o %n", *transfer],
+        check=True, capture_output=True, text=True,
+    )
+    doomed = sorted({line.split(" ", 1)[1].strip("/").split("/")[0]
+                     for line in preview.stdout.splitlines()
+                     if line.startswith("del. ") and line.count("/") >= 1})
+    if doomed:
+        print(f"  {len(doomed)} local sweep(s) absent from the cluster will be removed:")
+        for name in doomed:
+            print(f"    {goal}/{name}")
+        if not assume_yes:
+            if not sys.stdin.isatty():
+                raise RuntimeError(f"Mirroring {goal} would delete local-only data; "
+                                   "rerun interactively or pass --yes.")
+            if input("  Type 'mirror' to continue: ").strip() != "mirror":
+                raise RuntimeError("Synchronization cancelled; no data were deleted.")
+    _run(["rsync", *RSYNC_FLAGS, *transfer])
 
 def sync(goals: list[str], assume_yes: bool) -> None:
     overrides = load_curation()
@@ -415,7 +323,7 @@ def sync(goals: list[str], assume_yes: bool) -> None:
     if pruned:
         save_curation(overrides)
     for goal in selected:
-        _sync_goal(goal)
+        _sync_goal(goal, assume_yes)
 
     # A brand-new remotely produced sweep can carry curation_state="delete" in
     # sweep_config.json. It becomes visible only after the pull, so enforce it now.
@@ -425,8 +333,6 @@ def sync(goals: list[str], assume_yes: bool) -> None:
         if decision[0] == "delete" and path not in before
     }
     _delete_decisions(new_deletes, selected, assume_yes)
-    for goal in selected:
-        _rebuild_goal(goal)
     remaining = [
         sweep for sweep in _sweeps(selected)
         if f"{sweep.parent.name}/{sweep.name}" not in after
@@ -444,7 +350,7 @@ def _parser() -> argparse.ArgumentParser:
     curate_parser.add_argument("goals", nargs="*", metavar="GOAL")
     curate_parser.add_argument("--all", action="store_true", help="also revisit labelled sweeps")
 
-    sync_parser = commands.add_parser("sync", help="apply deletions, mirror, and rebuild indexes")
+    sync_parser = commands.add_parser("sync", help="apply labelled deletions, then mirror the cluster")
     sync_parser.add_argument("goals", nargs="*", metavar="GOAL")
     sync_parser.add_argument("--yes", action="store_true", help="confirm labelled deletions")
     return parser

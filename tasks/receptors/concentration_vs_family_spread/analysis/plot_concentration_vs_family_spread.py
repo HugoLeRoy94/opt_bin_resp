@@ -14,7 +14,7 @@ Notes on filtering this goal:
   * Sweeps are NOT distinguishable by the `sweep_name` column — the shallow
     run layout makes it parse to "run" for every row.  Select instead by the
     `sweep_folder` prefix via load_runs(..., date="conc_hom").
-  * `conc_std` is a tuple-typed config field (it can be per-ligand), so runs.db
+  * `conc_std` is a tuple-typed config field (it can be per-ligand), so the index
     does NOT store it as a column.  attach_cfg() reads the scalar value back
     from each run's saved SingleRunConfig.
 """
@@ -31,14 +31,14 @@ GOAL      = "concentration_vs_family_spread"
 METRIC    = "full_array_entropy_blocked_mean"   # MI upper bound
 METRIC_LO = "full_array_entropy_mean"           # MI lower bound
 
-FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/concentration_vs_family_spread/figures")
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 
 def attach_cfg(df, field):
     """Add `field` as a column, read from each run's saved SingleRunConfig.
 
-    Needed for tuple-typed config fields (conc_mean, conc_std) that the runs.db
+    Needed for tuple-typed config fields (conc_mean, conc_std) that the index
     schema skips.  Returns a copy with the new column.
     """
     df = df.copy()

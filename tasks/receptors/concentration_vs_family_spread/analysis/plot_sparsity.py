@@ -30,7 +30,7 @@ CONC = "concentration_channel_mean"
 MIL  = "mutual_information_ligand_mean"
 MIC  = "mutual_information_concentration_mean"
 
-FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/concentration_vs_family_spread/figures")
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 
@@ -39,7 +39,7 @@ def _load(tag):
     missing = [c for c in (ID, CONC) if c not in df.columns]
     if missing:
         raise KeyError(
-            f"{tag}: runs.db is missing {missing}. These columns only exist for runs "
+            f"{tag}: the index has no {missing}. These columns only exist for runs "
             f"executed AFTER identity_channel/concentration_channel were added to "
             f"measurement_fns. Re-run scripts/concentration_vs_family_spread/{tag}.py "
             f"(the old rows also used the buggy concentration metric), then reload."

@@ -1,14 +1,95 @@
 """Load task manifests and summarize independent optimizations, not test repeats."""
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from src.IO import SweepLoader, find_latest_sweep
 from tasks.cells.gene_expression._experiments import run_key
 
 
-POINT = ["coverage", "n_genes", "n_cells", "genes_per_cell", "profile", "mi_estimator"]
+# One design point. `mi_estimator` and `training_entropy` are part of the identity:
+# pooling sweeps that used different methods is allowed, but their means are never
+# merged into one number.
+METHOD = ["mi_estimator", "training_entropy"]
+POINT = ["coverage", "n_genes", "n_cells", "genes_per_cell", "profile", *METHOD]
+
+
+def _manifests(data_root, experiment, sweep_dirs):
+    """Sweep roots carrying an experiment.json for this task, newest first."""
+    if sweep_dirs is None:
+        try:
+            roots = find_latest_sweep(str(data_root), prefix=f"{experiment}_")
+        except FileNotFoundError:
+            roots = []
+    else:
+        roots = [str(path) for path in sweep_dirs]
+    found = []
+    for root in roots:
+        path = Path(root) / "experiment.json"
+        if not path.exists():
+            continue
+        metadata = json.loads(path.read_text())
+        if metadata["experiment"] != experiment:
+            raise ValueError(f"Wrong experiment in {path}")
+        found.append((Path(root), metadata))
+    return found
+
+
+def _gene_sets(value):
+    """Normalise gene sets to tuples so a JSON list compares equal to a config."""
+    return tuple(tuple(int(g) for g in genes) for genes in value)
+
+
+# Protocol settings the loaded frame represents as its own column, so runs that
+# differ in them land on distinct rows instead of being averaged together.
+_SEPARATED_SETTINGS = {
+    "entropy":               "training_entropy",
+    "measurement_fns":       "mi_estimator",
+    "final_measurement_fns": "mi_estimator",
+    "n_genes":               "n_genes",
+    "n_cells":               "n_cells",
+    "cell_max_genes":        "genes_per_cell",
+    "cell_sampling_seed":    "cell_sampling_seed",
+}
+
+
+def _warn_if_incompatible(manifests):
+    """Report protocol differences without blocking the comparison.
+
+    Differences listed in _SEPARATED_SETTINGS survive into the frame, so summarize()
+    keeps them as distinct design points. Anything else (epochs, learning rate,
+    batch budgets, the environment behind a profile name) has no column, so those
+    runs ARE averaged together. Pooling them is the caller's call; this only makes
+    sure it is a visible one.
+    """
+    if len({m['protocol_id'] for _, m in manifests}) == 1:
+        return
+    settings = [m['protocol']['settings'] for _, m in manifests]
+    keys = sorted(set().union(*(s.keys() for s in settings)))
+    varying = {k: [s.get(k) for s in settings] for k in keys
+               if len({json.dumps(s.get(k), sort_keys=True) for s in settings}) > 1}
+    print("\nWARNING: the selected sweeps do not share one protocol.")
+    for root, metadata in manifests:
+        print(f"  {root.name}: protocol {metadata['protocol_id']}")
+    pooled = []
+    for key, values in varying.items():
+        column = _SEPARATED_SETTINGS.get(key)
+        shown = ", ".join(str(v) for v in values)
+        if column is None:
+            pooled.append(key)
+            print(f"    {key}: {shown}   <-- POOLED")
+        else:
+            print(f"    {key}: {shown}   (separate rows, via `{column}`)")
+    if len({json.dumps(m['protocol']['points'], sort_keys=True) for _, m in manifests}) > 1:
+        print("    the parameter grids differ: points covered by only one sweep have a smaller n.")
+    if pooled:
+        print(f"  Runs differing only in {', '.join(pooled)} are averaged into the same mean.")
+    else:
+        print("  Every difference is represented by a column; nothing is silently averaged.")
+    print("  estimator_comparison.py compares methods panel by panel instead.\n")
 
 
 def load_study(data_root, experiment, sweep_dirs=None):
@@ -16,42 +97,38 @@ def load_study(data_root, experiment, sweep_dirs=None):
 
     Incompatible physics/training grids are rejected. Re-running an identical
     seeded sweep does not create another independent replicate.
+
+    Run discovery goes through src.IO.SweepLoader, so a partial or unreadable run
+    is skipped exactly as everywhere else, and configs arrive as SingleRunConfig
+    with the same backward-compatibility fixes the rest of the codebase gets.
     """
-    manifests = []
-    files = ([Path(p) / "experiment.json" for p in sweep_dirs] if sweep_dirs is not None
-             else sorted(Path(data_root).glob(f"{experiment}_*/experiment.json")))
-    for path in files:
-        metadata = json.loads(path.read_text())
-        if metadata["experiment"] != experiment:
-            raise ValueError(f"Wrong experiment in {path}")
-        manifests.append((path, metadata))
+    manifests = _manifests(data_root, experiment, sweep_dirs)
     if sweep_dirs is None:
         latest = {}
-        for path, metadata in manifests:
-            latest[(metadata["condition"], metadata["coverage"])] = (path, metadata)
+        for sweep_root, metadata in manifests:   # newest first
+            latest.setdefault((metadata["condition"], metadata["coverage"]),
+                              (sweep_root, metadata))
         manifests = list(latest.values())
     if not manifests:
         print(f"No {experiment} experiments found in {data_root}. Run scripts/{experiment}.py first.")
         return pd.DataFrame()
-    if len({m['protocol_id'] for _, m in manifests}) != 1:
-        raise ValueError("Selected sweeps have different parameter grids or training/evaluation budgets. "
-                         "Set SWEEPS to compatible experiment folders before comparing means.")
+    _warn_if_incompatible(manifests)
     records = []
-    for manifest_path, metadata in manifests:
+    for sweep_root, metadata in manifests:
         planned = {run_key(r): r for r in metadata["rows"]}
         completed = set()
-        for path in sorted(manifest_path.parent.rglob("test_results.json")):
-            cfg_path = path.parent / "config.json"
-            if not cfg_path.exists() or not (path.parent / "best_model.pt").exists():
+        for single_cfg, run_dir in SweepLoader(str(sweep_root)).iter_run_dirs():
+            run_dir = Path(run_dir)
+            if not (run_dir / "test_results.json").is_file() or not (run_dir / "best_model.pt").is_file():
                 continue
-            cfg = json.loads(cfg_path.read_text())
+            cfg = asdict(single_cfg)
             key = run_key(cfg)
             if key not in planned:
-                raise ValueError(f"Unplanned run in experiment folder: {path.parent}")
+                raise ValueError(f"Unplanned run in experiment folder: {run_dir}")
             point = planned[key]
-            if cfg["cell_gene_sets"] != [list(g) for g in point["cell_gene_sets"]]:
-                raise ValueError(f"Gene sets differ from the recorded design: {path.parent}")
-            test = json.loads(path.read_text())
+            if _gene_sets(cfg["cell_gene_sets"]) != _gene_sets(point["cell_gene_sets"]):
+                raise ValueError(f"Gene sets differ from the recorded design: {run_dir}")
+            test = json.loads((run_dir / "test_results.json").read_text())
             counting = metadata.get("arguments", {}).get("evaluation", "exact") == "counting"
             mi_key = "mutual_information_grouped_counting_plugin" if counting else "mutual_information_grouped"
             noise_key = "conditional_entropy_response_grouped_counting" if counting else "conditional_entropy_response_grouped"
@@ -66,6 +143,7 @@ def load_study(data_root, experiment, sweep_dirs=None):
                 n_genes=cfg["n_genes"], n_cells=cfg["n_cells"], genes_per_cell=genes.shape[1],
                 fraction_expressed=genes.shape[1] / cfg["n_genes"],
                 mi_estimator="grouped counting (plug-in)" if counting else "exact grouped",
+                training_entropy=cfg["entropy"],
                 mi=mean(mi_key), response_noise=mean(noise_key),
                 count_entropy=mean(count_key), full_entropy=mean(response_key),
                 counting_unique_fraction=mean("grouped_counting_unique_fraction") if counting else np.nan,
@@ -74,10 +152,10 @@ def load_study(data_root, experiment, sweep_dirs=None):
                 count_ceiling=mean("grouped_count_entropy_upper"),
                 input_sample_ceiling=np.log2(mean("response_evaluation_samples")),
                 genes_represented=np.unique(genes).size, receptor_pool=len(cfg["receptor_indices"]),
-                run_dir=str(path.parent), sweep=str(manifest_path.parent),
+                run_dir=str(run_dir), sweep=str(sweep_root),
             ))
             completed.add(key)
-        print(f"{manifest_path.parent.name}: {len(completed)}/{len(planned)} completed runs")
+        print(f"{sweep_root.name}: {len(completed)}/{len(planned)} completed runs")
         if len(completed) < len(planned):
             print("  Incomplete sweep: per-point n below counts only completed independent optimizations.")
     if not records:
@@ -102,7 +180,7 @@ def summarize(runs):
         states_max=("count_states", "max"), pool_mean=("receptor_pool", "mean"),
         input_sample_ceiling=("input_sample_ceiling", "min"))
     summary["mi_sem"] = summary["mi_sd"] / np.sqrt(summary["n"])
-    baseline_keys = ["condition", "coverage", "n_genes", "n_cells", "profile", "mi_estimator"]
+    baseline_keys = ["condition", "coverage", "n_genes", "n_cells", "profile", *METHOD]
     baseline = summary[summary.genes_per_cell == 1][baseline_keys + ["mi_mean", "n"]].rename(
         columns={"mi_mean": "baseline_mi", "n": "baseline_n"})
     summary = summary.merge(baseline, on=baseline_keys, how="left", validate="many_to_one")
@@ -125,12 +203,21 @@ def effects(summary):
 
 
 def plot_curves(ax, frame, x, y, group=("condition", "coverage"), error=None):
+    """One line per group, plus one line per method that varies within the frame.
+
+    Without the method split, a frame pooling two estimators would put two y values
+    at the same x on a single line and draw a zigzag that reads as noise.
+    """
     if frame.empty:
         return
-    for labels, part in frame.groupby(list(group), sort=False):
+    group = list(group) + [column for column in METHOD
+                           if column in frame and column not in group
+                           and frame[column].nunique(dropna=False) > 1]
+    for labels, part in frame.groupby(group, sort=False):
         labels = labels if isinstance(labels, tuple) else (labels,)
         label = ", ".join(f"G={v}" if k == "n_genes" else str(v) for k, v in zip(group, labels))
-        if 'mi_estimator' in part and (part.mi_estimator == 'grouped counting (plug-in)').all():
+        if ('mi_estimator' not in group and 'mi_estimator' in part
+                and (part.mi_estimator == 'grouped counting (plug-in)').all()):
             label += ", counting (plug-in)"
         part = part.sort_values(x)
         ax.plot(part[x], part[y], "o-", label=label)

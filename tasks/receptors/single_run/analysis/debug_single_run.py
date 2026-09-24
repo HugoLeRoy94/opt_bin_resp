@@ -8,10 +8,10 @@ from src.plotlib import load_run, load_model, DATA_ROOT
 from src.analysis_helper import plot_latent_umap
 from src.IO import find_latest_sweep, SweepLoader
 
-FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/single_run/figures")
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
-# Point at a single_run_* directory (no runs.db needed).
+# Point at a single_run_* directory (it need not sit under a goal folder).
 # find_latest_sweep picks the most recent one; change the index to pick older runs.
 RUN_DIR = list(SweepLoader(find_latest_sweep(str(DATA_ROOT), prefix="single_run")[0])
                .iter_run_dirs())[0][1]

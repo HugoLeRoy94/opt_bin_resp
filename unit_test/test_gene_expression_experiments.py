@@ -1,9 +1,12 @@
 """Experiment designs, replicate accounting, and small end-to-end execution."""
+import contextlib
 import importlib
+import io
 import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -107,10 +110,21 @@ def test_repeated_sweeps_analysis_and_budget_evaluation(tmp_path):
     (run_dir / "test_results.json").rename(run_dir / "incomplete_results.json")
     assert len(load_study(tmp_path, "replicates")) == 7
 
-    # Budget/protocol mismatches must not be silently pooled.
+    # Budget/protocol mismatches are reported, not silently accepted. Loading still
+    # returns the runs: whether the comparison is worth making is the caller's call.
     manifest_path = next(tmp_path.glob("replicates_homomers_*/experiment.json"))
     metadata = json.loads(manifest_path.read_text())
     metadata["protocol_id"] = "different"
     manifest_path.write_text(json.dumps(metadata))
-    with pytest.raises(ValueError, match="different parameter grids"):
-        load_study(tmp_path, "replicates")
+    warning = io.StringIO()
+    with contextlib.redirect_stdout(warning):
+        mixed = load_study(tmp_path, "replicates")
+    assert "do not share one protocol" in warning.getvalue()
+    assert len(mixed) == 7
+
+    # Pooling two methods must not average them into one mean.
+    both = pd.concat([runs, runs.assign(training_entropy="grouped_kt_mi")], ignore_index=True)
+    pooled = summarize(both)
+    assert set(pooled.training_entropy) == {"grouped_mi", "grouped_kt_mi"}
+    assert (pooled.n == 2).all()
+    assert len(pooled) == 2 * len(summarize(runs))

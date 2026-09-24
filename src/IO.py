@@ -1,6 +1,7 @@
 import os
 import json
 import csv
+import re
 import warnings
 from dataclasses import asdict as _dc_asdict
 import pandas as pd
@@ -8,6 +9,9 @@ import torch
 import numpy as np
 from datetime import datetime
 from src.config import SingleRunConfig, RunConfig, _TUPLE_FIELDS, _NESTED_TUPLE_FIELDS
+from src.curation import sweep_curation
+
+_TS_RE = re.compile(r'(\d{8}_\d{6})')
 
 
 # ==========================================
@@ -154,6 +158,36 @@ class SweepLogger:
 # LOADERS  (Reading Data)
 # ==========================================
 
+def _normalise_config(data: dict) -> dict:
+    """Drop keys no longer in SingleRunConfig and fill fields added after saving.
+
+    The single definition of "how to read an old config.json". Both
+    SingleRunLoader.load_config and the goal indexer go through it, so a run that
+    loads must also index.
+    """
+    filtered = {k: v for k, v in data.items()
+                if k in SingleRunConfig.__dataclass_fields__}
+    # Backward compat: presence-model fields added after early sweeps were run.
+    filtered.setdefault("n_presence_blocks", 1)
+    filtered.setdefault("mu_sources", 1.0)
+    filtered.setdefault("mu_ligands_per_source", 1.0)
+    filtered.setdefault("block_shared_conc_mean", False)
+    if filtered.get("entropy") == "renyi":
+        filtered["entropy"] = "collision"
+    return filtered
+
+
+def _scalar_config_defaults() -> dict:
+    """Declared defaults of the scalar SingleRunConfig fields.
+
+    Indexing never instantiates the dataclass, so these are applied by hand; a run
+    saved before a field existed then shows that field's default instead of a hole.
+    """
+    from dataclasses import MISSING
+    return {name: f.default for name, f in SingleRunConfig.__dataclass_fields__.items()
+            if f.default is not MISSING and not isinstance(f.default, (list, dict, tuple))}
+
+
 class SingleRunLoader:
     """Loads data from a single-run directory."""
 
@@ -165,20 +199,19 @@ class SingleRunLoader:
         if not os.path.exists(run_dir):
             raise FileNotFoundError(f"Directory {run_dir} does not exist.")
 
-    def load_config(self) -> SingleRunConfig:
+    def load_config_dict(self) -> dict:
+        """Saved config as a plain dict, with the backward-compatibility fixes applied.
+
+        Use this when you only need field VALUES.  load_config() additionally runs
+        SingleRunConfig.__post_init__, which for a cell-mode run expands every gene
+        set into its full receptor repertoire — correct, but far too slow to do
+        once per run while indexing a whole goal folder.
+        """
         with open(self.config_path) as f:
-            data = json.load(f)
-        valid_keys = set(SingleRunConfig.__dataclass_fields__)
-        # Silently drop stale keys from old configs (p_presence, rho_block, etc.)
-        filtered = {k: v for k, v in data.items() if k in valid_keys}
-        # Backward compat: presence-model fields
-        filtered.setdefault("n_presence_blocks", 1)
-        filtered.setdefault("mu_sources", 1.0)
-        filtered.setdefault("mu_ligands_per_source", 1.0)
-        filtered.setdefault("block_shared_conc_mean", False)
-        if filtered.get("entropy") == "renyi":
-            filtered["entropy"] = "collision"
-        return SingleRunConfig(**filtered)
+            return _normalise_config(json.load(f))
+
+    def load_config(self) -> SingleRunConfig:
+        return SingleRunConfig(**self.load_config_dict())
 
     def load_history(self) -> pd.DataFrame:
         return pd.read_csv(self.stats_path)
@@ -200,10 +233,6 @@ class SweepLoader:
                     self.config = RunConfig.from_dict(json.load(f))
             except Exception as e:
                 warnings.warn(f"Could not parse sweep_config.json in {sweep_root}: {e}")
-        _candidate = os.path.join(
-            os.path.dirname(os.path.abspath(sweep_root)), "runs.db"
-        )
-        self._db_path = _candidate if os.path.exists(_candidate) else None
 
     def iter_run_dirs(self):
         """Yields (single_cfg, run_dir) for every run directory found on disk.
@@ -222,34 +251,11 @@ class SweepLoader:
                     warnings.warn(f"Skipping {root}: {e}")
 
     def load_all_test_results(self) -> pd.DataFrame:
-        """
-        Returns a DataFrame with one row per completed run.
-        Uses runs.db when available (fast); falls back to disk crawl otherwise.
-        Metric columns are named without the '_mean' suffix in both paths.
-        """
-        if self._db_path is not None:
-            return self._load_test_results_from_db()
-        return self._load_test_results_from_disk()
+        """One row per completed run: scalar config fields plus metric means.
 
-    def _load_test_results_from_db(self) -> pd.DataFrame:
-        import sqlite3 as _sqlite3
-        sweep_subdir = os.path.basename(os.path.abspath(self.sweep_root))
-        pattern = f"{sweep_subdir}/*"
-        with _sqlite3.connect(self._db_path) as conn:
-            conn.row_factory = _sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM runs WHERE path GLOB ? AND status='complete'",
-                (pattern,),
-            ).fetchall()
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame([dict(r) for r in rows])
-        df = df.rename(columns={c: c[:-5] for c in df.columns if c.endswith("_mean")})
-        drop = {"path", "sweep_name", "sweep_date", "status",
-                "run_mtime", "git_hash", "created", "modified"}
-        return df.drop(columns=[c for c in drop if c in df.columns])
-
-    def _load_test_results_from_disk(self) -> pd.DataFrame:
+        Metric columns are named WITHOUT the `_mean` suffix here, unlike
+        src.IO.index_goal, which keeps it. Use index_goal for a whole goal folder.
+        """
         rows = []
         for single_cfg, run_dir in self.iter_run_dirs():
             json_path = os.path.join(run_dir, "test_results.json")
@@ -269,24 +275,7 @@ class SweepLoader:
 
         Filter keys must be scalar SingleRunConfig field names
         (e.g. n_genes=3, average_family_distance=1.0).
-        Uses runs.db when available; falls back to iter_run_dirs crawl.
         """
-        if self._db_path is not None:
-            import sqlite3 as _sqlite3
-            sweep_subdir = os.path.basename(os.path.abspath(self.sweep_root))
-            conds = [f"path GLOB '{sweep_subdir}/*'"]
-            vals = []
-            for k, v in filters.items():
-                conds.append(f"{k} = ?")
-                vals.append(v)
-            sql = "SELECT path FROM runs WHERE " + " AND ".join(conds) + " LIMIT 1"
-            with _sqlite3.connect(self._db_path) as conn:
-                conn.row_factory = _sqlite3.Row
-                row = conn.execute(sql, vals).fetchone()
-            if row is None:
-                return None
-            data_root = os.path.dirname(os.path.abspath(self._db_path))
-            return os.path.join(data_root, row["path"])
         for cfg, run_dir in self.iter_run_dirs():
             if all(getattr(cfg, k, None) == v for k, v in filters.items()):
                 return run_dir
@@ -319,8 +308,9 @@ def run_files(rel_path: str, data_root: str) -> dict:
 
     Parameters
     ----------
-    rel_path  : relative path as stored in the DB `path` column
-    data_root : directory that contains runs.db (parent of all sweep dirs)
+    rel_path  : run path relative to the goal folder, as in the `path` column
+                of src.IO.index_goal
+    data_root : the goal folder, parent of all its sweep directories
 
     Returns a dict with keys: run_dir, config, stats, test_results,
     best_model, checkpoints.  Values are absolute path strings regardless
@@ -340,6 +330,87 @@ def run_files(rel_path: str, data_root: str) -> dict:
 # ==========================================
 # MODULE-LEVEL UTILITIES
 # ==========================================
+
+def index_goal(data_root: str, complete_only: bool = False) -> pd.DataFrame:
+    """Crawl one goal folder and return one row per run directory.
+
+    A goal is `data/<goal>/`, holding timestamped sweep folders.  This reads every
+    `config.json` (through SingleRunLoader, so old configs get the same
+    backward-compatibility fixes as everywhere else) and, where present, the means
+    of `test_results.json`.
+
+    Columns
+    -------
+    path, sweep_folder, sweep_name, sweep_date, run_timestamp, status,
+    receptor_type, curation_state, curation_label, run_mtime  — bookkeeping derived
+    from the path, the presence of test_results.json, and curation.csv.
+
+    Note there is no `git_hash`. The retired runs.db had one, but it recorded the
+    repository HEAD at INDEXING time, not at run time, so a rebuild stamped every
+    run with the same current commit. It was misleading rather than useful.
+    Every scalar config field, under its own name.
+    `<metric>_mean` for each list-valued key of test_results.json.
+
+    There is no stored index.  Crawling 650 runs takes about half a second, which
+    is not worth a second copy of the data that can fall out of step with it.  If
+    that ever changes, cache this frame with `to_parquet` and delete it whenever
+    it looks stale — do NOT reintroduce an incrementally-updated index.
+    """
+    data_root = os.path.abspath(data_root)
+    defaults = _scalar_config_defaults()
+    curation: dict[str, tuple[str, str]] = {}
+    rows = []
+    for root, _dirs, files in os.walk(data_root):
+        if "config.json" not in files:
+            continue
+        rel = os.path.relpath(root, data_root)
+        if not _TS_RE.search(rel):
+            continue                       # not a run directory; ignore stray json
+        test_json = os.path.join(root, "test_results.json")
+        complete = os.path.exists(test_json)
+        if complete_only and not complete:
+            continue
+        try:
+            cfg = SingleRunLoader(root).load_config_dict()
+        except Exception as e:
+            warnings.warn(f"Skipping {rel}: {e}")
+            continue
+        sweep_folder = rel.split(os.sep)[0]
+        m = _TS_RE.search(sweep_folder)
+        leaf = _TS_RE.search(os.path.basename(root))   # the run_<timestamp> leaf
+        if sweep_folder not in curation:    # one lookup per sweep, not per run
+            curation[sweep_folder] = sweep_curation(data_root, sweep_folder)
+        state, label = curation[sweep_folder]
+        row = dict(defaults)
+        # Scalar config fields only: list-valued ones (conc_mean, cell_gene_sets,
+        # receptor_indices, ...) do not fit one table cell. Read them per run with
+        # SingleRunLoader when needed. Bools become ints so integer filters match.
+        row.update({k: int(v) if isinstance(v, bool) else v
+                    for k, v in cfg.items() if not isinstance(v, (list, dict, tuple))})
+        row.update({
+            "path":           rel,
+            "sweep_folder":   sweep_folder,
+            "sweep_name":     sweep_folder[:m.start()].rstrip("_") if m else sweep_folder,
+            "sweep_date":     m.group(1) if m else None,
+            "run_timestamp":  leaf.group(1) if leaf else None,
+            "status":         "complete" if complete else "partial",
+            "receptor_type":  "homomer" if cfg.get("n_receptors") is None else "heteromer",
+            "curation_state": state,
+            "curation_label": label,
+            "run_mtime":      os.path.getmtime(root),
+        })
+        if complete:
+            try:
+                with open(test_json) as f:
+                    results = json.load(f)
+                for key, values in results.items():
+                    if isinstance(values, list) and values:
+                        row[f"{key}_mean"] = float(np.mean(values))
+            except (OSError, ValueError, TypeError) as e:
+                warnings.warn(f"Unreadable test_results.json in {rel}: {e}")
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("path").reset_index(drop=True) if rows else pd.DataFrame()
+
 
 def find_latest_sweep(base_dir: str, prefix: str = "") -> list[str]:
     """

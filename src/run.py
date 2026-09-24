@@ -81,6 +81,10 @@ from src.concentration_mi_loss import MaximizeMutualInformationConcentrationLoss
 # REGISTRIES
 # ==========================================
 
+# Name -> measurement function. _eval_stats dispatches by signature, EXCEPT for the
+# names listed in its `batch_metrics` set: those need the whole evaluation batch, so
+# the runner streams them itself and never calls the registry entry. Those entries
+# stay here as the one-shot API for notebooks holding a single activity tensor.
 MEASUREMENT_REGISTRY = {
     "full_array_entropy":                full_array_entropy,
     "grouped_information":               grouped_information,
@@ -456,18 +460,16 @@ class SimulationRunner:
                 learnable_threshold=self.config.cell_threshold_learnable,
             ).to(self.device)
 
+        # The partition is needed for batch sizing and by every grouped estimator, so
+        # it is built once here.  The count-enumeration table is built lazily by
+        # _grouped_estimator(), because only exact enumeration allocates it.
         self.cell_grouping = (CellGrouping(self.cell_array.W).to(self.device)
                               if self.cell_array is not None else None)
         self.grouped_estimator = None
-        if (self.config.entropy == 'grouped_mi' or 'grouped_information' in
-                (*(self.config.measurement_fns or ()), *(self.config.final_measurement_fns or ()))):
-            if self.cell_array is None:
-                raise ValueError("Grouped information requires cell mode.")
-            self.grouped_estimator = GroupedCellMutualInformationLoss(
-                self.cell_grouping, self.config.cell_grouped_max_states).to(self.device)
-            print(f"[cell grouping] {self.grouped_estimator.n_cells} cells → "
-                  f"{self.grouped_estimator.n_groups} groups, "
-                  f"{self.grouped_estimator.n_states} count states")
+        if self.cell_grouping is not None:
+            print(f"[cell grouping] {self.cell_grouping.n_cells} cells → "
+                  f"{self.cell_grouping.n_groups} groups, "
+                  f"{self.cell_grouping.n_states} count states")
 
         # Always resolve to obtain collision_chunk_size; batch sizes used only when "auto".
         # In cell mode the entropy is over C cells; the physics runs over R_pool.
@@ -580,9 +582,11 @@ class SimulationRunner:
             print(f"[composition] R={R_}  {note}")
         else:
             env.unbind()
-        loss_fn = (self.grouped_estimator if self.config.entropy == 'grouped_mi' else
-                   _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048,
-                               cell_weights=self.cell_grouping).to(self.device))
+        loss_fn = _build_loss(self.config, collision_chunk_size=collision_chunk_size or 2048,
+                              cell_weights=self.cell_grouping).to(self.device)
+        if isinstance(loss_fn, GroupedCellMutualInformationLoss):
+            # Training and the `grouped_information` measurement share one count table.
+            self.grouped_estimator = loss_fn
 
         # Dampen LR when picking up from a previous env to preserve learned representations
         lr = self.config.lr if prev_env is None else self.config.lr * 0.1
@@ -631,6 +635,30 @@ class SimulationRunner:
             composition=comp,
         )
 
+    def _cell_grouping(self) -> CellGrouping:
+        """The one partition of identical cells, shared by every grouped estimator.
+
+        _initialize builds it eagerly because resolve_batch_sizes needs its group
+        and state counts; this accessor also covers a runner assembled directly.
+        """
+        if self.cell_grouping is None:
+            if self.cell_array is None:
+                raise ValueError("Grouped estimators require a cell abundance matrix.")
+            self.cell_grouping = CellGrouping(self.cell_array.W).to(self.device)
+        return self.cell_grouping
+
+    def _grouped_estimator(self) -> GroupedCellMutualInformationLoss:
+        """The exact count-enumeration estimator, built once and cached.
+
+        With entropy='grouped_mi' this IS the training loss.  Under any other
+        objective, requesting the `grouped_information` measurement builds it here
+        instead, over the same CellGrouping.
+        """
+        if self.grouped_estimator is None:
+            self.grouped_estimator = GroupedCellMutualInformationLoss(
+                self._cell_grouping(), self.config.cell_grouped_max_states).to(self.device)
+        return self.grouped_estimator
+
     def _eval_stats(self, env, physics, loss_fn, receptor_indices, batch_size, epoch,
                     measurement_fns=None):
         """Evaluation over batch_size total samples, with bounded per-pass memory.
@@ -661,26 +689,14 @@ class SimulationRunner:
             batch_metrics.add('full_array_entropy')
         want_grouped = ('grouped_information' in requested or
                         (native_grouped and 'full_array_entropy' in requested))
-        grouped_estimator = self.grouped_estimator
-        if want_grouped and grouped_estimator is None:
-            if self.cell_array is None:
-                raise ValueError("grouped_information requires a cell abundance matrix.")
-            grouped_estimator = GroupedCellMutualInformationLoss(
-                self.cell_array.W, self.config.cell_grouped_max_states).to(self.device)
-            self.grouped_estimator = grouped_estimator
+        grouped_estimator = self._grouped_estimator() if want_grouped else None
         want_lower = (bool(requested & {'entropy_kt', 'mutual_information_kt'}) or
                       (native_grouped_kt and 'full_array_entropy' in requested))
         want_upper = bool(requested & {'entropy_kt_upper', 'mutual_information_kt_upper'})
         want_kt = want_lower or want_upper
         want_counting = 'mutual_information_counting' in requested
         want_grouped_counting = 'grouped_counting' in requested
-        grouped_counter = None
-        if want_grouped_counting:
-            if self.cell_array is None:
-                raise ValueError("grouped_counting requires cell mode.")
-            if self.cell_grouping is None:
-                self.cell_grouping = CellGrouping(self.cell_array.W).to(self.device)
-            grouped_counter = GroupedResponseCounter(self.cell_grouping)
+        grouped_counter = GroupedResponseCounter(self._cell_grouping()) if want_grouped_counting else None
         want_hard = 'codeword_entropy' in requested
 
         ri_for_batch = receptor_indices if env.use_interface_model else None
@@ -1121,17 +1137,6 @@ class SweepRunner:
                     runner        = SimulationRunner(config=run_cfg, logger=node_logger)
                     prev_env      = runner.run(prev_env=warm_env)
                     prev_cfg      = run_cfg
-
-                    # Index the completed run — best-effort, never aborts sweep
-                    try:
-                        import os as _os
-                        from src.db import add_run as _db_add_run
-                        _db_add_run(
-                            node_logger.run_dir,
-                            _os.path.join(self.config.base_folder, "runs.db"),
-                        )
-                    except Exception:
-                        pass
 
                     # Release this run's GPU memory BEFORE the next run is sized.
                     # The next SimulationRunner reads torch.cuda.mem_get_info() to pick

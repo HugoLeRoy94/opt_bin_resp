@@ -7,8 +7,9 @@ python manage_data.py curate [goal]
 python manage_data.py sync [goal]
 ```
 
-`runs.db` is only a derived analysis cache. It is rebuilt automatically by
-`sync`; normal work does not require database-management commands.
+Analyses read the run directories directly, so there is nothing to index and no
+database to maintain. See `doc/data_pipeline.md` for how a stored run becomes a
+plotted number.
 
 ## States
 
@@ -59,8 +60,9 @@ data. `sync` performs these operations in order:
 
 1. Show every `delete`-labelled sweep in scope and require the word `delete`.
 2. Delete those exact sweep directories on the cluster first, then locally.
-3. Mirror the cluster goal locally with `rsync --delete` (database files excluded).
-4. Fully rebuild the local `runs.db`, including curation columns.
+3. Mirror the cluster goal locally with `rsync --delete`. Mirroring also removes
+   local sweeps the cluster does not have, so a dry run lists them first and
+   requires the word `mirror` before anything is deleted.
 
 After a deletion succeeds its temporary `delete` row is removed from
 `curation.csv`; durable `keep` labels remain. This prevents later syncs from
@@ -77,13 +79,21 @@ Environment variables can override the endpoints for tests or another host:
 `OCTOPUS_DATA_ROOT`, `OCTOPUS_CURATION_FILE`, `OCTOPUS_DATA_SERVER`, and
 `OCTOPUS_REMOTE_DATA_ROOT`.
 
-## Database columns
+## Where curation shows up afterwards
 
-Analysis code continues to read `runs.db`. In addition to the existing `status`
-(`complete` or `partial` per run), each row now has:
+`src/curation.py` is the only reader of `curation.csv` and of the `curation_state`
+/ `curation_label` fields saved in a sweep's `sweep_config.json`. The CSV wins over
+the config default. `manage_data.py` parses it strictly before rewriting it; the
+run indexer parses it leniently, so one malformed row cannot stop a run from being
+read.
+
+`src.IO.index_goal`, and therefore `plotlib.load_runs`, carries two columns per
+run so you can filter an analysis by your own decision:
 
 - `curation_state`: `review`, `keep`, or `delete`, inherited from its sweep.
-- `curation_label`: the short name assigned to a kept sweep.
+- `curation_label`: the short name you gave a kept sweep.
 
-The low-level `python -m src.db ...` interface remains available for debugging,
-but it is not part of the normal workflow.
+```python
+from src.plotlib import load_runs
+df = load_runs("fig1", curation_state="keep")
+```

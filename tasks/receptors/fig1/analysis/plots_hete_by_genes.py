@@ -20,7 +20,7 @@ METRIC    = "full_array_entropy_blocked_mean"   # upper bound on MI
 METRIC_LO = "full_array_entropy_mean"           # lower bound on MI
 GENES     = [2,3, 5, 7, 10, 15,20, 25]
 
-FIGURES = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/fig1/figures")
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 homo = load_runs(GOAL, receptor_type="homomer",   entropy="annealed")

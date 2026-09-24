@@ -1,15 +1,18 @@
 """
-plotlib.py — thin loading + plotting layer over the per-goal runs.db index.
+plotlib.py — thin loading + plotting layer over a goal's run directories.
 
 Data layout on disk:
 
     data/<goal>/<n_genes>_<date>/<env conditions>.../<receptor sweep>/run_*/
 
-`data/<goal>/runs.db` is a flat table with one row per run: every scalar config
-field is a column, plus metadata (`sweep_folder` = the `<n_genes>_<date>` dir,
-`sweep_name`, `sweep_date`, `git_hash`, `receptor_type`, `status`) and one
-`<metric>_mean` column per metric.  Everything below is just filtering that
-table and aggregating it.
+`src.IO.index_goal` crawls that tree and returns a flat table with one row per
+run: every scalar config field is a column, plus metadata (`sweep_folder` = the
+`<n_genes>_<date>` dir, `sweep_name`, `sweep_date`, `receptor_type`, `status`,
+`curation_state`) and one `<metric>_mean` column per metric.  Everything below is
+just filtering that table and aggregating it.
+
+The directory tree is the only source of truth; there is no stored index to keep
+in step with it.  See doc/data_pipeline.md.
 
 Typical use
 -----------
@@ -38,7 +41,7 @@ Typical use
     plot_summary(env, physics, ri)
 """
 import sys
-import sqlite3
+
 from pathlib import Path
 
 import numpy as np
@@ -50,7 +53,7 @@ if str(_EXEC_DIR) not in sys.path:
     sys.path.append(str(_EXEC_DIR))
 import torch
 
-from src.IO import SingleRunLoader, run_files            # noqa: E402
+from src.IO import SingleRunLoader, index_goal, run_files  # noqa: E402
 from src.run import ENV_REGISTRY, CONC_REGISTRY          # noqa: E402
 from src.physics import BinaryReceptor                   # noqa: E402
 
@@ -63,27 +66,31 @@ DATA_ROOT = _EXEC_DIR / "data"
 
 def load_runs(goal: str, n_genes=None, date=None, complete: bool = True,
               **filters) -> pd.DataFrame:
-    """Load aggregated runs from ``data/<goal>/runs.db`` into a DataFrame.
+    """Load aggregated runs from ``data/<goal>/`` into a DataFrame.
 
-    goal     : sub-folder of data/ that holds runs.db (e.g. "fig1").
+    goal     : sub-folder of data/ that holds the sweeps (e.g. "fig1").
     n_genes  : keep only this gene count(s) — int or list. ([goal + n_genes])
     date     : keep sweep folders whose name contains this string, e.g.
                "20260612" or a full "ng20_20260612_165139". ([... + date])
     complete : keep only finished runs (status == 'complete').
     filters  : extra equality filters on ANY column; scalar or list, e.g.
-               entropy="collision", receptor_type="heteromer", git_hash="a1885319".
+               entropy="collision", receptor_type="heteromer", curation_state="keep".
 
     All receptor counts and environmental conditions matching the filter are
     returned together (one row per run).  A convenience column ``R`` is added:
     n_receptors for heteromers, n_genes for homomers.  Metric columns keep
-    their stored ``…_mean`` name.  ``df.attrs['goal']`` records the goal so
+    their ``…_mean`` name.  ``df.attrs['goal']`` records the goal so
     load_epochs / load_run can resolve paths without repeating it.
+
+    Reads the run directories directly, taking well under a second for the
+    largest goal.  Assign the result if you are going to filter it repeatedly.
     """
-    db = DATA_ROOT / goal / "runs.db"
-    if not db.exists():
-        raise FileNotFoundError(f"No runs.db for goal {goal!r}: {db}")
-    with sqlite3.connect(db) as conn:
-        df = pd.read_sql_query("SELECT * FROM runs", conn)
+    root = DATA_ROOT / goal
+    if not root.is_dir():
+        raise FileNotFoundError(f"No such goal {goal!r}: {root}")
+    df = index_goal(str(root))
+    if df.empty:
+        raise FileNotFoundError(f"No runs found for goal {goal!r} under {root}")
 
     if complete and "status" in df:
         df = df[df["status"] == "complete"]
@@ -153,7 +160,7 @@ def load_model(runs=None, *, goal: str = None, run_dir: str = None,
         df = load_runs("fig1", receptor_type="homomer", entropy="shannon")
         env, physics, ri = load_model(df[df["R"] == 14])
 
-    Also accepts ``run_dir=`` for standalone directories (no runs.db).
+    Also accepts ``run_dir=`` for a standalone directory outside any goal.
     """
     run_dir = _resolve_run_dir(runs, goal, run_dir)
 

@@ -485,23 +485,14 @@ def build_latent_umap(env, receptor_indices, n_samples_per_family=1000, random_s
     # =====================================================================
     if n_samples_per_family < 2:
         raise ValueError("n_samples_per_family must be at least 2")
-    rng = np.random.default_rng(random_state)
-    shape = (n_families, n_samples_per_family, env.latent_dim)
-    if env.distribution_type == 'gaussian':
-        offsets = rng.normal(size=shape) * env.family_spread
-    elif env.distribution_type == 'uniform_cube':
-        offsets = rng.uniform(-env.family_spread, env.family_spread, size=shape)
-    elif env.distribution_type in ('uniform', 'shell'):
-        direction = rng.normal(size=shape)
-        direction /= np.linalg.norm(direction, axis=-1, keepdims=True)
-        radius = rng.uniform(size=(*shape[:2], 1))
-        if env.distribution_type == 'uniform':
-            radius = radius ** (1.0 / env.latent_dim)
-        offsets = direction * radius * env.family_spread
-    else:
-        raise ValueError(f"Unsupported family distribution: {env.distribution_type}")
-    sampled_points = (v_families[:, None, :] + offsets).reshape(-1, env.latent_dim)
     sampled_labels = np.repeat(np.arange(n_families), n_samples_per_family)
+    centers = env.family_latent[torch.as_tensor(sampled_labels, device=env.family_latent.device)]
+    # env.sample_near_centers is the same draw the ligands themselves came from, so
+    # the cloud cannot drift from the distribution the run actually used. fork_rng
+    # keeps this private seed out of the simulation's RNG stream.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(random_state)
+        sampled_points = env.sample_near_centers(centers).detach().cpu().numpy()
     
     # =====================================================================
     # 3. FIT UMAP PROJECTION

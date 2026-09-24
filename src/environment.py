@@ -390,27 +390,7 @@ class LigandEnvironment(nn.Module):
 
             # Draw permanent base coordinates for the ligands
             base_centers = fixed_families[ligand_family_assignments]
-            if self.distribution_type == 'gaussian':
-                ligand_dist_obj = dist.Normal(loc=base_centers, scale=self.family_spread)
-                fixed_ligands = ligand_dist_obj.rsample()
-            elif self.distribution_type == 'uniform_cube':
-                low = base_centers - self.family_spread
-                high = base_centers + self.family_spread
-                ligand_dist_obj = dist.Uniform(low=low, high=high)
-                fixed_ligands = ligand_dist_obj.rsample()
-            elif self.distribution_type == 'uniform':
-                ligand_dist_obj = UniformNBall(loc=base_centers, radius=self.family_spread, dim=self.latent_dim)
-                fixed_ligands = ligand_dist_obj.rsample()
-            elif self.distribution_type == 'shell':
-                # Defeats high-D concentration-of-measure: direction uniform on sphere,
-                # radius uniform in [0, family_spread] — equal weight at every shell radius.
-                direction = torch.nn.functional.normalize(
-                    torch.randn_like(base_centers), p=2, dim=-1
-                )
-                r = torch.rand(n_ligands, 1) * self.family_spread
-                fixed_ligands = base_centers + direction * r
-
-            self.register_buffer('ligand_latent', fixed_ligands)
+            self.register_buffer('ligand_latent', self.sample_near_centers(base_centers))
 
         # 3. Unit-specific Base Energies
         # E_base = E_o(u, ℓ_opt): open-state energy at the optimally matched ligand.
@@ -477,6 +457,31 @@ class LigandEnvironment(nn.Module):
                 new_env.base_energy_u.data[:self.n_genes] = self.base_energy_u.data.clone()
 
         return new_env
+
+    def sample_near_centers(self, centers: torch.Tensor) -> torch.Tensor:
+        """Draw one latent point per row of `centers` from the family distribution.
+
+        The single definition of what "a member of this family" means in latent
+        space.  Ligand placement uses it at construction; analysis reuses it to
+        sample the family clouds it draws, so a plotted cloud cannot describe a
+        different distribution from the one the ligands were drawn from.
+
+        Callers that must not perturb the global RNG should wrap the call in
+        torch.random.fork_rng().
+        """
+        if self.distribution_type == 'gaussian':
+            return dist.Normal(loc=centers, scale=self.family_spread).rsample()
+        if self.distribution_type == 'uniform':
+            return UniformNBall(loc=centers, radius=self.family_spread,
+                                dim=self.latent_dim).rsample()
+        if self.distribution_type == 'shell':
+            # Defeats high-D concentration-of-measure: direction uniform on sphere,
+            # radius uniform in [0, family_spread] — equal weight at every shell radius.
+            direction = torch.nn.functional.normalize(
+                torch.randn_like(centers), p=2, dim=-1)
+            r = torch.rand(centers.shape[0], 1, device=centers.device) * self.family_spread
+            return centers + direction * r
+        raise ValueError(f"Unsupported family distribution: {self.distribution_type}")
 
     def _generate_family_centers(self, n_families: int, latent_dim: int) -> torch.Tensor:
         """

@@ -1,5 +1,8 @@
 # %%
-"""replicates: independent-run means, uncertainty, and one-gene baseline retention."""
+"""replicates: independent-run means, uncertainty, and one-gene baseline retention.
+
+Use estimator_comparison.py to compare different training/evaluation methods.
+"""
 import sys
 from pathlib import Path
 import matplotlib.pyplot as plt

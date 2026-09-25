@@ -40,8 +40,10 @@ SAVE_FIGURES = False
 # ════════════════════════════════════════════════════════════════════════════
 # Named explicitly. One curve is drawn per (condition, G, size law, gene law).
 SWEEPS = [
-    "expression_law_heteromers_uniform_uniform_PLACEHOLDER",
-    "expression_law_homomers_uniform_uniform_PLACEHOLDER",
+    "expression_law_heteromers_uniform_uniform_20260924_151241",
+    "expression_law_homomers_uniform_uniform_20260924_151313",
+    "expression_law_heteromers_exponential_exponential_20260924_190805",
+    "expression_law_homomers_exponential_exponential_20260924_190829",
 ]
 
 
@@ -65,8 +67,16 @@ def available():
 
 if not DATA.exists():
     raise SystemExit(f"No data yet: {DATA} does not exist. Run scripts/expression_law.py first.")
+catalogue = available()
 print("Sweeps available on disk:\n")
-print(available().to_string(index=False) if len(available()) else "  (none)")
+print(catalogue.to_string(index=False) if len(catalogue) else "  (none)")
+
+missing = [name for name in SWEEPS if not (DATA / name / "experiment.json").is_file()]
+if missing:
+    raise SystemExit(
+        "\nThese entries of SWEEPS are not on disk:\n  " + "\n  ".join(missing) +
+        "\n\nEdit SWEEPS at the top of this file to folder names from the table above."
+        "\nFailing here rather than loading nothing, which reads as 'no runs finished'.")
 
 
 # %%
@@ -84,9 +94,6 @@ NOISE_KEY = "conditional_entropy_response_grouped_counting"
 records = []
 for sweep_name in SWEEPS:
     sweep_dir = DATA / sweep_name
-    if not sweep_dir.is_dir():
-        print(f"skip {sweep_name}: not on disk")
-        continue
     manifest = json.loads((sweep_dir / "experiment.json").read_text())
     planned = {(r["cell_sampling_seed"]): r for r in manifest["rows"]}
 

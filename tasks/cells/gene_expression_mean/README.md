@@ -28,9 +28,9 @@ stops at three genes per cell; raising it increases memory and computation costs
 From `opt_bin_resp/` (after making the new task available on the cluster):
 
 ```bash
-bash tasks/run_remote.sh cells/gene_expression gene_expression.py 0
-bash tasks/run_remote.sh cells/gene_expression gene_expression_homomers.py 0
-bash tasks/cells/gene_expression/sync.sh
+bash tasks/run_remote.sh cells/gene_expression_mean gene_expression.py 0
+bash tasks/run_remote.sh cells/gene_expression_mean gene_expression_homomers.py 0
+bash tasks/cells/gene_expression_mean/sync.sh
 ```
 
 `gene_expression_homomers.py` repeats the same expression-level sweep but passes
@@ -44,8 +44,8 @@ identities are saved in the JSON configs, so no separate naming parameter is nee
 Alternatively run the simulation directly in the container:
 
 ```bash
-python3 /app/tasks/cells/gene_expression/scripts/gene_expression.py
-python3 /app/tasks/cells/gene_expression/scripts/gene_expression_homomers.py
+python3 /app/tasks/cells/gene_expression_mean/scripts/gene_expression.py
+python3 /app/tasks/cells/gene_expression_mean/scripts/gene_expression_homomers.py
 ```
 
 Open `analysis/gene_expression.py` in the IDE and execute its `# %%` cells, like
@@ -143,9 +143,9 @@ is a hypothesis to test, not an assumed consequence of complexity.
 Inspect the plan without writing files or training, from `opt_bin_resp/`:
 
 ```bash
-python3 tasks/cells/gene_expression/scripts/replicates.py --dry_run
-python3 tasks/cells/gene_expression/scripts/scaling.py --dry_run
-python3 tasks/cells/gene_expression/scripts/environment.py --baseline_only --dry_run
+python3 tasks/cells/gene_expression_mean/scripts/replicates.py --dry_run
+python3 tasks/cells/gene_expression_mean/scripts/scaling.py --dry_run
+python3 tasks/cells/gene_expression_mean/scripts/environment.py --baseline_only --dry_run
 ```
 
 Defaults contain **15, 90, and 150 optimizations per condition**, respectively.
@@ -153,17 +153,17 @@ Environment baseline screening reduces the last count to 25. A pilot can use
 fewer replicas, gene counts, or profiles. For example:
 
 ```bash
-bash tasks/run_remote.sh cells/gene_expression replicates.py 0 -- --condition heteromers --replicates 5
-bash tasks/run_remote.sh cells/gene_expression replicates.py 1 -- --condition homomers --replicates 5
+bash tasks/run_remote.sh cells/gene_expression_mean replicates.py 0 -- --condition heteromers --replicates 5
+bash tasks/run_remote.sh cells/gene_expression_mean replicates.py 1 -- --condition homomers --replicates 5
 ```
 
 Other examples inside the container (use the same remote wrapper on the cluster):
 
 ```bash
-python3 /app/tasks/cells/gene_expression/scripts/scaling.py --condition heteromers --n_genes 3 4 --replicates 3
-python3 /app/tasks/cells/gene_expression/scripts/scaling.py --condition homomers --n_genes 3 4 --replicates 3
-python3 /app/tasks/cells/gene_expression/scripts/environment.py --condition heteromers --profiles base mixtures --baseline_only
-python3 /app/tasks/cells/gene_expression/scripts/environment.py --condition homomers --profiles base mixtures --baseline_only
+python3 /app/tasks/cells/gene_expression_mean/scripts/scaling.py --condition heteromers --n_genes 3 4 --replicates 3
+python3 /app/tasks/cells/gene_expression_mean/scripts/scaling.py --condition homomers --n_genes 3 4 --replicates 3
+python3 /app/tasks/cells/gene_expression_mean/scripts/environment.py --condition heteromers --profiles base mixtures --baseline_only
+python3 /app/tasks/cells/gene_expression_mean/scripts/environment.py --condition homomers --profiles base mixtures --baseline_only
 ```
 
 Shared controls: `--epochs` (5,000), `--batch_size` (4,096), `--test_batch_size`
@@ -268,11 +268,11 @@ defaults remain `--entropy grouped_mi --evaluation exact`. To avoid enumerating
 the joint count alphabet during **both training and evaluation**, use:
 
 ```bash
-bash tasks/run_remote.sh cells/gene_expression replicates.py 0 -- \
+bash tasks/run_remote.sh cells/gene_expression_mean replicates.py 0 -- \
   --condition heteromers --coverage complete --n_genes 5 --n_cells 30 \
   --replicates 5 --entropy grouped_kt_mi --evaluation counting
 
-bash tasks/run_remote.sh cells/gene_expression replicates.py 1 -- \
+bash tasks/run_remote.sh cells/gene_expression_mean replicates.py 1 -- \
   --condition homomers --coverage complete --n_genes 5 --n_cells 30 \
   --replicates 5 --entropy grouped_kt_mi --evaluation counting
 ```
@@ -301,7 +301,7 @@ Counting needs its own convergence test; convergence of exact evaluation only
 checks input sampling. On saved models, select:
 
 ```bash
-python3 tasks/cells/gene_expression/scripts/evaluation_budget.py \
+python3 tasks/cells/gene_expression_mean/scripts/evaluation_budget.py \
   --run_dirs /path/to/saved/run --estimator counting \
   --budgets 4096 16384 65536 --repeats 3 --chunk_size 512
 ```
@@ -335,7 +335,7 @@ actually print. The two sweeps share a world seed, gene sets, batch size and epo
 count, so the comparison is paired.
 
 ```bash
-python3 tasks/cells/gene_expression/scripts/estimator_crosscheck.py \
+python3 tasks/cells/gene_expression_mean/scripts/estimator_crosscheck.py \
   --exact_sweep data/gene_expression/replicates_heteromers_complete_20260923_112537 \
   --kt_sweep    data/gene_expression/replicates_heteromers_complete_20260923_135950 \
   --budgets 16384 65536 262144
@@ -372,8 +372,8 @@ find. Exact evaluation also caps the design: the count alphabet reaches about
 size before anything is committed.
 
 ```bash
-python3 tasks/cells/gene_expression/scripts/training_batch.py --dry_run
-python3 tasks/cells/gene_expression/scripts/training_batch.py --batch_sizes 1024 4096 16384
+python3 tasks/cells/gene_expression_mean/scripts/training_batch.py --dry_run
+python3 tasks/cells/gene_expression_mean/scripts/training_batch.py --batch_sizes 1024 4096 16384
 ```
 
 ### Input-budget convergence on saved models
@@ -381,7 +381,7 @@ python3 tasks/cells/gene_expression/scripts/training_batch.py --batch_sizes 1024
 Pass saved run folders, locally or on the cluster:
 
 ```bash
-python3 tasks/cells/gene_expression/scripts/evaluation_budget.py \
+python3 tasks/cells/gene_expression_mean/scripts/evaluation_budget.py \
   --run_dirs /path/to/run_YYYYMMDD_HHMMSS \
   --budgets 4096 16384 65536 --repeats 3 --chunk_size 512
 ```

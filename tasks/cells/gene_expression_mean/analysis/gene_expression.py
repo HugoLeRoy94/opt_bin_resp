@@ -6,7 +6,13 @@ so these figures are descriptive rather than paired estimates of a heteromer eff
 """
 import sys
 from pathlib import Path
-sys.path.append("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
+DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
+sys.path.insert(0, str(ROOT))
 
 import json
 import numpy as np
@@ -14,13 +20,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 
-from src.plotlib import DATA_ROOT, load_model
+from src.plotlib import load_model
 from src.IO import find_latest_sweep, SweepLoader, SingleRunLoader
 from src.cells import CellReadout
 from src.analysis_helper import (build_latent_umap, plot_latent_umap,
                                  cell_ligand_responses, plot_cell_response_umap)
-
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
 FIGURES.mkdir(exist_ok=True)
 
 CONDITIONS = (
@@ -29,7 +33,7 @@ CONDITIONS = (
 )
 RUNS = {}
 for condition, prefix in CONDITIONS:
-    sweep = find_latest_sweep(str(DATA_ROOT / "gene_expression"), prefix=prefix)[0]
+    sweep = find_latest_sweep(str(DATA), prefix=prefix)[0]
     loader = SweepLoader(sweep)
     runs = []
     for cfg, run_dir in loader.iter_run_dirs():

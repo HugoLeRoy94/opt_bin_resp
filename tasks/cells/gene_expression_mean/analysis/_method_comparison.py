@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tasks.cells.gene_expression.analysis._shared import load_study, summarize
+from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize
 
 
 # Deliberate differences in this comparison. Everything else, including the

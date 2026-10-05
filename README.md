@@ -17,7 +17,7 @@ and short labels live in the Git-tracked `curation.csv`. See
 [`doc/curation_and_sync.md`](doc/curation_and_sync.md) for the concise reference,
 and [`doc/data_pipeline.md`](doc/data_pipeline.md) for how stored data becomes a plot.
 
-Cell experiments: [`cells/gene_expression`](tasks/cells/gene_expression/README.md)
+Cell experiments: [`cells/gene_expression_mean`](tasks/cells/gene_expression_mean/README.md)
 sweeps the mean number of genes expressed per cell using the mean readout and KT MI,
 with final-information and convergence-curve analysis.
 

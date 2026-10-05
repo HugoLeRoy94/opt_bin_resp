@@ -5,18 +5,21 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT))
-from tasks.cells.gene_expression.analysis._shared import load_study, summarize, report, plot_curves
-
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
 DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
+sys.path.insert(0, str(ROOT))
+from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize, report, plot_curves
+
 # None selects the latest sweep per condition/coverage. Set explicit compatible
 # folders to pool disjoint replicate ranges or select an older campaign.
 SWEEPS = None
 RUNS = load_study(DATA, "scaling", SWEEPS)
 SUMMARY = summarize(RUNS)
 report(SUMMARY)
-# SUMMARY.to_csv(Path(__file__).with_name("scaling_summary.csv"), index=False)
+# SUMMARY.to_csv(HERE / "scaling_summary.csv", index=False)
 
 # %%
 if not SUMMARY.empty:
@@ -38,7 +41,7 @@ if not SUMMARY.empty:
     print("Count states S = product(n_j + 1), for identical-cell group sizes n_j. "
           "This is the enumeration cost; log2(S) bounds count entropy, not attained MI.")
     fig.tight_layout()
-    # fig.savefig(Path(__file__).with_name("scaling.png"), dpi=180)
+    # fig.savefig(HERE / "scaling.png", dpi=180)
     plt.show()
 
 # %%

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent repetitions of the original three-gene comparison.
+"""Increase genes and cells at fixed cells/genes ratio and fixed environment.
 
 Run each condition separately; use --dry_run to inspect the experiment first.
 """
@@ -10,17 +10,17 @@ sys.path.append('/app')
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.config import RunConfig
-from tasks.cells.gene_expression._experiments import (
+from tasks.cells.gene_expression_mean._experiments import (
     BASE_ENVIRONMENT, measurements, argument_parser, cell_axes, launch, make_rows,
 )
 
 
 def main(argv=None):
-    parser = argument_parser(__doc__, default_coverage="random")
-    parser.add_argument("--n_genes", type=int, default=3)
-    parser.add_argument("--n_cells", type=int, default=10)
+    parser = argument_parser(__doc__)
+    parser.add_argument("--n_genes", type=int, nargs="+", default=[3, 4, 5, 6])
+    parser.add_argument("--cells_per_gene", type=int, default=3)
     args = parser.parse_args(argv)
-    rows = make_rows(args, [args.n_genes], [BASE_ENVIRONMENT], n_cells=args.n_cells)
+    rows = make_rows(args, args.n_genes, [BASE_ENVIRONMENT], cells_per_gene=args.cells_per_gene)
 
     config = RunConfig(
         # --- Environment: explicit lists are zipped, not crossed ---
@@ -60,10 +60,10 @@ def main(argv=None):
         final_measurement_fns=measurements(args),
 
         # --- Sweep: one runner, fresh environment and optimizer at every point ---
-        sweep_name=f"replicates_{args.condition}_{args.coverage}",
+        sweep_name=f"scaling_{args.condition}_{args.coverage}",
         base_folder=args.base_folder, warm_start=False,
     )
-    return launch(config, args, rows, "replicates")
+    return launch(config, args, rows, "scaling")
 
 
 if __name__ == "__main__":

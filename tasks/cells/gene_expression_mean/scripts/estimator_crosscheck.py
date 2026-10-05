@@ -20,7 +20,7 @@ This re-measures BOTH sets of saved checkpoints with BOTH estimators, filling in
 Both sweeps share a world seed, gene sets, batch size and epoch count, so the
 comparison is paired: only the objective differs.
 
-    python3 tasks/cells/gene_expression/scripts/estimator_crosscheck.py \\
+    python3 tasks/cells/gene_expression_mean/scripts/estimator_crosscheck.py \\
         --exact_sweep  data/gene_expression/replicates_heteromers_complete_20260923_112537 \\
         --kt_sweep     data/gene_expression/replicates_heteromers_complete_20260923_135950 \\
         --budgets 16384 65536 262144
@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 import torch
 
 from src.IO import SweepLoader
-from tasks.cells.gene_expression.scripts.evaluation_budget import (
+from tasks.cells.gene_expression_mean.scripts.evaluation_budget import (
     MI_KEY, evaluate_budgets, prepare_run)
 
 

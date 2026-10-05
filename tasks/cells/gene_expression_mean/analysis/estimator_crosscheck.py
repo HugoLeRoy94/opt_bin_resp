@@ -30,11 +30,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
+DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
 sys.path.insert(0, str(ROOT))
 
-DATA = ROOT / "data" / "gene_expression"
-HERE = Path(__file__).resolve().parent
 SAVE_FIGURES = False
 
 # %%

@@ -134,7 +134,7 @@ batch of inputs and measures, ten separate times, on **the same trained model**.
 
 ### `best_model.pt` and `checkpoints/`
 Trained weights. Needed only to re-measure a model later, for example by
-`tasks/cells/gene_expression/scripts/evaluation_budget.py`. Analyses that only
+`tasks/cells/gene_expression_mean/scripts/evaluation_budget.py`. Analyses that only
 read final numbers use `best_model.pt` purely as evidence the run finished.
 
 ---
@@ -142,7 +142,7 @@ read final numbers use `best_model.pt` purely as evidence the run finished.
 ## 3. `experiment.json`: the plan, written before execution
 
 This file is **not** part of the framework. The task script writes it, at
-`tasks/cells/gene_expression/_experiments.py::launch`:
+`tasks/cells/gene_expression_mean/_experiments.py::launch`:
 
 ```python
 runner = SweepRunner(config)
@@ -282,7 +282,7 @@ row cannot stop a run from being indexed.
 
 ## 6. From disk to a plotted point
 
-Worked example: `tasks/cells/gene_expression/analysis/replicates.py`.
+Worked example: `tasks/cells/gene_expression_mean/analysis/replicates.py`.
 
 `replicates.py` is deliberately SELF-CONTAINED: it imports no shared analysis
 helper, so changing what it plots cannot change another figure. Duplication

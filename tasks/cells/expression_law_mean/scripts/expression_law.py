@@ -18,6 +18,7 @@ the number of cells.
 """
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import sys
@@ -30,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import torch
 
-from src.cells import (expand_gene_set, gene_expression_probs, sample_gene_sets_by_size,
+from src.cells import (expand_gene_set, gene_expression_probs,
+                       sample_gene_sets_bernoulli, sample_gene_sets_by_size,
                        size_pmf_for_mean)
 from src.config import RunConfig
 from src.run import SweepRunner
@@ -52,10 +54,21 @@ def parse_args(argv=None):
     p.add_argument("--means", type=float, nargs="+", default=[1.0, 1.5, 2.0, 2.5, 3.0],
                    help="Target mean genes per cell. Points needing more than G genes are skipped.")
     p.add_argument("--n_cells", type=int, default=30)
+    p.add_argument("--design", choices=("bernoulli", "size_law", "cumulative"),
+                   default="size_law",
+                   help="bernoulli:  each gene independent at probability p, so the number "
+                        "per cell is INDUCED (Binomial), never chosen. "
+                        "size_law:   draw the number of genes from --size_family, then which "
+                        "genes from --gene_family. "
+                        "cumulative: no sampling. Level m uses EVERY gene set of size <= m, "
+                        "cells shared out evenly. Complete coverage of combinations, not just "
+                        "of genes, and the mean rises as levels are added.")
+    p.add_argument("--levels", type=int, nargs="+", default=None,
+                   help="cumulative only: which m to run. Default 1..G.")
     p.add_argument("--size_family", choices=("uniform", "exponential"), default="uniform",
-                   help="Law for HOW MANY genes a cell expresses.")
+                   help="size_law only: law for HOW MANY genes a cell expresses.")
     p.add_argument("--gene_family", choices=("uniform", "exponential"), default="uniform",
-                   help="Law for WHICH genes are expressed.")
+                   help="size_law only: law for WHICH genes are expressed.")
     p.add_argument("--gene_ratio", type=float, default=1.0,
                    help="P(first gene)/P(last gene) when gene_family='exponential'.")
     p.add_argument("--replicates", type=int, default=5)
@@ -70,6 +83,10 @@ def parse_args(argv=None):
     p.add_argument("--eval_chunk_size", type=int, default=512)
     p.add_argument("--max_pool", type=int, default=4096,
                    help="Refuse points whose receptor pool exceeds this; it is the memory bottleneck.")
+    p.add_argument("--n_families", type=int, default=1,
+                   help="Environment. 1 family + gaussian matches tasks/cells/gene_expression_mean.")
+    p.add_argument("--distribution_type", choices=("gaussian", "uniform", "shell"),
+                   default="gaussian")
     p.add_argument("--base_folder", default="/app/data/expression_law")
     p.add_argument("--dry_run", action="store_true")
     return p.parse_args(argv)
@@ -88,6 +105,57 @@ def validate(args):
             "Ratio 1 is exactly the uniform law, so the sweep would be mislabelled.")
     if args.gene_family == "uniform" and args.gene_ratio != 1.0:
         raise ValueError("--gene_ratio only applies to --gene_family exponential.")
+    if args.design != "size_law" and (args.size_family != "uniform"
+                                      or args.gene_family != "uniform"):
+        raise ValueError(f"--size_family / --gene_family only apply to --design size_law, "
+                         f"not {args.design!r}. The bernoulli law induces its own size "
+                         "distribution; the cumulative design does no sampling at all.")
+    if args.design != "cumulative" and args.levels is not None:
+        raise ValueError("--levels only applies to --design cumulative.")
+
+
+def bernoulli_p_for_mean(n_genes: int, mean: float, tol: float = 1e-12) -> float:
+    """Per-gene probability giving the requested mean genes per cell.
+
+    sample_gene_sets_bernoulli redraws cells that express nothing, so the realised
+    mean is the ZERO-TRUNCATED one, G*p / (1 - (1-p)^G), not G*p. Setting p = mean/G
+    would overshoot: at G=5 that gives 1.49 genes per cell when 1.0 was asked for.
+    Solved here so this law sits on the same mean axis as the others.
+    """
+    if not 1 < mean <= n_genes:
+        raise ValueError(f"mean must lie in (1, {n_genes}] for the bernoulli law, got {mean}.")
+
+    def realised(p):
+        return n_genes * p / (1 - (1 - p) ** n_genes)
+
+    lo, hi = 1e-12, 1.0 - 1e-12
+    for _ in range(300):
+        mid = 0.5 * (lo + hi)
+        if realised(mid) < mean:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def cumulative_sets(n_genes: int, level: int, n_cells: int, offset: int = 0):
+    """Every gene set of size <= level, shared out over n_cells as evenly as possible.
+
+    No sampling: at level m the array contains EVERY combination of up to m genes,
+    which is complete coverage of combinations rather than merely of genes. Adding a
+    level adds the next order of combinations, so the mean genes per cell rises in
+    steps set by the binomials, not by a distribution.
+    """
+    sets = [combo for size in range(1, level + 1)
+            for combo in itertools.combinations(range(n_genes), size)]
+    if n_cells < len(sets):
+        raise ValueError(f"G={n_genes}, level={level} needs {len(sets)} distinct sets "
+                         f"but only {n_cells} cells. Raise --n_cells.")
+    # Round robin gives near-equal counts, but when n_cells is not a multiple of
+    # len(sets) the surplus always lands on the first sets, which are the SMALL
+    # ones. Rotating the start by replicate spreads that bias over the whole
+    # design, so it averages out instead of systematically lowering the mean.
+    return [sets[(i + offset) % len(sets)] for i in range(n_cells)]
 
 
 def design(args):
@@ -101,27 +169,47 @@ def design(args):
     for replicate in range(args.replicate_start, args.replicate_start + args.replicates):
         for n_genes in sorted(set(args.n_genes)):
             gene_probs = gene_expression_probs(n_genes, args.gene_family, args.gene_ratio)
-            for mean in sorted(set(args.means)):
-                if args.size_family == "uniform" and 2 * mean - 1 > n_genes:
-                    continue                      # flat support would exceed the pool
-                if mean > n_genes:
-                    continue
-                pmf = size_pmf_for_mean(n_genes, mean, args.size_family)
-                seed = args.seed * 1000000 + replicate * 1000 + n_genes * 10 + int(mean * 2)
-                sets = sample_gene_sets_by_size(args.n_cells, n_genes, pmf,
-                                                gene_probs=gene_probs, seed=seed)
+            levels = args.levels or list(range(1, n_genes + 1))
+            axis = levels if args.design == "cumulative" else sorted(set(args.means))
+            for value in axis:
+                seed = (args.seed * 1000000 + replicate * 1000
+                        + n_genes * 10 + int(value * 2))
+                if args.design == "cumulative":
+                    if value > n_genes:
+                        continue
+                    sets = cumulative_sets(n_genes, int(value), args.n_cells,
+                                           offset=replicate)
+                    detail = {"level": int(value)}
+                elif args.design == "bernoulli":
+                    if value > n_genes:
+                        continue
+                    p_gene = bernoulli_p_for_mean(n_genes, value)
+                    sets = sample_gene_sets_bernoulli(args.n_cells, n_genes,
+                                                      [p_gene] * n_genes, seed=seed)
+                    detail = {"gene_probability": p_gene}
+                else:
+                    if args.size_family == "uniform" and 2 * value - 1 > n_genes:
+                        continue                  # flat support would exceed the pool
+                    if value > n_genes:
+                        continue
+                    pmf = size_pmf_for_mean(n_genes, value, args.size_family)
+                    sets = sample_gene_sets_by_size(args.n_cells, n_genes, pmf,
+                                                    gene_probs=gene_probs, seed=seed)
+                    detail = {}
                 pool = {r for gs in sets for r in expand_gene_set(gs, K_SUB, True)}
                 if len(pool) > args.max_pool:
                     raise ValueError(
-                        f"G={n_genes}, mean={mean}: receptor pool {len(pool)} exceeds "
+                        f"G={n_genes}, {value}: receptor pool {len(pool)} exceeds "
                         f"--max_pool={args.max_pool}. Lower the mean or raise the cap.")
                 rows.append({
                     "replicate": replicate, "cell_sampling_seed": seed,
                     "n_genes": n_genes, "n_cells": args.n_cells,
-                    "target_mean_genes": mean,
+                    "design": args.design,
+                    "target_mean_genes": (sum(map(len, sets)) / len(sets)
+                                          if args.design == "cumulative" else value),
                     "realised_mean_genes": sum(map(len, sets)) / len(sets),
                     "size_family": args.size_family, "gene_family": args.gene_family,
-                    "gene_ratio": args.gene_ratio,
+                    "gene_ratio": args.gene_ratio, **detail,
                     "cell_gene_sets": sets,
                     "receptor_pool": len(pool),
                     "distinct_gene_sets": len(set(sets)),
@@ -140,7 +228,7 @@ def _binomial_entropy(n, p):
 def report_expected_bias(args, rows):
     """Project the counting bias per design point, before committing the sweep.
 
-    tasks/cells/gene_expression/scripts/estimator_crosscheck.py measured the bias of
+    tasks/cells/gene_expression_mean/scripts/estimator_crosscheck.py measured the bias of
     sampled counting against exact enumeration over 5 expression levels x 3 budgets
     of the G=5, C=30 arrays. Across those 12 points,
 
@@ -220,9 +308,9 @@ def build_config(args, rows):
     measurements = ("grouped_counting", "conditional_entropy_response", "codeword_entropy")
     return RunConfig(
         # --- Environment: matched to the gene_expression task so curves are comparable
-        n_families=5, n_ligands=100, latent_dim=6, family_spread=0.1,
+        n_families=args.n_families, n_ligands=100, latent_dim=6, family_spread=0.1,
         average_family_distance=1.0, environment_geometry="asymmetric",
-        distribution_type="uniform", observation_noise_sigma=0.0,
+        distribution_type=args.distribution_type, observation_noise_sigma=0.0,
         n_presence_blocks=1, mu_sources=1.0, mu_ligands_per_source=1e-6,
         conc_model_type="lognormal", conc_mean=(0.0,) * 100, conc_std=(1.0,) * 100,
         block_shared_conc_mean=False,
@@ -248,8 +336,10 @@ def build_config(args, rows):
         measurement_fns=measurements, final_measurement_fns=measurements,
 
         # --- Sweep
-        sweep_name=(f"expression_law_{args.condition}_{args.size_family}_{args.gene_family}"
-                    + (f"_r{args.gene_ratio:g}" if args.gene_ratio != 1.0 else "")),
+        sweep_name=(f"expression_law_{args.design}_{args.condition}"
+                    + (f"_{args.size_family}_{args.gene_family}" if args.design == "size_law" else "")
+                    + (f"_r{args.gene_ratio:g}"
+                       if args.design == "size_law" and args.gene_ratio != 1.0 else "")),
         base_folder=args.base_folder, warm_start=False,
     )
 
@@ -258,12 +348,16 @@ def main(argv=None):
     args = parse_args(argv)
     validate(args)
     rows = design(args)
-    seed_key = (f"expression_law:{args.condition}:{args.size_family}:{args.gene_family}:"
-                f"{args.gene_ratio}:{args.seed}:{args.replicate_start}")
+    seed_key = (f"expression_law:{args.design}:{args.condition}:{args.size_family}:"
+                f"{args.gene_family}:{args.gene_ratio}:{args.seed}:{args.replicate_start}")
     world_seed = int(hashlib.sha256(seed_key.encode()).hexdigest()[:15], 16)
 
-    print(f"expression_law: {args.condition}, size law {args.size_family}, "
-          f"gene law {args.gene_family} (ratio {args.gene_ratio})")
+    detail = (f"size law {args.size_family}, gene law {args.gene_family} "
+              f"(ratio {args.gene_ratio})" if args.design == "size_law" else
+              "each gene independent, size induced" if args.design == "bernoulli" else
+              "all combinations up to each level, no sampling")
+    print(f"expression_law [{args.design}]: {args.condition}, {detail}")
+    print(f"environment: {args.n_families} famil(y/ies), {args.distribution_type}")
     print(f"{len(rows)} independent optimizations, {args.replicates} replicates per point")
     print(f"World seed {world_seed}; no warm start, fresh world per run\n")
     print(f"{'G':>3} {'target':>7} {'realised':>9} {'pool':>6} {'types':>6} {'genes seen':>11} rep")
@@ -283,7 +377,8 @@ def main(argv=None):
     manifest = {
         "schema": 1, "experiment": "expression_law", "condition": args.condition,
         "size_family": args.size_family, "gene_family": args.gene_family,
-        "gene_ratio": args.gene_ratio, "world_seed": world_seed,
+        "gene_ratio": args.gene_ratio, "design": args.design,
+        "world_seed": world_seed,
         "arguments": vars(args), "rows": rows,
     }
     if args.dry_run:

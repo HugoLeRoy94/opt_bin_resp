@@ -15,8 +15,8 @@ Exact evaluation caps the design: the joint count alphabet prod_j(n_j+1) reaches
 about 4.6e5 for G=5, C=30 complete coverage, which fits, but nothing much larger
 will. --dry_run prints the alphabet before committing.
 
-    python3 tasks/cells/gene_expression/scripts/training_batch.py --dry_run
-    python3 tasks/cells/gene_expression/scripts/training_batch.py --batch_sizes 1024 4096 16384
+    python3 tasks/cells/gene_expression_mean/scripts/training_batch.py --dry_run
+    python3 tasks/cells/gene_expression_mean/scripts/training_batch.py --batch_sizes 1024 4096 16384
 """
 import argparse
 import hashlib
@@ -34,7 +34,7 @@ import torch
 
 from src.config import RunConfig
 from src.run import SweepRunner
-from tasks.cells.gene_expression._experiments import expression_sets
+from tasks.cells.gene_expression_mean._experiments import expression_sets
 
 K_SUB = 5
 
@@ -66,7 +66,7 @@ def parse_args(argv=None):
 def design(args):
     """One row per planned run: replicate x expression level x training batch size.
 
-    Gene sets reuse tasks/cells/gene_expression expression_sets with the same seed
+    Gene sets reuse tasks/cells/gene_expression_mean expression_sets with the same seed
     formula as replicates.py, so a row here is the SAME array as the corresponding
     replicates run and the two can be compared directly.
     """

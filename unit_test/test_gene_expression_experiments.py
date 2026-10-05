@@ -10,8 +10,8 @@ import pandas as pd
 import pytest
 import torch
 
-from tasks.cells.gene_expression._experiments import expression_sets
-from tasks.cells.gene_expression.analysis._shared import load_study, summarize, effects
+from tasks.cells.gene_expression_mean._experiments import expression_sets
+from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize, effects
 
 
 @pytest.mark.parametrize("coverage", ["random", "complete"])
@@ -36,7 +36,7 @@ def test_expression_design_is_nested_and_does_not_touch_world_rng(coverage):
     ("environment", ["--n_genes", "3", "--profiles", "base", "dimension", "--baseline_only"], 4),
 ])
 def test_zipped_configs_retain_world_and_architecture_design(monkeypatch, script, extra, expected):
-    module = importlib.import_module(f"tasks.cells.gene_expression.scripts.{script}")
+    module = importlib.import_module(f"tasks.cells.gene_expression_mean.scripts.{script}")
     monkeypatch.setattr(module, "launch", lambda config, args, rows, experiment: (config, args, rows))
     het, _, planned = module.main(extra + ["--replicates", "2", "--coverage", "complete"])
     hom, _, _ = module.main(extra + ["--replicates", "2", "--coverage", "complete", "--condition", "homomers"])
@@ -56,7 +56,7 @@ def test_zipped_configs_retain_world_and_architecture_design(monkeypatch, script
 
 
 def test_default_scaling_fits_declared_guard_and_dry_run_writes_nothing(tmp_path, capsys):
-    from tasks.cells.gene_expression.scripts.scaling import main
+    from tasks.cells.gene_expression_mean.scripts.scaling import main
     manifest = main(["--dry_run", "--base_folder", str(tmp_path)])
     assert len(manifest["rows"]) == 5 * (3 + 4 + 5 + 6)
     assert max(r["count_states"] for r in manifest["rows"]) <= manifest["arguments"]["max_states"]
@@ -65,8 +65,8 @@ def test_default_scaling_fits_declared_guard_and_dry_run_writes_nothing(tmp_path
 
 
 def test_repeated_sweeps_analysis_and_budget_evaluation(tmp_path):
-    from tasks.cells.gene_expression.scripts.replicates import main
-    from tasks.cells.gene_expression.scripts.evaluation_budget import main as budget_main
+    from tasks.cells.gene_expression_mean.scripts.replicates import main
+    from tasks.cells.gene_expression_mean.scripts.evaluation_budget import main as budget_main
     # Real training and checkpoint loading, kept tiny for a CPU regression.
     args = ["--replicates", "2", "--epochs", "1", "--batch_size", "8", "--test_batch_size", "8",
             "--final_batch_size", "17", "--eval_chunk_size", "5", "--n_genes", "2", "--n_cells", "6",

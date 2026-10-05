@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from tasks.cells.gene_expression.analysis._method_comparison import select_sweeps
+from tasks.cells.gene_expression_mean.analysis._method_comparison import select_sweeps
 
 
 def write_sweep(root, stamp, objective='grouped_mi', evaluation='exact',

@@ -6,17 +6,20 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
+DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
 sys.path.insert(0, str(ROOT))
-from tasks.cells.gene_expression.analysis._method_comparison import load_comparison
+from tasks.cells.gene_expression_mean.analysis._method_comparison import load_comparison
 
-DATA = ROOT / 'data' / 'gene_expression'
 # None finds the latest matching design with multiple methods and selects the
 # latest sweep per method/condition. Set a list of explicit sweep folders to
 # select an older comparison; unrelated designs/budgets are rejected.
 SWEEPS = None
 SAVE_FIGURES = True
-OUT = Path(__file__).resolve().parent
+OUT = HERE
 RUNS, SUMMARY = load_comparison(DATA, SWEEPS)
 COLORS = {'heteromers': 'tab:blue', 'homomers': 'tab:orange'}
 
@@ -94,3 +97,5 @@ if not SUMMARY.empty:
     if SAVE_FIGURES:
         fig.savefig(OUT / 'estimator_comparison_entropies.png', dpi=180)
     plt.show()
+
+# %%

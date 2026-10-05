@@ -1,7 +1,7 @@
 # %%
 """expression_law.py — MI versus the MEAN number of genes per cell.
 
-SELF-CONTAINED ON PURPOSE, like tasks/cells/gene_expression/analysis/replicates.py.
+SELF-CONTAINED ON PURPOSE, like tasks/cells/gene_expression_mean/analysis/replicates.py.
 Everything from "which folders am I reading" to "what is on each axis" is here.
 
 The question: the gene_expression task found MI peaking at exactly 2 genes per
@@ -184,6 +184,7 @@ for (condition, G, size_law, gene_law, gene_ratio), curve in curves:
     print(f"      y  mi_mean         : {[round(v, 3) for v in curve.mi_mean]}")
     print(f"         +- sem          : {[round(v, 3) for v in curve.mi_sem]}")
     print(f"         n runs          : {list(curve.n)}")
+    print(f"      f1/B missing mass  : {[round(v, 5) for v in curve.missing_mass]}")
     print(f"      PEAK at {peak.mean_genes:.2f} genes/cell "
           f"(combinatorial maximum of C({G}, g) sits at g={G / 2:.1f})")
     print()
@@ -242,24 +243,38 @@ plt.show()
 if points.missing_mass.notna().any():
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     for key, curve in points.groupby(CURVE, sort=False):
+        condition, G, size_law, gene_law, ratio = key
         curve = curve.sort_values("mean_genes")
         kw = style(*key)
-        axes[0].plot(curve.mean_genes, curve.missing_mass,
-                     label=f"{key[0]}, G={key[1]}", **kw)
-        axes[1].scatter(curve.missing_mass, curve.mi_mean,
-                        color=kw["color"], marker=kw["marker"],
-                        label=f"{key[0]}, G={key[1]}")
+        label = (f"{condition}, G={G}, {size_law}/{gene_law}"
+                 + (f" r={ratio:g}" if ratio != 1.0 else ""))
+        axes[0].plot(curve.mean_genes, curve.missing_mass, label=label, **kw)
+        axes[1].scatter(curve.missing_mass, curve.mi_mean, color=kw["color"],
+                        marker=kw["marker"], label=label)
     axes[0].set(xlabel="mean genes expressed per cell",
                 ylabel="Good-Turing missing mass  f1/B",
                 title=f"Unsampled mass at {int(points.eval_inputs.min()):,} evaluation inputs")
+    axes[0].set_yscale("symlog", linthresh=1e-4)
     axes[1].set(xlabel="Good-Turing missing mass  f1/B", ylabel="MI [bits]",
                 title="MI against how much was never sampled")
+    axes[1].set_xscale("symlog", linthresh=1e-4)
     for ax in axes:
         ax.grid(alpha=.2)
-        ax.legend(fontsize=8)
-    fig.tight_layout()
+    # A point sitting to the right here has part of its MI set by the budget.
+    # f1/B is the probability mass never observed, so at 0.1 a tenth of the
+    # distribution is invisible to the estimator and the entropy reads low.
+    for ax, axis in ((axes[0], "y"), (axes[1], "x")):
+        getattr(ax, f"ax{axis}line" if False else ("axhline" if axis == "y" else "axvline"))(
+            0.01, color="0.4", linestyle=":", linewidth=1)
+        ax.annotate("1% unsampled", (0.02, 0.02), xycoords="axes fraction",
+                    fontsize=8, color="0.4")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=8,
+               frameon=False, bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(rect=(0, 0.14, 1, 1))
     if SAVE_FIGURES:
-        fig.savefig(HERE / "expression_law_missing_mass.png", dpi=180)
+        fig.savefig(HERE / "expression_law_missing_mass.png", dpi=180,
+                    bbox_inches="tight")
     plt.show()
 else:
     print("No missing-mass metric in these runs: they predate grouped_counting_missing_mass.")

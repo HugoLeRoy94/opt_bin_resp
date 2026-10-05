@@ -1045,7 +1045,7 @@ class SimulationRunner:
         frequency-based entropy estimate is biased downward by an amount fixed by
         n_samples, so repeating a small batch carries exactly the bias of one. At
         equal cost, put everything into final_test_batch_size. Re-measure a saved
-        checkpoint with tasks/cells/gene_expression/scripts/evaluation_budget.py if
+        checkpoint with tasks/cells/gene_expression_mean/scripts/evaluation_budget.py if
         repeat scatter is wanted.
 
         Values are still stored as one-element lists so every consumer keeps its

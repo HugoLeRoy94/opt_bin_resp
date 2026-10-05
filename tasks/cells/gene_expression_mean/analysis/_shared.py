@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.IO import SweepLoader, find_latest_sweep
-from tasks.cells.gene_expression._experiments import run_key
+from tasks.cells.gene_expression_mean._experiments import run_key
 
 
 # One design point. `mi_estimator` and `training_entropy` are part of the identity:

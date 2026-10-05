@@ -10,7 +10,7 @@ sys.path.append('/app')
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.config import RunConfig
-from tasks.cells.gene_expression._experiments import (
+from tasks.cells.gene_expression_mean._experiments import (
     BASE_ENVIRONMENT, measurements, argument_parser, cell_axes, launch, make_rows,
 )
 

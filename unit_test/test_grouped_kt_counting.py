@@ -155,9 +155,9 @@ def test_streamed_kt_uses_full_budget_and_preserves_binary_bound(tmp_path, monke
 
 
 def test_scalable_script_guard_and_counting_budget_report(tmp_path, monkeypatch):
-    from tasks.cells.gene_expression.scripts import replicates
-    from tasks.cells.gene_expression.scripts.evaluation_budget import main as budget_main
-    from tasks.cells.gene_expression.analysis._shared import load_study, summarize
+    from tasks.cells.gene_expression_mean.scripts import replicates
+    from tasks.cells.gene_expression_mean.scripts.evaluation_budget import main as budget_main
+    from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize
     large = replicates.main(['--n_genes', '5', '--n_cells', '30', '--coverage', 'complete',
                              '--entropy', 'grouped_kt_mi', '--evaluation', 'counting',
                              '--max_states', '1', '--dry_run'])

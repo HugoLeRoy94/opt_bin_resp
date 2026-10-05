@@ -5,11 +5,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT))
-from tasks.cells.gene_expression.analysis._shared import load_study, summarize, report, plot_curves
-
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
 DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
+sys.path.insert(0, str(ROOT))
+from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize, report, plot_curves
+
 # None selects the latest sweep per condition/coverage. Set explicit compatible
 # folders to pool disjoint replicate ranges or select an older campaign.
 SWEEPS = None
@@ -23,7 +26,7 @@ PROFILE_LABELS = {
 RUNS = load_study(DATA, "environment", SWEEPS)
 SUMMARY = summarize(RUNS)
 report(SUMMARY)
-# SUMMARY.to_csv(Path(__file__).with_name("environment_summary.csv"), index=False)
+# SUMMARY.to_csv(HERE / "environment_summary.csv", index=False)
 
 # %%
 if not SUMMARY.empty:
@@ -54,10 +57,12 @@ if not SUMMARY.empty and (SUMMARY.genes_per_cell > 1).any():
         ax.set(title=profile, xlabel="genes expressed per cell", ylabel="MI / mean one-gene MI")
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     fig.tight_layout()
-    # fig.savefig(Path(__file__).with_name("environment.png"), dpi=180)
+    # fig.savefig(HERE / "environment.png", dpi=180)
     plt.show()
 elif not SUMMARY.empty:
     print("Only one-gene baselines are available, so there is no expression sweep "
           "to plot. Run scripts/environment.py for both conditions without "
           "--baseline_only, using the same --profiles, to measure MI retention "
           "as genes per cell increases.")
+
+# %%

@@ -7,8 +7,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
+HERE = ROOT / "tasks/cells/gene_expression_mean/analysis"
+FIGURES = HERE.parent / "figures"
 DATA = ROOT / "data" / "gene_expression"
+assert HERE.is_dir(), HERE
 # Set explicit report paths to compare older evaluations. Otherwise latest per model.
 REPORTS = None
 paths = list(map(Path, REPORTS)) if REPORTS is not None else sorted(DATA.rglob("grouped_evaluation_budget_*.json"))
@@ -56,5 +59,5 @@ if not RESULTS.empty:
     ax.grid(axis="y", alpha=.2)
     ax.legend(fontsize=8)
     fig.tight_layout()
-    # fig.savefig(Path(__file__).with_name("evaluation_budget.png"), dpi=180)
+    # fig.savefig(HERE / "evaluation_budget.png", dpi=180)
     plt.show()

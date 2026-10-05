@@ -2,7 +2,7 @@
 
 ## Why this task exists
 
-`tasks/cells/gene_expression` found mutual information peaking at exactly **2
+`tasks/cells/gene_expression_mean` found mutual information peaking at exactly **2
 genes per cell**, for heteromers, and raising the cell count did not move it.
 Two things about that design make the result hard to interpret:
 
@@ -73,7 +73,7 @@ design. Two consequences, both unavoidable:
 
 ### How big does the evaluation batch need to be
 
-`tasks/cells/gene_expression/scripts/estimator_crosscheck.py` measured this bias
+`tasks/cells/gene_expression_mean/scripts/estimator_crosscheck.py` measured this bias
 against exact enumeration, on 5 expression levels x 3 budgets of the G=5, C=30
 arrays. Over those 12 points:
 
@@ -132,7 +132,7 @@ Then `bash tasks/cells/expression_law/sync.sh` and edit `SWEEPS` at the top of
 ## Comparability with gene_expression
 
 The environment block is copied verbatim from
-`tasks/cells/gene_expression/scripts/replicates.py` (5 families, 100 ligands,
+`tasks/cells/gene_expression_mean/scripts/replicates.py` (5 families, 100 ligands,
 latent dimension 6, family spread 0.1, `mu_ligands_per_source` 1e-6), as are
 `cell_readout='mean'`, `k_sub=5`, the interface model and the multinomial
 stoichiometry. What differs is the expression law and the estimator. The

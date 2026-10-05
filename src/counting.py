@@ -132,14 +132,21 @@ class SymbolCounter:
 
     # --- accumulation -----------------------------------------------------
 
-    def _pack(self, symbols):
+    def _on(self, device):
+        """(plan, radices) on `device`, cached: one host-to-device copy per device."""
+        cached = self._device_plan.get(device)
+        if cached is None:
+            cached = ([(a, b, s.to(device), r) for a, b, s, r in self._plan or []],
+                      None if self._radices is None else self._radices.to(device))
+            self._device_plan[device] = cached
+        return cached
+
+    def _pack(self, symbols, plan):
         if self._plan is None:
             return symbols
-        plan = self._device_plan.get(symbols.device)
-        if plan is None:
-            plan = [(a, b, s.to(symbols.device), r) for a, b, s, r in self._plan]
-            self._device_plan[symbols.device] = plan
-        words = [symbols[:, a:b] @ s for a, b, s, _ in plan]
+        # Weighted sum, NOT a matmul: CUDA has no int64 GEMM ("addmv_impl_cuda not
+        # implemented for 'Long'"), while elementwise multiply and sum are supported.
+        words = [(symbols[:, a:b] * s).sum(dim=1) for a, b, s, _ in plan]
         return words[0] if len(words) == 1 else torch.stack(words, dim=1)
 
     def update(self, symbols):
@@ -151,11 +158,10 @@ class SymbolCounter:
         if symbols.shape[1] != self._width or (
                 self._radices is not None and symbols.shape[1] != self._radices.numel()):
             raise ValueError("Symbol dimension changed between chunks.")
-        if self._radices is not None:
-            radices = self._radices.to(symbols.device)
-            if (symbols < 0).any() or (symbols >= radices).any():
-                raise ValueError("Symbol value outside the declared radices.")
-        self._pending.append(self._pack(symbols).cpu())
+        plan, radices = self._on(symbols.device)
+        if radices is not None and ((symbols < 0).any() or (symbols >= radices).any()):
+            raise ValueError("Symbol value outside the declared radices.")
+        self._pending.append(self._pack(symbols, plan).cpu())
         self._pending_rows += symbols.shape[0]
         self.n_samples += symbols.shape[0]
         self._symbols = None

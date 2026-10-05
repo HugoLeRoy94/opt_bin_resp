@@ -35,108 +35,175 @@ def entropy_from_counts(counts):
 
 
 _MAX_KEY = 1 << 62      # headroom below int64 overflow
+_FLUSH_ROWS = 1 << 23   # buffered rows before a reduction (~67 MB of int64 keys)
+
+
+def _word_plan(radices):
+    """Split the columns into consecutive WORDS, each packed into one int64.
+
+    Returns [(start, stop, strides, radices), ...]; within a word the first column
+    is the most significant digit, and the words keep their column order, so
+    sorting the packed words lexicographically reproduces the row order that
+    torch.unique(dim=0) gives on the raw symbols. None when a single column is
+    itself too large to pack (nothing can be done for it).
+    """
+    plan, start = [], 0
+    while start < len(radices):
+        stop, total = start, 1
+        while stop < len(radices) and total * radices[stop] < _MAX_KEY:
+            total *= radices[stop]
+            stop += 1
+        if stop == start:
+            return None
+        strides, step = [0] * (stop - start), 1
+        for j in range(stop - 1, start - 1, -1):
+            strides[j - start] = step
+            step *= radices[j]
+        plan.append((start, stop, torch.tensor(strides, dtype=torch.int64),
+                     torch.tensor(radices[start:stop], dtype=torch.int64)))
+        start = stop
+    return plan
+
+
+def _unique_counts(rows, weights=None):
+    """(unique rows, summed weights) from a lexicographic sort, cheap in memory.
+
+    torch.unique(dim=0) allocates several multiples of its input for a 2-D table —
+    measured at ~350 bytes per row, i.e. 20 GB at 6.7e7 two-word responses. Sorting
+    the words from least to most significant with a stable sort gives exactly the
+    same row order at ~40 bytes per row, and segment-summing over equal-row runs
+    gives the counts (weights=None counts one per row).
+    """
+    n = rows.shape[0]
+    if rows.ndim == 1:
+        order = torch.argsort(rows, stable=True) if weights is not None else None
+        values = rows[order] if order is not None else torch.sort(rows).values
+        new = torch.ones(n, dtype=torch.bool)
+        new[1:] = values[1:] != values[:-1]
+    else:
+        order = torch.arange(n)
+        for w in range(rows.shape[1] - 1, -1, -1):          # least significant first
+            order = order[torch.argsort(rows[order, w], stable=True)]
+        values = rows[order]
+        new = torch.ones(n, dtype=torch.bool)
+        new[1:] = (values[1:] != values[:-1]).any(1)
+    edges = torch.cat((new.nonzero().squeeze(1), torch.tensor([n])))
+    if weights is None:
+        return values[edges[:-1]], torch.diff(edges)
+    cumulative = torch.cat((torch.zeros(1, dtype=torch.int64), weights[order].cumsum(0)))
+    return values[edges[:-1]], torch.diff(cumulative[edges])
 
 
 class SymbolCounter:
     """Merge observed integer rows, retaining U unique symbols and frequencies.
 
-    Two storage paths, chosen once:
+    With `radices`, each row is packed into W = ceil over words int64 keys (ONE key
+    whenever prod(radices) < 2^62, as for grouped cell counts; two for a 75-receptor
+    binary response). Packing happens on the symbols' own device, so only 8W bytes
+    per observation cross to CPU and the counting memory is independent of the
+    number of columns. Without radices the raw rows are kept, which costs 8J bytes
+    per observation; give radices whenever the alphabet is bounded.
 
-    `radices` given and prod(radices) < 2^62
-        Each row is packed into ONE int64, most significant digit first, so sorting
-        keys reproduces the lexicographic row order that torch.unique(dim=0) gives.
-        Keys are accumulated raw and reduced once, in `entropy`. Cost is a single
-        O(B log B) sort and 8 bytes per observation.
-
-    otherwise
-        Rows are kept as a (U, J) table and re-reduced on every update. Correct for
-        any alphabet, but every chunk re-sorts the whole accumulated table, so the
-        total cost is quadratic in the number of observations. Only take this path
-        when the alphabet genuinely cannot be packed.
+    Rows are buffered and reduced when the buffer exceeds both _FLUSH_ROWS and the
+    current unique table, so the table is re-sorted a logarithmic number of times
+    instead of once per chunk: total cost O(n log n), not quadratic. Peak memory is
+    the buffer plus the table, never the full stream of raw rows.
 
     No thresholding of count values greater than one, and no alphabet-sized
     allocation on either path.
     """
 
-    def __init__(self, radices: Optional[Sequence[int]] = None):
-        self._strides = self._radices = None
+    def __init__(self, radices: Optional[Sequence[int]] = None, flush_rows: int = _FLUSH_ROWS):
+        self._plan = self._radices = None
         if radices is not None:
             values = [int(r) for r in radices]
             if min(values, default=1) < 1:
                 raise ValueError("Radices must be positive.")
-            total = 1
-            for r in values:
-                total *= r
-            if total < _MAX_KEY:
-                strides, step = [0] * len(values), 1
-                for j in range(len(values) - 1, -1, -1):
-                    strides[j] = step               # column 0 ends up most significant
-                    step *= values[j]
-                self._strides = torch.tensor(strides, dtype=torch.int64)
-                self._radices = torch.tensor(values, dtype=torch.int64)
-        self._pending = []       # packed path: raw keys, reduced once in _reduce
-        self._unique_keys = None
-        self._symbols = None
+            self._radices = torch.tensor(values, dtype=torch.int64)
+            self._plan = _word_plan(values)
+        self._flush_rows = int(flush_rows)
+        self._device_plan = {}
+        self._pending, self._pending_rows = [], 0
+        self._keys = None        # packed (U, W) / (U,) keys, or raw (U, J) rows
         self._counts = None
+        self._symbols = None
+        self._width = None
         self.n_samples = 0
 
     # --- accumulation -----------------------------------------------------
 
+    def _pack(self, symbols):
+        if self._plan is None:
+            return symbols
+        plan = self._device_plan.get(symbols.device)
+        if plan is None:
+            plan = [(a, b, s.to(symbols.device), r) for a, b, s, r in self._plan]
+            self._device_plan[symbols.device] = plan
+        words = [symbols[:, a:b] @ s for a, b, s, _ in plan]
+        return words[0] if len(words) == 1 else torch.stack(words, dim=1)
+
     def update(self, symbols):
         if symbols.ndim != 2 or symbols.shape[0] == 0:
             raise ValueError("Expected a nonempty matrix of discrete symbols.")
-        symbols = symbols.detach().to(device="cpu", dtype=torch.int64)
-        if self._strides is not None:
-            if symbols.shape[1] != self._strides.numel():
-                raise ValueError("Symbol dimension changed between chunks.")
-            if (symbols < 0).any() or (symbols >= self._radices).any():
+        symbols = symbols.detach().to(torch.int64)
+        if self._width is None:
+            self._width = symbols.shape[1]
+        if symbols.shape[1] != self._width or (
+                self._radices is not None and symbols.shape[1] != self._radices.numel()):
+            raise ValueError("Symbol dimension changed between chunks.")
+        if self._radices is not None:
+            radices = self._radices.to(symbols.device)
+            if (symbols < 0).any() or (symbols >= radices).any():
                 raise ValueError("Symbol value outside the declared radices.")
-            self._pending.append(symbols @ self._strides)
-            self._counts = self._symbols = self._unique_keys = None   # invalidate
-        else:
-            rows, counts = torch.unique(symbols, dim=0, return_counts=True)
-            if self._symbols is not None:
-                if rows.shape[1] != self._symbols.shape[1]:
-                    raise ValueError("Symbol dimension changed between chunks.")
-                merged = torch.cat((self._symbols, rows))
-                weights = torch.cat((self._counts, counts))
-                rows, inverse = torch.unique(merged, dim=0, return_inverse=True)
-                counts = torch.zeros(rows.shape[0], dtype=torch.int64).scatter_add_(
-                    0, inverse, weights)
-            self._symbols, self._counts = rows, counts
+        self._pending.append(self._pack(symbols).cpu())
+        self._pending_rows += symbols.shape[0]
         self.n_samples += symbols.shape[0]
+        self._symbols = None
+        held = 0 if self._keys is None else self._keys.shape[0]
+        if self._pending_rows >= max(self._flush_rows, held):
+            self._flush()
 
-    def _reduce(self):
-        """Collapse the pending packed keys into (unique keys, counts). Idempotent.
+    def _flush(self):
+        """Fold the buffered rows into (unique keys, counts). Idempotent.
 
         Only the counts are needed for an entropy, and they cost 8 bytes per unique
         symbol. The (U, J) row table is reconstructed lazily by `symbols`, because
         materialising it would undo the whole point of packing.
         """
-        if self._strides is None or self._counts is not None:
-            return
         if not self._pending:
-            raise ValueError("Counting requires at least one observation.")
-        self._unique_keys, self._counts = torch.unique(
-            torch.cat(self._pending), return_counts=True)
+            return
+        rows = self._pending[0] if len(self._pending) == 1 else torch.cat(self._pending)
+        self._pending, self._pending_rows = [], 0
+        keys, counts = _unique_counts(rows)
+        if self._keys is not None:
+            keys, counts = _unique_counts(torch.cat((self._keys, keys)),
+                                          torch.cat((self._counts, counts)))
+        self._keys, self._counts, self._symbols = keys, counts, None
 
     # --- results ----------------------------------------------------------
 
     @property
     def symbols(self):
-        self._reduce()
+        self._flush()
+        if self._keys is None:
+            raise ValueError("Counting requires at least one observation.")
         if self._symbols is None:
-            self._symbols = ((self._unique_keys[:, None] // self._strides[None, :])
-                             % self._radices[None, :])
+            if self._plan is None:
+                self._symbols = self._keys
+            else:
+                cols = []
+                for w, (_, _, strides, radices) in enumerate(self._plan):
+                    key = self._keys if self._keys.ndim == 1 else self._keys[:, w]
+                    cols.append((key[:, None] // strides[None, :]) % radices[None, :])
+                self._symbols = torch.cat(cols, dim=1)
         return self._symbols
 
     @property
     def counts(self):
-        self._reduce()
+        self._flush()
+        if self._counts is None:
+            raise ValueError("Counting requires at least one observation.")
         return self._counts
 
     def entropy(self):
-        if self._strides is None and self._counts is None:
-            raise ValueError("Counting requires at least one observation.")
-        self._reduce()
-        return entropy_from_counts(self._counts)
+        return entropy_from_counts(self.counts)

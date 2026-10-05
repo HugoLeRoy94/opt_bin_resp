@@ -30,7 +30,7 @@ from src.bin_loss import (compute_shannon_joint_entropy, compute_collision_entro
                           KT_EPS)
 from src.grouped_loss import (GroupedCellMutualInformationLoss, GroupedKTMutualInformationLoss,
                               GroupedResponseCounter)
-from src.counting import entropy_from_counts
+from src.counting import SymbolCounter, entropy_from_counts
 
 
 def _conditional_entropy_fn(loss_fn):
@@ -314,12 +314,20 @@ def count_sampled_responses(env, physics, receptor_indices, n_samples,
 
     ``response_generator`` may be supplied to isolate response-sampling randomness
     from the environment's input-sampling RNG.
+
+    Each draw is folded into a :class:`~src.counting.SymbolCounter` with radices
+    ``[2] * R``, i.e. packed into ceil(R / 62) int64 keys on the GPU and merged into
+    the running frequency table on CPU. The counting memory is therefore 8-16 bytes
+    per sniff whatever R is (plus the table of distinct codes), instead of the
+    ``(n_samples, R)`` code matrix a single final unique-row pass would need, which
+    is what previously capped n_samples. ``log2(n_samples)`` still caps the
+    measurable entropy, so read the returned missing mass beside it.
     """
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
 
     ri_fwd = receptor_indices if env.use_interface_model else None
-    codes, n_done = [], 0
+    counter, n_done = None, 0
     h_cond_sum = None
     while n_done < n_samples:
         b = min(fwd_chunk, n_samples - n_done)
@@ -335,10 +343,13 @@ def count_sampled_responses(env, physics, receptor_indices, n_samples,
         activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
         h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
         h_cond_sum = h_cond_chunk if h_cond_sum is None else h_cond_sum + h_cond_chunk
-        codes.append(torch.bernoulli(activity, generator=response_generator).bool().cpu())
+        if counter is None:
+            counter = SymbolCounter([2] * activity.shape[1])
+        counter.update(torch.bernoulli(activity, generator=response_generator))
         n_done += b
 
-    return response_counting_metrics(torch.cat(codes), (h_cond_sum / n_done).item())
+    return response_counting_metrics_from_counts(counter.counts, counter.n_samples,
+                                                 (h_cond_sum / n_done).item())
 
 
 @torch.no_grad()
@@ -860,8 +871,20 @@ def response_counting_metrics(codes, h_cond):
 
     Negative estimates are retained: finite-sample bias or Monte Carlo error must
     not be hidden by clamping. K_hat / B diagnoses sparse observed-code coverage.
+    Takes the whole (B, R) code matrix; stream through
+    :func:`response_counting_metrics_from_counts` when B is too large to hold.
     """
     plugin, mm, k_hat, log2_b, _, missing = miller_madow_entropy(codes)
+    return _counting_metrics(plugin, mm, k_hat, log2_b, missing, codes.shape[0], h_cond)
+
+
+def response_counting_metrics_from_counts(counts, n_samples, h_cond):
+    """Same metrics from a (merged) frequency table, with no code matrix retained."""
+    plugin, mm, k_hat, log2_b, missing = entropy_from_counts(counts)
+    return _counting_metrics(plugin, mm, k_hat, log2_b, missing, n_samples, h_cond)
+
+
+def _counting_metrics(plugin, mm, k_hat, log2_b, missing, n_samples, h_cond):
     return {
         'response_entropy_plugin': plugin,
         'response_entropy_mm': mm,
@@ -869,9 +892,9 @@ def response_counting_metrics(codes, h_cond):
         'mutual_information_counting_mm': mm - h_cond,
         'conditional_entropy_response': h_cond,
         'response_counting_K_hat': float(k_hat),
-        'response_counting_unique_fraction': k_hat / codes.shape[0],
+        'response_counting_unique_fraction': k_hat / n_samples,
         'response_counting_missing_mass': missing,
-        'response_counting_samples': int(codes.shape[0]),
+        'response_counting_samples': int(n_samples),
         'response_counting_log2B': log2_b,
     }
 

@@ -63,6 +63,21 @@ def test_integer_symbol_counter_streams_without_thresholding_or_overflow():
     assert counter.n_samples == 8
 
 
+@pytest.mark.parametrize('n_columns', [62, 75])
+def test_wide_binary_responses_pack_into_words_and_match_unique_rows(n_columns):
+    # A 75-receptor response overflows one int64; it must still stream in packed
+    # words rather than fall back to re-sorting raw rows on every chunk.
+    torch.manual_seed(5)
+    rows = (torch.rand(4000, n_columns) < 0.5).long()
+    counter = SymbolCounter([2] * n_columns, flush_rows=512)
+    for start in range(0, rows.shape[0], 317):
+        counter.update(rows[start:start + 317])
+    expected_rows, expected_counts = torch.unique(rows, dim=0, return_counts=True)
+    torch.testing.assert_close(counter.counts, expected_counts)
+    torch.testing.assert_close(counter.symbols, expected_rows)
+    assert counter.n_samples == 4000
+
+
 def test_counting_converges_to_exact_and_preserves_entropy_meanings():
     grouping = CellGrouping(torch.ones(3, 1))
     # Deterministic choice of equally represented inputs; sample only the output.

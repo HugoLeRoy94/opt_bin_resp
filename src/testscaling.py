@@ -8,13 +8,19 @@ sweeps, pick runs, choose sizes, write the CSV. Task scripts
 
 Size strategies (sizes_from_args, in priority order):
   --test_sizes A B ...  explicit absolute sizes
+  --largest f           single size = f × that run's train batch B
   --mult m1 m2 ...      per-run multiples of that run's train batch (B, 2B, 4B, ...)
-  (neither)             auto geometric ladder of --n_test points (×4), up to the KT mem cap
-KT sizes are clamped to [EVAL_TILE, eval_batch_cap(free)]. Explicit counting sizes
-(``--test_sizes``, ``--mult``, or ``--largest``) only need be positive: the forward is
-chunked and sampled binary outputs are kept on CPU, so they can exceed the KT memory
-cap (subject to available CPU memory). The automatic ladder deliberately keeps the
-conservative KT ceiling.
+  (none)                auto geometric ladder of --n_test points (×4), downwards from
+                        the KT memory cap (kt), or from the counting budget
+                        min(--max_samples, 64·2^R) (counting)
+KT sizes are clamped to [EVAL_TILE, eval_batch_cap(free)] because its (tile, B) buffer
+and its quadratic pairwise work both live on the GPU. Counting sizes only need be
+positive: the forward is chunked and each sampled response is packed into one or two
+int64 keys merged into a CPU frequency table, so a counting size is bounded by time
+and by the log2(n) ceiling on a measurable entropy, not by GPU memory. Its default
+budget is 64× the binary alphabet 2^R, where the bias measured against exact
+enumeration (≈3.34·(n/2^H)^-0.92 bits, doc/theory/07) is under 0.1 bit — capped at
+--max_samples and floored at 2^18 sniffs, so small R stays cheap.
 """
 import argparse
 import glob
@@ -26,7 +32,7 @@ import torch
 from src.IO import SingleRunLoader
 from src.plotlib import load_model
 from src.analysis_helper import (kt_bracket, count_sampled_responses,
-                                 eval_batch_cap, EVAL_TILE)
+                                 eval_batch_cap, EVAL_TILE, FWD_CHUNK)
 
 
 def build_parser(description, data_default, sweep_default, mult_default=None):
@@ -46,6 +52,14 @@ def build_parser(description, data_default, sweep_default, mult_default=None):
                    help="KT entropy bracket (default), or streamed stochastic response "
                         "counting that reports response entropy and mutual information")
     p.add_argument("--n_test", type=int, default=5, help="auto ladder: number of sizes (×4 apart)")
+    p.add_argument("--max_samples", type=int, default=1 << 26,
+                   help="counting auto ladder: cap on the per-run budget min(cap, 64*2**R) "
+                        "(default 2**26 = 67.1M sniffs → entropies up to 26 bits measurable, "
+                        "~9 min/run of forward pass and ~9 GB of CPU counting memory at R=75)")
+    p.add_argument("--fwd_chunk", type=int, default=FWD_CHUNK,
+                   help="forward sub-batch; bounds GPU memory, independent of the test size")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed the input and response sampling (reproducible measurement)")
     p.add_argument("--n_receptors", type=int, nargs="+", default=None,
                    help="only measure runs with these R (default: all)")
     p.add_argument("--per_condition", action="store_true",
@@ -64,7 +78,11 @@ def sizes_from_args(args):
             return [min(size, eval_batch_cap(mem_free)) if args.measurement == "kt" else size]
         if args.mult:
             return [int(round(m * b)) for m in args.mult]
-        top = min(1 << cfg.n_receptors, eval_batch_cap(mem_free))       # auto ladder
+        if args.measurement == "counting":                              # auto ladder
+            top = min(args.max_samples,
+                      max(1 << 18, 1 << min(cfg.n_receptors + 6, 62)))
+        else:
+            top = min(1 << cfg.n_receptors, eval_batch_cap(mem_free))
         return [int(top // (4 ** k)) for k in range(args.n_test)]
     return sizes_for
 
@@ -95,15 +113,22 @@ def _clamp(sizes, mem_free, measurement):
 
 
 def run(data_root, sweep_glob, sizes_for, *, n_receptors=None, per_condition=False,
-        measurement="kt", device=None):
+        measurement="kt", device=None, fwd_chunk=FWD_CHUNK, seed=None):
     """Measure one post-hoc estimator at sizes_for(cfg, mem_free) for each selected run.
 
     ``measurement='kt'`` writes ``test_scaling.csv`` with lower/upper entropy bounds.
     ``measurement='counting'`` writes ``test_counting.csv`` with response entropy and
     mutual-information estimates.  Separate files prevent incomparable estimators
     from being silently combined by existing KT plotting scripts.
+
+    ``seed`` seeds the input stream (global RNG) and, on a separate generator, the
+    Bernoulli response draws, so a counting measurement is reproducible.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    generator = None
+    if seed is not None:
+        torch.manual_seed(seed)
+        generator = torch.Generator(device=device).manual_seed(seed + 104729)
     sweeps = sorted(glob.glob(os.path.join(data_root, sweep_glob)))
     if not sweeps:
         print(f"no sweeps match {sweep_glob!r} under {data_root}")
@@ -134,9 +159,13 @@ def run(data_root, sweep_glob, sizes_for, *, n_receptors=None, per_condition=Fal
                     row.update(kt_lower=lo, kt_upper=up)
                     print(f"    test={ts:>9d}  kt_lower={lo:6.3f}  kt_upper={up:6.3f}")
                 else:
-                    row.update(count_sampled_responses(env, physics, ri, ts))
+                    row.update(count_sampled_responses(env, physics, ri, ts,
+                                                       fwd_chunk=fwd_chunk,
+                                                       response_generator=generator))
                     print(f"    test={ts:>9d}  H_MM={row['response_entropy_mm']:6.3f}  "
-                          f"MI_MM={row['mutual_information_counting_mm']:6.3f}")
+                          f"MI_MM={row['mutual_information_counting_mm']:6.3f}  "
+                          f"ceiling={row['response_counting_log2B']:6.3f}  "
+                          f"missing_mass={row['response_counting_missing_mass']:.3f}")
                 rows.append(row)
             del env, physics
             if device == "cuda":

@@ -11,14 +11,15 @@ KT (default): sizes = multiples of that run's TRAIN batch B (1,2,4,8,16 -> B..16
 what the figure's final bracket uses). The ladder stops at the KT memory cap, since KT
 holds a (tile, B) pairwise buffer on the GPU and costs O(B^2).
 
-Counting: the ladder is ABSOLUTE and runs x4 downwards from --max_samples (default
-2**26 = 67.1M sniffs), because the counting budget has nothing to do with the train
-batch — it is set by the log2(n) ceiling on a measurable entropy. This is the
-convergence check to run BEFORE trusting a test_final.py number: the plug-in entropy
-only climbs with n, so a point whose curve is still rising (and whose
-`response_counting_missing_mass` is still large) is reporting its budget.
+Counting: the ladder is ABSOLUTE and NESTED, x4 rungs upwards from --start_samples
+(default 2^20), because the counting budget has nothing to do with the train batch and
+a rung reuses the sniffs of the one below it. Every requested rung is measured, with no
+early stop: this is the diagnostic you run to SEE the curve, while test_final.py grows
+the same stream adaptively and stops when it has converged.
   ../../run_remote.sh receptors/fig1 test_scaling.py 0 -- --measurement counting \
-      --sweep_glob 'ng10_*' --per_condition --n_test 5
+      --sweep_glob 'ng10_*' --per_condition --max_samples 268435456
+Read the curve together with `response_counting_missing_mass`: a rung whose entropy is
+still climbing and whose missing mass is large is reporting its budget, not the array.
 
 Parallelise per n_genes (each n_genes is its own sweep folder ng{G}_*):
   ../../run_remote.sh receptors/fig1 test_scaling.py 0 -- --sweep_glob 'ng2_*'
@@ -41,6 +42,7 @@ def main():
     args = p.parse_args()
     if args.measurement == "kt" and not args.mult and not args.test_sizes:
         args.mult = [1, 2, 4, 8, 16]      # counting instead uses the absolute ladder
+    # No stop= : every requested rung is measured. Seeing the curve IS the point.
     ts.run(args.data, args.sweep_glob, ts.sizes_from_args(args),
            n_receptors=args.n_receptors, per_condition=args.per_condition,
            measurement=args.measurement, fwd_chunk=args.fwd_chunk, seed=args.seed)

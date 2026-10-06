@@ -305,51 +305,77 @@ def count_sampled_responses(env, physics, receptor_indices, n_samples,
                             response_generator=None):
     """Estimate response entropy and MI from streamed stochastic binary outputs.
 
+    One measurement at ``n_samples`` sniffs; see
+    :func:`count_sampled_responses_ladder`, of which this is the single-rung case.
+    The returned keys are those of :func:`response_counting_metrics`.
+    """
+    return count_sampled_responses_ladder(
+        env, physics, receptor_indices, [n_samples], fwd_chunk=fwd_chunk,
+        readout=readout, pool_chunk=pool_chunk, response_generator=response_generator)[0]
+
+
+@torch.no_grad()
+def count_sampled_responses_ladder(env, physics, receptor_indices, checkpoints,
+                                   fwd_chunk=FWD_CHUNK, readout=None, pool_chunk=None,
+                                   response_generator=None, stop=None, report=None):
+    """Counting metrics at each checkpoint of ONE growing stream of sniffs.
+
     Fresh inputs are forwarded in bounded chunks.  For each input, one conditionally
-    independent Bernoulli response vector is sampled and moved to CPU; the analytic
-    conditional entropy is accumulated with the corresponding sample weight.  Thus
-    this avoids both retaining a ``(n_samples, R)`` probability tensor and KT's
-    quadratic pairwise calculation.  The returned keys are those of
-    :func:`response_counting_metrics`.
+    independent Bernoulli response vector is sampled, packed into ceil(R / 62) int64
+    keys on the GPU and merged into a CPU :class:`~src.counting.SymbolCounter`; the
+    analytic conditional entropy is accumulated with the corresponding sample weight.
+    Nothing of size ``(n_samples, R)`` is ever retained, and there is no KT-style
+    quadratic pairwise work, so the budget is set by the forward pass and by the
+    log2(n) ceiling on a measurable entropy.
+
+    The checkpoints are NESTED: the rung at 4e6 sniffs reuses the 1e6 that came
+    before it.  A whole ladder therefore costs its largest rung rather than 4/3 of
+    it, and the rungs share their sampling noise, which is what makes the sequence
+    readable as a convergence curve instead of independent repeats.
+
+    ``report(metrics)`` is called as soon as a rung is measured, before ``stop``
+    sees it, so a caller can print a long ladder as it happens rather than at the
+    end.  ``stop(metrics, next_checkpoint)`` is then called with the metrics just
+    measured and the size that would come next (None on the last rung).  A truthy
+    return ends the stream there — the caller decides what "converged enough" or
+    "too much memory" means, since this function only measures.
 
     ``response_generator`` may be supplied to isolate response-sampling randomness
     from the environment's input-sampling RNG.
-
-    Each draw is folded into a :class:`~src.counting.SymbolCounter` with radices
-    ``[2] * R``, i.e. packed into ceil(R / 62) int64 keys on the GPU and merged into
-    the running frequency table on CPU. The counting memory is therefore 8-16 bytes
-    per sniff whatever R is (plus the table of distinct codes), instead of the
-    ``(n_samples, R)`` code matrix a single final unique-row pass would need, which
-    is what previously capped n_samples. ``log2(n_samples)`` still caps the
-    measurable entropy, so read the returned missing mass beside it.
     """
-    if n_samples <= 0:
-        raise ValueError("n_samples must be positive")
+    targets = sorted({int(n) for n in checkpoints})
+    if not targets or targets[0] <= 0:
+        raise ValueError("Checkpoints must be positive sample counts")
 
     ri_fwd = receptor_indices if env.use_interface_model else None
-    counter, n_done = None, 0
-    h_cond_sum = None
-    while n_done < n_samples:
-        b = min(fwd_chunk, n_samples - n_done)
-        E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
-        if readout is None:
-            activity = physics(E, concs, receptor_indices,
-                               pre_gathered=env.use_interface_model)
-        else:
-            from src.cells import cell_activity
-            activity = cell_activity(physics, readout, E, concs, receptor_indices,
-                                     pre_gathered=env.use_interface_model,
-                                     chunk_size=pool_chunk)
-        activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
-        h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
-        h_cond_sum = h_cond_chunk if h_cond_sum is None else h_cond_sum + h_cond_chunk
-        if counter is None:
-            counter = SymbolCounter([2] * activity.shape[1])
-        counter.update(torch.bernoulli(activity, generator=response_generator))
-        n_done += b
-
-    return response_counting_metrics_from_counts(counter.counts, counter.n_samples,
-                                                 (h_cond_sum / n_done).item())
+    counter, n_done, h_cond_sum, rungs = None, 0, None, []
+    for index, target in enumerate(targets):
+        while n_done < target:
+            b = min(fwd_chunk, target - n_done)
+            E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
+            if readout is None:
+                activity = physics(E, concs, receptor_indices,
+                                   pre_gathered=env.use_interface_model)
+            else:
+                from src.cells import cell_activity
+                activity = cell_activity(physics, readout, E, concs, receptor_indices,
+                                         pre_gathered=env.use_interface_model,
+                                         chunk_size=pool_chunk)
+            activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
+            h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
+            h_cond_sum = h_cond_chunk if h_cond_sum is None else h_cond_sum + h_cond_chunk
+            if counter is None:
+                counter = SymbolCounter([2] * activity.shape[1])
+            counter.update(torch.bernoulli(activity, generator=response_generator))
+            n_done += b
+        rungs.append(response_counting_metrics_from_counts(
+            counter.counts, counter.n_samples, (h_cond_sum / n_done).item()))
+        if report is not None:
+            report(rungs[-1])
+        following = targets[index + 1] if index + 1 < len(targets) else None
+        if stop is not None and stop(rungs[-1], following):
+            break
+    return rungs
 
 
 @torch.no_grad()

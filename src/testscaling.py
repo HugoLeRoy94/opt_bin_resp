@@ -10,17 +10,21 @@ Size strategies (sizes_from_args, in priority order):
   --test_sizes A B ...  explicit absolute sizes
   --largest f           single size = f × that run's train batch B
   --mult m1 m2 ...      per-run multiples of that run's train batch (B, 2B, 4B, ...)
-  (none)                auto geometric ladder of --n_test points (×4), downwards from
-                        the KT memory cap (kt), or from the counting budget
-                        min(--max_samples, 64·2^R) (counting)
+  (none)                auto ladder: ×4 rungs from --start_samples (counting) or ×4
+                        down from the KT memory cap (kt)
 KT sizes are clamped to [EVAL_TILE, eval_batch_cap(free)] because its (tile, B) buffer
-and its quadratic pairwise work both live on the GPU. Counting sizes only need be
-positive: the forward is chunked and each sampled response is packed into one or two
-int64 keys merged into a CPU frequency table, so a counting size is bounded by time
-and by the log2(n) ceiling on a measurable entropy, not by GPU memory. Its default
-budget is 64× the binary alphabet 2^R, where the bias measured against exact
-enumeration (≈3.34·(n/2^H)^-0.92 bits, doc/theory/07) is under 0.1 bit — capped at
---max_samples and floored at 2^18 sniffs, so small R stays cheap.
+and its quadratic pairwise work both live on the GPU, and each size is an independent
+measurement.
+
+Counting sizes only need be positive, and they are NESTED rungs of one growing stream:
+the forward is chunked and each sampled response is packed into one or two int64 keys
+merged into a CPU frequency table, so the rung at 4n reuses the n sniffs before it and
+a ladder costs its largest rung. A counting budget is bounded by time and by the
+log2(n) ceiling on a measurable entropy, not by GPU memory, and the needed n is
+~46·2^H for an entropy H nobody knows in advance. Hence `convergence_stop`: grow until
+the missing mass is small, or a ×4 rung stops paying, or the projected counting table
+(one entry per DISTINCT code) would exceed --max_memory_gb. Cheap conditions quit in
+seconds, expensive ones keep the full budget.
 """
 import argparse
 import glob
@@ -31,8 +35,66 @@ import torch
 
 from src.IO import SingleRunLoader
 from src.plotlib import load_model
-from src.analysis_helper import (kt_bracket, count_sampled_responses,
+from src.analysis_helper import (kt_bracket, count_sampled_responses_ladder,
                                  eval_batch_cap, EVAL_TILE, FWD_CHUNK)
+
+
+MISSING_TARGET = 0.02    # Good-Turing missing mass below which a rung is converged
+DELTA_TARGET = 0.02      # bits gained over a ×4 rung below which growing is pointless
+MAX_MEMORY_GB = 32.0     # projected CPU counting memory the next rung may not exceed
+BYTES_PER_CODE = (100, 140)   # measured peak CPU bytes per DISTINCT code, by int64 word
+
+
+def convergence_stop(missing_target=MISSING_TARGET, delta_target=DELTA_TARGET,
+                     memory_gb=MAX_MEMORY_GB, announce=print):
+    """Build the per-run stop rule for the counting ladder in :func:`run`.
+
+    Returns make(cfg) -> stop(metrics, next_size), the signature
+    count_sampled_responses_ladder expects. It is built per run because the memory
+    projection needs that run's R.
+
+    Growing the stream stops for one of three stated reasons, so an expensive
+    condition keeps its budget while a cheap one quits early instead of being given
+    the same one:
+
+    converged  the missing mass (the probability never sampled) is under target, or
+               a ×4 rung bought less than `delta_target` bits. Both say the
+               frequencies have stopped being about the sample size.
+    memory     the counting table holds one entry per DISTINCT code, so its size
+               follows the growth of K_hat, not of n. The next rung's K_hat is
+               projected from the growth just observed, priced at 100 bytes per code
+               (140 above R=62, where a response needs two int64 words) and refused
+               if it would exceed the budget.
+
+    There is deliberately no criterion on n itself: the whole point of adapting is
+    that the needed n (about 46·2^H) depends on the H we are trying to measure.
+    """
+    def make(cfg):
+        per_code = BYTES_PER_CODE[1 if cfg.n_receptors > 62 else 0]
+        state = {}
+
+        def stop(metrics, next_size):
+            previous_h, previous_k = state.get("h"), state.get("k")
+            h, k = metrics["response_entropy_mm"], metrics["response_counting_K_hat"]
+            state["h"], state["k"] = h, k
+            if metrics["response_counting_missing_mass"] < missing_target:
+                reason = f"missing mass < {missing_target:g}"
+            elif previous_h is not None and h - previous_h < delta_target:
+                reason = f"last rung bought {h - previous_h:.3f} < {delta_target:g} bit"
+            elif next_size is None:
+                reason = None
+            else:
+                growth = (k / previous_k if previous_k else
+                          next_size / metrics["response_counting_samples"])
+                projected = k * growth * per_code / (1 << 30)
+                reason = None if projected <= memory_gb else (
+                    f"next rung projects {projected:.3g} GB of counting memory "
+                    f"(cap {memory_gb:g}, raise --max_memory_gb if the node has it)")
+            if reason and next_size is not None:
+                announce(f"    stopping here: {reason}")
+            return bool(reason)
+        return stop
+    return make
 
 
 def build_parser(description, data_default, sweep_default, mult_default=None):
@@ -60,6 +122,16 @@ def build_parser(description, data_default, sweep_default, mult_default=None):
                    help="forward sub-batch; bounds GPU memory, independent of the test size")
     p.add_argument("--seed", type=int, default=None,
                    help="seed the input and response sampling (reproducible measurement)")
+    p.add_argument("--start_samples", type=int, default=1 << 20,
+                   help="counting ladder: first rung (default 2**20); rungs grow ×4 and are "
+                        "NESTED, so the ladder costs its last rung, not the sum")
+    p.add_argument("--missing_target", type=float, default=MISSING_TARGET,
+                   help="counting: stop growing once the Good-Turing missing mass is below "
+                        f"this (default {MISSING_TARGET})")
+    p.add_argument("--max_memory_gb", type=float, default=MAX_MEMORY_GB,
+                   help="counting: stop growing when the NEXT rung is projected to need more "
+                        f"than this much CPU counting memory (default {MAX_MEMORY_GB}; the "
+                        "table holds one entry per distinct code, check the node with free -g)")
     p.add_argument("--n_receptors", type=int, nargs="+", default=None,
                    help="only measure runs with these R (default: all)")
     p.add_argument("--per_condition", action="store_true",
@@ -80,9 +152,13 @@ def sizes_from_args(args):
             return [int(round(m * b)) for m in args.mult]
         if args.measurement == "counting":                              # auto ladder
             top = min(args.max_samples,
-                      max(1 << 18, 1 << min(cfg.n_receptors + 6, 62)))
-        else:
-            top = min(1 << cfg.n_receptors, eval_batch_cap(mem_free))
+                      max(args.start_samples, 1 << min(cfg.n_receptors + 6, 62)))
+            rungs, n = [], args.start_samples
+            while n < top:
+                rungs.append(n)
+                n *= 4
+            return rungs + [top]
+        top = min(1 << cfg.n_receptors, eval_batch_cap(mem_free))
         return [int(top // (4 ** k)) for k in range(args.n_test)]
     return sizes_for
 
@@ -113,7 +189,7 @@ def _clamp(sizes, mem_free, measurement):
 
 
 def run(data_root, sweep_glob, sizes_for, *, n_receptors=None, per_condition=False,
-        measurement="kt", device=None, fwd_chunk=FWD_CHUNK, seed=None):
+        measurement="kt", device=None, fwd_chunk=FWD_CHUNK, seed=None, stop=None):
     """Measure one post-hoc estimator at sizes_for(cfg, mem_free) for each selected run.
 
     ``measurement='kt'`` writes ``test_scaling.csv`` with lower/upper entropy bounds.
@@ -123,6 +199,12 @@ def run(data_root, sweep_glob, sizes_for, *, n_receptors=None, per_condition=Fal
 
     ``seed`` seeds the input stream (global RNG) and, on a separate generator, the
     Bernoulli response draws, so a counting measurement is reproducible.
+
+    For counting the sizes are NESTED rungs of one growing stream (see
+    count_sampled_responses_ladder), so a ladder costs its largest rung. ``stop`` is
+    a factory make(cfg) -> stop(metrics, next_size) (e.g. :func:`convergence_stop`)
+    that ends that growth per run, which is how an expensive R gets a big budget and
+    a cheap one does not. Pass stop=None to measure every requested size.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     generator = None
@@ -149,24 +231,30 @@ def run(data_root, sweep_glob, sizes_for, *, n_receptors=None, per_condition=Fal
                 print(f"    (dropped {dropped}: outside {limits})")
             print(f"{os.path.basename(sweep_root)} | G{cfg.n_genes} R{cfg.n_receptors} "
                   f"train={train_batch} | sizes {sizes}")
-            for ts in sizes:
-                row = dict(sweep_folder=os.path.basename(sweep_root),
-                           run_dir=os.path.relpath(run_dir, sweep_root),
-                           n_genes=cfg.n_genes, n_receptors=cfg.n_receptors,
-                           train_batch=train_batch, test_size=ts)
-                if measurement == "kt":
+            base = dict(sweep_folder=os.path.basename(sweep_root),
+                        run_dir=os.path.relpath(run_dir, sweep_root),
+                        n_genes=cfg.n_genes, n_receptors=cfg.n_receptors,
+                        train_batch=train_batch)
+            if measurement == "kt":
+                for ts in sizes:
                     lo, up = kt_bracket(env, physics, ri, ts, tile=EVAL_TILE)
-                    row.update(kt_lower=lo, kt_upper=up)
+                    rows.append(dict(base, test_size=ts, kt_lower=lo, kt_upper=up))
                     print(f"    test={ts:>9d}  kt_lower={lo:6.3f}  kt_upper={up:6.3f}")
-                else:
-                    row.update(count_sampled_responses(env, physics, ri, ts,
-                                                       fwd_chunk=fwd_chunk,
-                                                       response_generator=generator))
-                    print(f"    test={ts:>9d}  H_MM={row['response_entropy_mm']:6.3f}  "
-                          f"MI_MM={row['mutual_information_counting_mm']:6.3f}  "
-                          f"ceiling={row['response_counting_log2B']:6.3f}  "
-                          f"missing_mass={row['response_counting_missing_mass']:.3f}")
-                rows.append(row)
+            else:
+                def show(m):
+                    print(f"    test={m['response_counting_samples']:>11d}  "
+                          f"H_MM={m['response_entropy_mm']:6.3f}  "
+                          f"MI_MM={m['mutual_information_counting_mm']:6.3f}  "
+                          f"ceiling={m['response_counting_log2B']:6.3f}  "
+                          f"missing_mass={m['response_counting_missing_mass']:.3f}  "
+                          f"codes={m['response_counting_K_hat']:.4g}", flush=True)
+
+                for metrics in count_sampled_responses_ladder(
+                        env, physics, ri, sizes, fwd_chunk=fwd_chunk,
+                        response_generator=generator, report=show,
+                        stop=None if stop is None else stop(cfg)):
+                    rows.append(dict(base, **metrics,
+                                     test_size=metrics["response_counting_samples"]))
             del env, physics
             if device == "cuda":
                 torch.cuda.empty_cache()

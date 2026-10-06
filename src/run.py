@@ -876,6 +876,12 @@ class SimulationRunner:
         # Re-pinning the threshold only makes sense when it was pinned to the data in
         # the first place; an explicit float is the user's choice and is left alone.
         recal_theta = recal_every and self.config.cell_threshold == "auto"
+        # A LEARNABLE theta is owned by the optimizer: re-pinning it to the median
+        # would overwrite every gradient step taken since the last calibration. The
+        # recalibration pass still runs (the spread it measures sets both sharpness
+        # endpoints), it just does not touch theta.
+        repin_theta = recal_theta and not (
+            self.readout is not None and self.readout.learnable_threshold)
         if is_cell:
             from src.cells import calibrate_cell_readout
             physics.temperature = start_temp
@@ -952,7 +958,7 @@ class SimulationRunner:
                 from src.cells import calibrate_cell_readout as _recal
                 d = _recal(self.readout, env, physics, receptor_indices,
                            chunk_size=self.config.cell_pool_chunk,
-                           set_threshold=True, set_temperature=False,
+                           set_threshold=repin_theta, set_temperature=False,
                            n_molecules=self.config.cell_n_molecules)
                 # Refresh the spread too: both sharpness endpoints are multiples of it,
                 # so phase 2 targets the live distribution rather than epoch 0's.

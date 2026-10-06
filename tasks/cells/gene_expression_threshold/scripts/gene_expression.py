@@ -66,6 +66,11 @@ def main(argv=None):
     threshold = args.cell_threshold
     if threshold != "auto":
         threshold = float(threshold)
+    # fit    : initialised at the calibrated median, then owned by the optimizer
+    # pinned : re-pinned to the median every cell_recalibrate_every epochs
+    # fixed  : an explicit float, never touched
+    theta_mode = ("fit" if args.cell_threshold_learnable else
+                  "pinned" if threshold == "auto" else "fixed")
     rows = make_rows(args, [args.n_genes], [BASE_ENVIRONMENT], n_cells=args.n_cells)
 
     config = RunConfig(
@@ -112,7 +117,9 @@ def main(argv=None):
         final_measurement_fns=measurements(args),
 
         # --- Sweep: one runner, fresh environment and optimizer at every point ---
-        sweep_name=f"threshold_{args.condition}_{args.coverage}",
+        # theta mode is in the folder name: a pinned-theta and a fitted-theta sweep
+        # are different experiments and must not be told apart by timestamp alone.
+        sweep_name=f"theta{theta_mode}_{args.condition}_{args.coverage}",
         base_folder=args.base_folder, warm_start=False,
     )
     print(f"Readout: {args.cell_readout}; theta={args.cell_threshold} "

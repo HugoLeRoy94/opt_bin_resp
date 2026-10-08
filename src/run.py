@@ -922,17 +922,25 @@ class SimulationRunner:
             if diag["n_silent"] or diag["n_saturated"]:
                 print(f"[cell] at init: {diag['n_silent']} silent, "
                       f"{diag['n_saturated']} saturated of {self.readout.n_cells} cells")
-            # The plain median sat on a point mass (a sharp receptor drives most cells
-            # to exactly zero). theta was stepped above it; the code is sparse, which is
-            # honest, but it caps how many bits a cell can carry — worth knowing.
+            # theta sits at the smallest value physics allows (one open channel). The
+            # code is sparse, which is honest, but it caps how many bits a cell carries.
             if diag.get("theta_floored"):
                 print(f"[cell] theta hit the physical floor 1/N = "
                       f"{1.0 / self.config.cell_n_molecules:.2e} (one open channel of "
                       f"{self.config.cell_n_molecules:.0e}): the code is sparse, so the "
                       f"population does not fire 50%.")
-            if diag.get("on_point_mass"):
-                print("[cell] drive has a point mass at the median; theta stepped above "
-                      "it (sparse code). See cells.median_threshold.")
+            # Both numbers are measured at the PHASE-1 sharpness, where the cell is
+            # deliberately soft (T_cell = one full drive spread), so a large in-band
+            # fraction here is the schedule working, not a problem. The number that
+            # matters is H(response | sniff) in the final measurement, after phase 2.
+            if diag.get("scan_candidates"):
+                print(f"[cell] scan: {diag['scan_candidates']} candidates, "
+                      f"{diag['scan_info']:.3f} bits/cell and "
+                      f"{diag['coin_fraction']:.1%} of (sniff, cell) pairs in the "
+                      f"transition band, at the soft phase-1 sharpness")
+            if diag.get("scan_at_n_max"):
+                print("[cell] scan grid is coarser than T_cell (the drive spread "
+                      "collapsed). Expect it to self-correct at the next calibration.")
 
         stats = []
         for epoch in range(self.config.epochs):

@@ -658,6 +658,107 @@ def median_threshold(drive_flat: torch.Tensor,
     return max(theta, float(floor)), on_mass
 
 
+@torch.no_grad()
+def scan_threshold(drive: torch.Tensor, temperature: float, floor: float = 0.0,
+                   n_min: int = 512, n_max: int = 4096,
+                   chunk: int = 64) -> Tuple[float, dict]:
+    """Threshold that maximises what the cell transmits, scanned on a T-scaled grid.
+
+    Returns (theta, diagnostics).
+
+    WHY NOT THE MEDIAN.  The median is the right answer only for a CONTINUOUS drive,
+    where it is by definition the theta at which half the cells fire.  The drive here
+    is not continuous: a cell with g uniformly-weighted homomers can only reach the
+    values k/g, so most of its mass sits on a few spikes.  The median then lands ON a
+    spike, and sigmoid(0) = 1/2 turns that whole spike into fair coins NO MATTER HOW
+    SHARP the sigmoid is — sharpening divides a zero.  Measured on a trained G=5,
+    C=30 homomer array at g=2: 31% of (sniff, cell) pairs sat exactly on theta = 1/2
+    and contributed 0.40 bits per cell of pure noise.  `median_threshold` tries to step
+    off the spike, but the step it can take is one float32 ULP (6e-8 near 0.5) against
+    a T_cell of 5e-3, i.e. 1e-5 of a temperature: far too small to matter, and it
+    rounds back onto the spike anyway.
+
+    THE RULE.  Maximise the binary information a cell carries,
+
+        info(theta) = H(Y) - H(Y | sniff),   Y_bc ~ Bernoulli(A_bc),
+        A_bc = sigmoid((S_bc - theta) / T_cell),
+
+    both terms averaged over cells.  H(Y) is the entropy of a cell's overall firing
+    rate; H(Y | sniff) is the average entropy of its per-sniff firing probability, and
+    is what a spike sitting on theta inflates.  The rule has no tolerance and no free
+    parameter, and it REDUCES TO THE MEDIAN when the drive is continuous: there
+    H(Y | sniff) ~ 0 everywhere, so maximising info means maximising H(Y), which for a
+    binary output means firing half the time.  Measured: on the two runs that had no
+    spike problem the scan moved theta by less than the spacing of its own grid.
+
+    THE GRID.  Uniform over the observed drive range, at spacing temperature/2.  Two
+    thetas closer than T_cell give the same cell, so there is nothing to gain below
+    that, and the features we are hunting (the dip at a spike) have width ~T_cell.
+    Scanning gaps between sorted drive values instead was tested on 20 trained
+    checkpoints and agreed to four decimals on 18 of them, at ten times the cost; on
+    the other two it was better by 1%.  The simpler grid wins.
+
+    `n_min` bounds the grid from BELOW (equivalently, bounds the bin width from
+    above).  It is what makes the grid usable in phase 1, where T_cell is a FULL
+    drive spread: there the range is only a few temperatures wide and spacing T/2
+    would give a handful of candidates.  `n_max` bounds it from above for the opposite
+    pathology — when theta has been parked on a spike the measured spread collapses,
+    T_cell follows it down, and range/T can reach 1e9.  Hitting `n_max` means the grid
+    is coarser than T_cell; it is reported, and it self-corrects, because the scan
+    moves theta off the spike and the next calibration re-measures a sane spread.
+
+    `floor` is 1/N, N = receptor MOLECULES per cell: below one open channel there is
+    no state for the cell to be in, so no candidate is placed there.  Unlike the median
+    the scan does not NEED the floor (a theta below the drive makes every cell fire and
+    carries zero information, which the objective already rejects), but it is physics
+    and it costs nothing to respect.
+    """
+    flat = drive.reshape(-1)
+    lo = max(float(flat.min()), float(floor))
+    hi = float(flat.max())
+    if not (hi > lo) or temperature <= 0:
+        # No spread, or no sharpness to speak of: nothing separates anything.
+        return max(float(flat.median()), float(floor)), {
+            "info": 0.0, "n_candidates": 0, "bin_width": 0.0,
+            "grid_at_n_min": False, "grid_at_n_max": False, "coin_fraction": 1.0,
+        }
+    n = int((hi - lo) / (0.5 * temperature)) + 1
+    n_grid = min(max(n, n_min), n_max)
+    cands = torch.linspace(lo, hi, n_grid, dtype=drive.dtype, device=drive.device)
+
+    best_info, best_theta = -1.0, float(cands[0])
+    for i in range(0, n_grid, chunk):
+        block = cands[i:i + chunk][:, None, None]                  # (k, 1, 1)
+        A = torch.sigmoid((drive[None] - block) / temperature)     # (k, B, C)
+        hyx = _binary_entropy(A).mean(dim=(1, 2))                  # (k,)
+        hy = _binary_entropy(A.mean(dim=1)).mean(dim=1)            # (k,)
+        info = hy - hyx
+        j = int(info.argmax())
+        if float(info[j]) > best_info:
+            best_info, best_theta = float(info[j]), float(block[j, 0, 0])
+
+    # Fraction of (sniff, cell) pairs left inside the sigmoid's transition band, which
+    # is the quantity the whole threshold problem reduces to: those pairs are fair
+    # coins whatever the sharpness. NOT the distance to the nearest sample — the drive
+    # carries a thin continuous carpet on top of its spikes, so SOME sample sits within
+    # a fraction of T of any theta, and that single sample is worth 1/BC of a bit.
+    coins = float(((flat - best_theta).abs() < temperature).float().mean())
+    return best_theta, {
+        "info": best_info,
+        "n_candidates": n_grid,
+        "bin_width": (hi - lo) / max(n_grid - 1, 1),
+        "grid_at_n_min": n_grid == n_min and n < n_min,
+        "grid_at_n_max": n_grid == n_max and n > n_max,
+        "coin_fraction": coins,
+    }
+
+
+def _binary_entropy(p: torch.Tensor) -> torch.Tensor:
+    """Entropy in bits of a Bernoulli with probability p, safe at the endpoints."""
+    p = p.clamp(1e-6, 1.0 - 1e-6)
+    return -(p * p.log2() + (1.0 - p) * (1.0 - p).log2())
+
+
 def drive_scale(drive_flat: torch.Tensor, theta: float) -> float:
     """Scale of the drive AROUND theta: the median absolute deviation (MAD).
 
@@ -751,18 +852,27 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
         part = readout.accumulate(p, r0, r1)
         acc = part if acc is None else acc + part                   # (B, C)
 
-    on_point_mass = theta_floored = False
+    scan = {}
+    theta_floored = False
     if set_threshold:
-        # Pooled over (b, c): one scalar for the whole array. See median_threshold for
-        # why this is not simply acc.median() — a sharp receptor drives most cells to
-        # exactly zero, and a threshold sitting on that mass turns it into fair coins.
+        # One scalar for the whole array, chosen by scanning the information the cell
+        # carries (see scan_threshold for why the median is wrong here). The scan needs
+        # the sharpness the cell will RUN at:
+        #   initial call (set_temperature)  T_cell is about to be set to the spread, so
+        #                                   measure the spread first, around the median
+        #   recalibration                   the annealing schedule owns readout.temperature
         # n_molecules = receptor MOLECULES per cell (copy number), NOT receptor types
         # and NOT cells per sucker. The drive is a fraction of THIS cell's receptors, so
-        # 1/N is its resolution: one open channel. See median_threshold.
+        # 1/N is its resolution: one open channel.
         floor = 0.0 if n_molecules is None else 1.0 / float(n_molecules)
-        theta, on_point_mass = median_threshold(acc.reshape(-1), floor=floor)
+        if set_temperature:
+            provisional, _ = median_threshold(acc.reshape(-1), floor=floor)
+            t_scan = drive_scale(acc.reshape(-1), provisional)
+        else:
+            t_scan = readout.temperature
+        theta, scan = scan_threshold(acc, t_scan, floor=floor)
         readout.theta.data.fill_(theta)
-        theta_floored = floor > 0.0 and theta == floor
+        theta_floored = floor > 0.0 and theta <= floor
     if set_temperature:
         readout.temperature = drive_scale(acc.reshape(-1), float(readout.theta))
 
@@ -781,10 +891,17 @@ def calibrate_cell_readout(readout: CellReadout, env, physics,
         "firing_fraction":  firing,
         "n_silent":         int((firing < 0.01).sum()),
         "n_saturated":      int((firing > 0.99).sum()),
-        # True when the plain median would have landed on a point mass and the
-        # threshold was stepped above it (or, if the drive has no spread at all,
-        # when nothing could be done). Worth surfacing: it means the code is sparse.
-        "on_point_mass":    on_point_mass,
+        # Fraction of (sniff, cell) pairs left inside the sigmoid's transition band at
+        # the chosen theta. These are fair coins whatever the sharpness, and they are
+        # exactly what H(response | sniff) charges for.
+        "coin_fraction":    scan.get("coin_fraction", float("nan")),
+        # Per-cell bits the scan expects at this theta, and the grid it used. Hitting
+        # n_max means the grid was coarser than T_cell (the spread had collapsed);
+        # hitting n_min means T_cell was wide and the floor on bin count took over.
+        "scan_info":        scan.get("info", float("nan")),
+        "scan_candidates":  scan.get("n_candidates", 0),
+        "scan_at_n_max":    scan.get("grid_at_n_max", False),
+        "scan_at_n_min":    scan.get("grid_at_n_min", False),
         # True when the median fell below 1/N and the physical floor took over — i.e.
         # the code is SPARSE. Expected, not an error, but it means the "population fires
         # ~50%" property no longer holds: a sparse world gives a sparse code.

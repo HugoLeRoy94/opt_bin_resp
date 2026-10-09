@@ -14,22 +14,22 @@ sum of Bernoulli entropies over the same sniffs.
 ADAPTIVE BUDGET. There is no budget that fits every condition: counting needs about
 46 x 2^H(Y) sniffs, and H(Y) = MI + H(Y|X) is what we are trying to measure. R=10
 converges at 16k sniffs (it cannot exceed 10 bits), while R=50 at ng10 was still
-climbing 1 bit per 4x at 2^26. So the script grows one stream in x4 rungs from
+climbing 1 bit per 4x at 2^26. So the script grows one stream in x4 batches from
 --start_samples and stops that run when
 
   * the Good-Turing missing mass drops below --missing_target (converged), or
-  * a x4 rung buys less than 0.02 bit (converged), or
-  * the next rung's counting table is projected past --max_memory_gb (refused), or
+  * a x4 batch buys less than 0.02 bit (converged), or
+  * the next batch's counting table is projected past --max_memory_gb (refused), or
   * --max_samples is reached.
 
-The rungs are nested, so the whole ladder costs its last rung. Every rung is written to
+The batches are nested, so the whole ladder costs its last batch. Every batch is written to
 <sweep>/test_counting.csv, giving the convergence trail for free; the value to plot is
 the largest test_size per run, and its `response_counting_missing_mass` says how much
 to trust it.
 
 Defaults are sized from the measured throughput of about 2e5 sniffs/s: --max_samples
 2**30 (1.07e9) is ~1.5 h for one unconverged run, and --max_memory_gb 32 will in
-practice stop R>=40 one or two rungs earlier. Check the node with `free -g` and raise
+practice stop R>=40 one or two batches earlier. Check the node with `free -g` and raise
 --max_memory_gb if it has the room, that is the knob that binds first.
 
 Starts in --per_condition mode (the FIRST environment of each (n_genes, R)), which is

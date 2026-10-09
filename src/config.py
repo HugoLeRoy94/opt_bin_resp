@@ -184,7 +184,35 @@ class SingleRunConfig:
     # everywhere.  Phase 2 = the rest: the receptor sharpness is held and the CELL
     # sharpness anneals down to cell_temperature x spread.  Annealing both at once makes
     # the cell's operating point chase a drive distribution that is still moving.
+    # 0.0 means ANNEAL TOGETHER: no phase 1, both temperatures follow the same ramp
+    # over the whole run. The split exists because a cell whose threshold is pinned
+    # once would chase a drive distribution still moving underneath it; theta is now
+    # re-scanned every cell_recalibrate_every epochs, so that reason is much weaker,
+    # and the split has a cost of its own — it guarantees the receptors are saturated
+    # BEFORE the cell starts hardening, which is the worst order for keeping gradient
+    # alive (see cell_straight_through).
     cell_phase_split: float          = 0.5
+    # Straight-through gradient for the threshold readout. The forward pass is
+    # unchanged — the cell is still the hard sigmoid at T_cell — but the backward pass
+    # uses the derivative of a sigmoid at the PHASE-1 temperature instead.
+    #
+    # Why: dA/dS = sigmoid'((S-theta)/T_cell) / T_cell is numerically zero once S sits
+    # more than a few T_cell from theta. As phase 2 shrinks T_cell a hundredfold that
+    # window shrinks with it, and a receptor that has saturated (p -> 0 or 1) is far
+    # outside it and receives NO gradient — permanently, since nothing can bring it
+    # back. Measured at g=1: three of five receptors end frozen at 0 or 1 and the array
+    # falls from 4.98 bits at 90% of training to 0.60 at the end, while the 'mean'
+    # readout (dA/dS = 1, no window) keeps all five near 0.45 and reaches 5.4 bits.
+    cell_straight_through: bool      = False
+    # The same trick on the RECEPTOR sigmoid, p = sigmoid(ln_sum_terms / T_receptor).
+    # The two windows sit IN SERIES in the chain rule,
+    #   dLoss/dparams = dLoss/dA . [dA/dS] . dS/dp . [dp/dE] . dE/dparams
+    #                               cell            receptor
+    # so fixing only the cell still leaves the receptor's own window closing as
+    # T_receptor anneals. The backward temperature is physics.compute_initial_temperature,
+    # i.e. the T at which the sigmoid argument has unit spread over the live energy
+    # distribution — the same principle as the cell's (one full drive spread).
+    receptor_straight_through: bool  = False
     # Re-pin the threshold to the median of the drive every N epochs (0 disables).
     # Costs one forward pass at the calibration batch size.  Also refreshes the drive
     # spread, so the phase-2 sharpness target tracks the live distribution instead of
@@ -393,6 +421,8 @@ class RunConfig:
     cell_initial_temperature: Union[float, str, List[Union[float, str]]] = "auto"
     cell_pool_chunk: Union[Optional[int], List[Optional[int]]] = None
     cell_phase_split: Union[float, List[float]] = 0.5
+    cell_straight_through: Union[bool, List[bool]] = False
+    receptor_straight_through: Union[bool, List[bool]] = False
     cell_recalibrate_every: Union[int, List[int]] = 25
     cell_n_molecules: Union[Optional[float], List[Optional[float]]] = 1e4
     cell_grouped_max_states: Union[int, List[int]] = 65536

@@ -306,7 +306,7 @@ def count_sampled_responses(env, physics, receptor_indices, n_samples,
     """Estimate response entropy and MI from streamed stochastic binary outputs.
 
     One measurement at ``n_samples`` sniffs; see
-    :func:`count_sampled_responses_ladder`, of which this is the single-rung case.
+    :func:`count_sampled_responses_ladder`, of which this is the single-batch case.
     The returned keys are those of :func:`response_counting_metrics`.
     """
     return count_sampled_responses_ladder(
@@ -328,15 +328,15 @@ def count_sampled_responses_ladder(env, physics, receptor_indices, checkpoints,
     quadratic pairwise work, so the budget is set by the forward pass and by the
     log2(n) ceiling on a measurable entropy.
 
-    The checkpoints are NESTED: the rung at 4e6 sniffs reuses the 1e6 that came
-    before it.  A whole ladder therefore costs its largest rung rather than 4/3 of
-    it, and the rungs share their sampling noise, which is what makes the sequence
+    The checkpoints are NESTED: the batch of 4e6 sniffs reuses the 1e6 that came
+    before it.  A whole ladder therefore costs its largest batch rather than 4/3 of
+    it, and the batchs share their sampling noise, which is what makes the sequence
     readable as a convergence curve instead of independent repeats.
 
-    ``report(metrics)`` is called as soon as a rung is measured, before ``stop``
+    ``report(metrics)`` is called as soon as a batch is measured, before ``stop``
     sees it, so a caller can print a long ladder as it happens rather than at the
     end.  ``stop(metrics, next_checkpoint)`` is then called with the metrics just
-    measured and the size that would come next (None on the last rung).  A truthy
+    measured and the size that would come next (None on the last batch).  A truthy
     return ends the stream there — the caller decides what "converged enough" or
     "too much memory" means, since this function only measures.
 
@@ -348,34 +348,46 @@ def count_sampled_responses_ladder(env, physics, receptor_indices, checkpoints,
         raise ValueError("Checkpoints must be positive sample counts")
 
     ri_fwd = receptor_indices if env.use_interface_model else None
-    counter, n_done, h_cond_sum, rungs = None, 0, None, []
+    counter, n_done, h_cond_sum, batches = None, 0, None, []
     for index, target in enumerate(targets):
         while n_done < target:
             b = min(fwd_chunk, target - n_done)
-            E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
-            if readout is None:
-                activity = physics(E, concs, receptor_indices,
-                                   pre_gathered=env.use_interface_model)
-            else:
-                from src.cells import cell_activity
-                activity = cell_activity(physics, readout, E, concs, receptor_indices,
-                                         pre_gathered=env.use_interface_model,
-                                         chunk_size=pool_chunk)
-            activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
-            h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
+            try:
+                E, concs, _ = env.sample_batch(b, receptor_indices=ri_fwd)
+                if readout is None:
+                    activity = physics(E, concs, receptor_indices,
+                                       pre_gathered=env.use_interface_model)
+                else:
+                    from src.cells import cell_activity
+                    activity = cell_activity(physics, readout, E, concs, receptor_indices,
+                                             pre_gathered=env.use_interface_model,
+                                             chunk_size=pool_chunk)
+                activity = activity.clamp(KT_EPS, 1.0 - KT_EPS)
+                h_cond_chunk = compute_response_conditional_entropy(activity).double() * b
+                if counter is None:
+                    counter = SymbolCounter([2] * activity.shape[1])
+                counter.update(torch.bernoulli(activity, generator=response_generator))
+            except torch.cuda.OutOfMemoryError:
+                # Nothing was counted, so halving and retrying is exact, not a patch
+                # over corrupted state: the chunk only sizes the forward pass. A
+                # measurement that runs for hours must not die on the chunk guess.
+                if fwd_chunk <= 256:
+                    raise
+                fwd_chunk //= 2
+                E = concs = activity = None     # drop refs before reclaiming
+                torch.cuda.empty_cache()
+                print(f"    (out of GPU memory: fwd_chunk -> {fwd_chunk})", flush=True)
+                continue
             h_cond_sum = h_cond_chunk if h_cond_sum is None else h_cond_sum + h_cond_chunk
-            if counter is None:
-                counter = SymbolCounter([2] * activity.shape[1])
-            counter.update(torch.bernoulli(activity, generator=response_generator))
             n_done += b
-        rungs.append(response_counting_metrics_from_counts(
+        batches.append(response_counting_metrics_from_counts(
             counter.counts, counter.n_samples, (h_cond_sum / n_done).item()))
         if report is not None:
-            report(rungs[-1])
+            report(batches[-1])
         following = targets[index + 1] if index + 1 < len(targets) else None
-        if stop is not None and stop(rungs[-1], following):
+        if stop is not None and stop(batches[-1], following):
             break
-    return rungs
+    return batches
 
 
 @torch.no_grad()

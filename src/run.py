@@ -841,6 +841,12 @@ class SimulationRunner:
         else:
             start_temp = float(self.config.initial_temperature)
         end_temp   = self.config.temperature
+        # Backward window for the receptor sigmoid. Measured, not taken from
+        # initial_temperature: its job is to span the LIVE energy distribution, which
+        # is exactly what compute_initial_temperature returns, whereas
+        # initial_temperature may be a hand-set number chosen for the forward anneal.
+        if self.config.receptor_straight_through and hasattr(physics, "grad_temperature"):
+            physics.grad_temperature = compute_initial_temperature(env, receptor_indices)
         scheduler  = (
             optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.epochs, eta_min=1e-5)
             if self.config.use_scheduler else None
@@ -860,13 +866,20 @@ class SimulationRunner:
         #   Phase 2 (the rest): the receptor temperature is HELD; the cell sharpness
         #     anneals down until the cell is effectively deterministic.
         is_cell = self.readout is not None and self.readout.mode == "threshold"
-        phase1_epochs = (max(1, int(self.config.cell_phase_split * self.config.epochs))
+        # cell_phase_split = 0 collapses the two phases: phase1_epochs = 0 makes
+        # cell_frac start ramping at epoch 0, and the receptor anneals over the whole
+        # run instead of over phase 1, so both temperatures move together.
+        phase1_epochs = (max(0, int(self.config.cell_phase_split * self.config.epochs))
                          if is_cell else None)
         # phase1_epochs - 1: frac = epoch/anneal_epochs must reach 1.0 on the LAST epoch
         # of phase 1, otherwise the receptor is still annealing one epoch into phase 2
         # and the phases are not clean.  Receptor-only runs keep the original denominator.
-        anneal_epochs = (max(1, phase1_epochs - 1) if is_cell
-                         else max(1, int(0.8 * self.config.epochs)))
+        if not is_cell:
+            anneal_epochs = max(1, int(0.8 * self.config.epochs))
+        elif phase1_epochs:
+            anneal_epochs = max(1, phase1_epochs - 1)
+        else:
+            anneal_epochs = max(1, self.config.epochs - 1)
 
         # --- Cell readout: calibrate theta / T_cell, then anneal T_cell like the
         # receptor temperature.  physics.temperature must be at its START value for
@@ -910,6 +923,10 @@ class SimulationRunner:
             sigma_S = diag["drive_scale"]
             cell_start_temp = max(start_mult * sigma_S, 1e-45)
             cell_end_temp   = max(end_mult   * sigma_S, 1e-45)
+            # The backward pass keeps the phase-1 window open for the whole run, so a
+            # receptor that saturates still gets gradient. Forward is unaffected.
+            if self.config.cell_straight_through:
+                self.readout.grad_temperature = cell_start_temp
             kind = ("learnable" if self.readout.learnable_threshold
                     else (f"re-pinned every {recal_every}" if recal_theta else "fixed"))
             print(f"[cell] C={self.readout.n_cells}  R_pool={receptor_indices.shape[0]}  "
@@ -955,6 +972,14 @@ class SimulationRunner:
             if hasattr(physics, "temperature"):
                 physics.temperature = current_temp
 
+            # Keep the receptor's backward window on the LIVE energy spread: the
+            # environment learns to spread its ligands apart, so a window measured at
+            # epoch 0 goes narrow and the freezing it exists to prevent comes back.
+            if (self.config.receptor_straight_through and recal_every
+                    and epoch > 0 and epoch % recal_every == 0
+                    and hasattr(physics, "grad_temperature")):
+                physics.grad_temperature = compute_initial_temperature(env, receptor_indices)
+
             # --- Re-pin the threshold to the median of the drive -------------------
             # The drive distribution moves as the chemistry trains, so a threshold
             # measured at epoch 0 goes stale.  Re-pinning keeps it free of any fitted
@@ -973,6 +998,10 @@ class SimulationRunner:
                 sigma_S = d["drive_scale"]
                 cell_start_temp = max(start_mult * sigma_S, 1e-45)
                 cell_end_temp   = max(end_mult   * sigma_S, 1e-45)
+                # Keep the backward window matched to the LIVE drive: it has to span
+                # the saturated receptors, which sit at the edges of that spread.
+                if self.config.cell_straight_through:
+                    self.readout.grad_temperature = cell_start_temp
 
             # --- Phase 2: the CELL sharpens; held soft for the whole of phase 1 ------
             current_cell_temp = None

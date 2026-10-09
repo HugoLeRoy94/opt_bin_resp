@@ -52,12 +52,31 @@ bound the rest.
 # inspect the design without creating or training anything
 python3 tasks/cells/gene_expression_threshold/scripts/gene_expression.py --dry_run
 
+# baseline, no straight-through
 bash tasks/run_remote.sh cells/gene_expression_threshold gene_expression.py 0 -- --condition heteromers
 bash tasks/run_remote.sh cells/gene_expression_threshold gene_expression.py 0 -- --condition homomers
+
+# cell only / receptor only / both
+for F in "--cell_straight_through" "--receptor_straight_through" \
+         "--cell_straight_through --receptor_straight_through"; do
+  bash tasks/run_remote.sh cells/gene_expression_threshold gene_expression.py 0 -- --condition heteromers $F
+  bash tasks/run_remote.sh cells/gene_expression_threshold gene_expression.py 0 -- --condition homomers   $F
+done
+
 bash tasks/cells/gene_expression_threshold/sync.sh
 ```
 
-Output lands in `data/gene_expression_threshold/threshold_<condition>_complete_<timestamp>/`.
+Output lands in
+`data/gene_expression_threshold/theta<theta_mode>_<grad_mode>_<condition>_<coverage>_<timestamp>/`,
+where `grad_mode` is `plain`, `stc`, `str` or `stcr`. The variant is in the folder name
+because these are different experiments and a timestamp is not a description.
+
+**g=1 is the control.** Both conditions build bit-identical arrays there (same gene sets,
+same five homomers, same W), the receptors are saturated (<5% of (sniff, receptor) pairs
+unsaturated), so any non-pathological theta gives the same cell and homomers and
+heteromers must agree. They differ by less than 0.5% under the `mean` readout on two
+independent environments, so a disagreement under the threshold readout is an
+optimization failure, not environmental variability.
 
 ## Analysis
 
@@ -75,6 +94,61 @@ per-cell response UMAP per run.
 
 Runs whose replicate seed has no counterpart in the other readout are dropped, so
 the comparison stays paired on repertoires.
+
+## Gradient flow (the reason this task underperforms the mean one)
+
+Both nonlinearities are sigmoids whose derivative is a bump of width equal to their
+own temperature:
+
+```
+cell      A = sigmoid((S - theta) / T_cell)      dA/dS = sigmoid'(.) / T_cell
+receptor  p = sigmoid(ln_sum   / T_receptor)     dp/dE = sigmoid'(.) / T_receptor
+```
+
+Outside a few temperatures the derivative is not small, it underflows to zero. The two
+sit IN SERIES in the chain rule:
+
+```
+dLoss/dparams = dLoss/dA . [dA/dS] . dS/dp . [dp/dE] . dE/dparams
+```
+
+As training anneals both temperatures down, both windows close, and a receptor that has
+saturated (p -> 0 or 1) is far outside them and receives NO gradient — permanently,
+because nothing can bring it back. It is a ratchet: receptors drift into saturation and
+are absorbed there.
+
+Measured at g=1, where the array should reach 5 bits (five binary receptors, deterministic
+cells): the threshold model ends with three of five receptors frozen at 0 or 1 and 0.60
+bits, having been at 4.98 bits at 90% of training. The `mean` readout, whose `dA/dS = 1`
+has no window at all, keeps all five near 0.45 and reaches 5.4 bits.
+
+`--cell_straight_through` and `--receptor_straight_through` keep the forward pass
+EXACTLY as it is (the cell is still the hard sigmoid at `T_cell`, so reported MI stays
+honest) and run the backward pass at a wide temperature instead:
+
+- cell: one full drive spread, the phase-1 value, refreshed at every recalibration
+- receptor: `physics.compute_initial_temperature`, i.e. the T at which the sigmoid
+  argument has unit spread over the LIVE energy distribution, refreshed on the same
+  cadence (the environment learns to spread its ligands, so a window measured at epoch 0
+  goes narrow)
+
+### What has been measured so far
+
+One environment, G=5, C=15, g=1, 3000 epochs, local. NOT replicated — treat the ranking
+as provisional and the magnitudes as meaningless:
+
+| variant | MI | dead receptors |
+|---|---|---|
+| two-phase, no straight-through (default) | 1.52 | 1/5 |
+| `--cell_phase_split 0` (anneal together) | 1.15 | 4/5 |
+| `--cell_straight_through` | 2.97 | 0/5 |
+| `--cell_phase_split 0 --cell_straight_through` | 0.00 | 5/5 |
+| `cell_readout="mean"` reference | 5.11 | 0/5 |
+
+So: keep the phase split (removing it is worse, and the rationale in
+`doc/theory/07` 3b.3b still holds), and straight-through on the cell helps but does not
+close the gap — which is what motivates doing the receptor as well.
+`--receptor_straight_through` has NOT been tested; that is what this sweep is for.
 
 ## Known caveat
 

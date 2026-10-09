@@ -474,6 +474,10 @@ class CellReadout(nn.Module):
         self.mode = mode
         self.k_sub = k_sub
         self.temperature = temperature
+        # Straight-through: when set, the BACKWARD pass uses a sigmoid at this
+        # temperature instead of at self.temperature. The forward pass is untouched.
+        # None disables it. See finalize and config.cell_straight_through.
+        self.grad_temperature: Optional[float] = None
         self.learnable_threshold = learnable_threshold and mode == "threshold"
         # W is a buffer: it moves with .to(device) and is saved in the checkpoint,
         # but carries no gradient — the repertoire composition is fixed, not learned.
@@ -504,7 +508,14 @@ class CellReadout(nn.Module):
             return 1.0 - torch.exp(acc)
         if self.mode == "mean":
             return acc.clamp(0.0, 1.0)
-        return torch.sigmoid((acc - self.theta) / self.temperature)   # theta is scalar
+        hard = torch.sigmoid((acc - self.theta) / self.temperature)   # theta is scalar
+        if self.grad_temperature is None:
+            return hard
+        # Forward is EXACTLY `hard`: (soft - soft.detach()) is elementwise zero.
+        # Backward is d(soft)/d(acc), whose window does not close as T_cell anneals,
+        # so a saturated receptor keeps receiving gradient instead of freezing.
+        soft = torch.sigmoid((acc - self.theta) / self.grad_temperature)
+        return hard.detach() + (soft - soft.detach())
 
     def drive(self, activity: torch.Tensor) -> torch.Tensor:
         """The pre-threshold accumulator S (B, C) — used for calibration."""

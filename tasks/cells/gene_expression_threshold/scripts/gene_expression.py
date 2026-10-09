@@ -58,6 +58,16 @@ def main(argv=None):
     parser.add_argument("--cell_n_molecules", type=float, default=1e4,
                         help="Receptor copies per cell. 1/N floors theta, which is what "
                              "keeps a rank statistic off a point mass at zero drive.")
+    # --- gradient flow: the reason the threshold model underperforms the mean one ---
+    parser.add_argument("--cell_phase_split", type=float, default=0.5,
+                        help="Fraction of epochs in phase 1 (receptor anneals, cell held "
+                             "soft). 0 anneals both together; measured WORSE, see README.")
+    parser.add_argument("--cell_straight_through", action="store_true",
+                        help="Backward pass through the CELL sigmoid uses the phase-1 "
+                             "temperature. Forward is unchanged.")
+    parser.add_argument("--receptor_straight_through", action="store_true",
+                        help="Same for the RECEPTOR sigmoid. The two windows are in "
+                             "series, so the cell one alone only half fixes it.")
     # G=5, C=30 complete coverage peaks at 460,800 joint count states (g=2).
     parser.set_defaults(replicates=1, max_states=1048576,
                         base_folder="/app/data/gene_expression_threshold")
@@ -70,7 +80,15 @@ def main(argv=None):
     # pinned : re-pinned to the median every cell_recalibrate_every epochs
     # fixed  : an explicit float, never touched
     theta_mode = ("fit" if args.cell_threshold_learnable else
-                  "pinned" if threshold == "auto" else "fixed")
+                  "scan" if threshold == "auto" else "fixed")
+    # Gradient-flow variant in the folder name too: these are different experiments,
+    # and a timestamp is not a description.
+    grad_mode = ("st" + ("c" if args.cell_straight_through else "")
+                      + ("r" if args.receptor_straight_through else "")
+                 if (args.cell_straight_through or args.receptor_straight_through)
+                 else "plain")
+    if args.cell_phase_split != 0.5:
+        grad_mode += f"-split{args.cell_phase_split:g}"
     rows = make_rows(args, [args.n_genes], [BASE_ENVIRONMENT], n_cells=args.n_cells)
 
     config = RunConfig(
@@ -106,6 +124,9 @@ def main(argv=None):
         cell_temperature=args.cell_temperature,
         cell_recalibrate_every=args.cell_recalibrate_every,
         cell_n_molecules=args.cell_n_molecules,
+        cell_phase_split=args.cell_phase_split,
+        cell_straight_through=args.cell_straight_through,
+        receptor_straight_through=args.receptor_straight_through,
         cell_pool_chunk=128, recompute_backward=True,
 
         # --- Loss and independent training runs ---
@@ -119,12 +140,15 @@ def main(argv=None):
         # --- Sweep: one runner, fresh environment and optimizer at every point ---
         # theta mode is in the folder name: a pinned-theta and a fitted-theta sweep
         # are different experiments and must not be told apart by timestamp alone.
-        sweep_name=f"theta{theta_mode}_{args.condition}_{args.coverage}",
+        sweep_name=f"theta{theta_mode}_{grad_mode}_{args.condition}_{args.coverage}",
         base_folder=args.base_folder, warm_start=False,
     )
-    print(f"Readout: {args.cell_readout}; theta={args.cell_threshold} "
-          f"(learnable={args.cell_threshold_learnable}); T_cell -> {args.cell_temperature} "
-          f"x spread; recalibrate every {args.cell_recalibrate_every} epochs")
+    print(f"Readout: {args.cell_readout}; theta={args.cell_threshold} ({theta_mode}); "
+          f"T_cell -> {args.cell_temperature} x spread; recalibrate every "
+          f"{args.cell_recalibrate_every} epochs")
+    print(f"Gradient: {grad_mode}  (cell straight-through="
+          f"{args.cell_straight_through}, receptor straight-through="
+          f"{args.receptor_straight_through}, phase split={args.cell_phase_split})")
     return launch(config, args, rows, "threshold")
 
 

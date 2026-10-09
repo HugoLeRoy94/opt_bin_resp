@@ -307,6 +307,10 @@ class BinaryReceptor(BaseReceptor):
     def __init__(self, n_genes: int, k_sub: int, temperature: float):
         super().__init__(n_genes, k_sub)
         self.temperature = temperature
+        # Straight-through: when set, the BACKWARD pass uses a sigmoid at this
+        # temperature instead of at self.temperature. Forward is untouched. None
+        # disables it. See _p_open_from_log_ec50 and config.receptor_straight_through.
+        self.grad_temperature = None
 
     def p_open(self, c_reshaped: torch.Tensor, energies_k: torch.Tensor):
         # ln(EC50) is the simple average of the subunit open energies
@@ -324,7 +328,15 @@ class BinaryReceptor(BaseReceptor):
         ln_sum_terms = torch.logsumexp(log_terms, dim=1) # Shape: (Batch, R)
 
         # Temperature-Scaled Binary Activation
-        return torch.sigmoid(ln_sum_terms / self.temperature)
+        hard = torch.sigmoid(ln_sum_terms / self.temperature)
+        if self.grad_temperature is None:
+            return hard
+        # Forward is EXACTLY `hard`: (soft - soft.detach()) is elementwise zero.
+        # Backward uses a window wide enough to span the live energy distribution, so
+        # a receptor whose ln_sum_terms has run far from zero keeps receiving gradient
+        # instead of freezing once sigmoid'(ln_sum/T) underflows.
+        soft = torch.sigmoid(ln_sum_terms / self.grad_temperature)
+        return hard.detach() + (soft - soft.detach())
 
     def _forward_composition(self, energies, concentrations, composition):
         """ln EC50 = (1/k_sub) * sum_s composition[s, r] * energies[..., s].

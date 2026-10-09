@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Log GPU memory + utilisation to CSV while a simulation runs — via nvidia-smi, no
-# change to the Python code. Run it in a SEPARATE terminal / tmux window for the
+# Log GPU memory + utilisation AND host RAM to CSV while a simulation runs — via
+# nvidia-smi and /proc/meminfo, no change to the Python code. The RAM columns matter
+# for counting runs, whose frequency table lives on the CPU while the GPU only ever
+# holds one forward chunk. They are HOST-WIDE (every process on the node), so read
+# them as an upper bound on what this run used. Run it in a SEPARATE terminal / tmux window for the
 # whole duration of the run (start it BEFORE launching the sim to catch the ramp).
 #
 # Usage: ./monitor_gpu.sh [gpu_index] [interval_sec] [outfile]
@@ -27,9 +30,13 @@ trap 'rm -f "$OUT.pid"' EXIT
 echo "watching GPU $GPU every ${INT}s  ->  $OUT   (tail -f to view live; Ctrl-C to stop)"
 # No `| tee` pipeline: the loop runs in THIS shell ($$), so killing that one PID
 # stops it cleanly (a pipeline would leave the while-loop subshell orphaned).
-echo "timestamp,mem_used_MiB,mem_free_MiB,mem_total_MiB,gpu_util_pct,mem_util_pct" > "$OUT"
+echo "timestamp,mem_used_MiB,mem_free_MiB,mem_total_MiB,gpu_util_pct,mem_util_pct,ram_used_MiB,ram_total_MiB" > "$OUT"
 while true; do
-    nvidia-smi -i "$GPU" --format=csv,noheader,nounits \
-        --query-gpu=timestamp,memory.used,memory.free,memory.total,utilization.gpu,utilization.memory >> "$OUT"
+    gpu=$(nvidia-smi -i "$GPU" --format=csv,noheader,nounits \
+        --query-gpu=timestamp,memory.used,memory.free,memory.total,utilization.gpu,utilization.memory)
+    # MemAvailable, not MemFree: page cache is reclaimable, so "total - available"
+    # is what a run can actually still allocate.
+    ram=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%d,%d", (t-a)/1024, t/1024}' /proc/meminfo)
+    echo "$gpu,$ram" >> "$OUT"
     sleep "$INT"
 done

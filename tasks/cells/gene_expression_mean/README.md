@@ -5,14 +5,40 @@ This task extends `cells/convergence` using `RunConfig`'s existing series API:
 `SweepRunner(config).execute()` executes the entire series; there is no manual
 simulation loop. All list-valued axes in this runner are zipped, not crossed.
 
-The defaults use ten cells, three available genes, 100 almost-singleton ligands,
-interface binding, multinomial receptor abundance, `cell_readout="mean"`, and
-`entropy="grouped_mi"`. Edit `MEAN_GENES` in `scripts/gene_expression.py` to choose the
-series (default `[1, 2, 3]`, integer counts from 1 to `N_GENES`). Each cell
-expresses exactly that many genes. As in the other simulation scripts, `main()`
+The defaults use ten cells, five available genes, 100 ligands, interface binding,
+multinomial receptor abundance, `cell_readout="mean"`, and `entropy="kt_mi"`
+(Krichevsky-Trofimov mutual-information bound) in BOTH scripts. The two losses
+must agree or the curves rank the conditions on different objectives; the
+analysis reads whichever metric `entropy` selects.
+Edit `MEAN_GENES` in `scripts/gene_expression.py` to choose the series (default
+`[1, 2, 3, 4, 5]`, integer counts from 1 to `N_GENES`). Each cell expresses
+exactly that many genes. As in the other simulation scripts, `main()`
 declares `RunConfig` directly and passes it to `SweepRunner`: no config builder or
 custom PMF helper. For non-integer expected sizes, edit `cell_size_pmf` directly
 with the desired distributions; the analysis reports requested and realized means.
+
+## Mixture and concentration regime
+
+Both scripts set `mu_ligands_per_source = MU_LIGANDS = 3.0`, the zero-truncated
+Poisson rate for the number of ligands present in a sniff. With
+`n_presence_blocks = 1` this is the only presence knob in play, so a sniff carries
+about three of the 100 ligands rather than exactly one.
+
+The concentration channel is heterogeneous: `conc_mean` is a per-ligand vector of
+log10 concentration means, drawn uniformly in `[-CONC_LOG10_SPAN, +CONC_LOG10_SPAN]`
+with `CONC_LOG10_SPAN = 2.0`, so typical ligand abundances differ by up to four
+decades. One independent vector is drawn per sweep point and zipped with the cell
+axis, matching the existing convention that worlds are not matched across
+expression levels. `CONC_SEED` differs between the two scripts, so the conditions
+do not share a concentration world either. The environment initializes its EC50
+from the mean of `conc_mean`, so the spread shifts which ligands sit near
+saturation rather than shifting the whole dynamic range.
+
+Consequence for measurements: `identity_channel` and `concentration_channel` split
+`H(A)` by grouping sniffs with identical presence patterns. That only works when
+patterns repeat, which they do at one ligand per sniff and do not at three out of
+100. Both are still recorded, but `mutual_information_grouped` is the metric to
+read, and it is what both scripts optimize.
 
 The fixed cell-sampling seed makes repertoires reproducible. Gene choices are
 independent across cells; duplicate repertoires remain possible and are counted in
@@ -22,8 +48,17 @@ not matched across expression levels. These are exploratory comparisons, not
 replicate-averaged estimates of an expression effect. Test repeats in a run average
 measurement noise, not optimization or repertoire variability.
 
-Larger expressed gene sets generate rapidly growing receptor pools. The default
-stops at three genes per cell; raising it increases memory and computation costs.
+Larger expressed gene sets generate rapidly growing receptor pools. Under the
+interface model a cell expressing `g` genes assembles `(g^5 + 4g)/5` receptors, and
+`R_pool` is the deduplicated union over cells: 5, 35, 275, 605, 629 receptors at
+one through five genes per cell. The homomer condition stays at five receptors
+throughout. Raising `N_GENES` past five increases memory and computation sharply.
+
+At five genes per cell every cell expresses every gene, so the ten cells become one
+group. That caps the grouped COUNT code at `log2(11)` bits, which is why the
+two-curve figure draws the ceiling when `grouped MI` is the headline metric. Under
+`kt_mi` the estimator sees full labelled responses and is not capped by it; the
+ceiling line is then suppressed.
 
 From `opt_bin_resp/` (after making the new task available on the cluster):
 
@@ -33,9 +68,14 @@ bash tasks/run_remote.sh cells/gene_expression_mean gene_expression_homomers.py 
 bash tasks/cells/gene_expression_mean/sync.sh
 ```
 
-`gene_expression_homomers.py` repeats the same expression-level sweep but passes
-explicit `cell_receptors`: a cell expressing genes `{u, v}` contains only homomers
-`[u,u,u,u,u]` and `[v,v,v,v,v]`. Thus no heteromers are assembled. Explicit
+`gene_expression.py` is the FULL-REPERTOIRE condition, not a heteromer-only one:
+a cell expressing `{u, v}` assembles every receptor those genes allow, homomers
+included, weighted by multinomial abundance. `gene_expression_homomers.py` repeats
+the same expression-level sweep but passes explicit `cell_receptors`: the same cell
+contains only `[u,u,u,u,u]` and `[v,v,v,v,v]`, so no heteromers are assembled. The
+gap between the two curves is the heteromer contribution; at one gene per cell the
+conditions coincide by construction. A pure-heteromer condition is not available,
+because a cell expressing one gene has no heteromer to make. Explicit
 repertoires use the uniform weights defined by `CellArray`; the list of complete
 repertoire configurations is consumed directly as a zipped `RunConfig` sweep axis.
 Run folders use `receptors_per_cell_1`, `receptors_per_cell_2`, etc.; exact receptor
@@ -49,8 +89,11 @@ python3 /app/tasks/cells/gene_expression_mean/scripts/gene_expression_homomers.p
 ```
 
 Open `analysis/gene_expression.py` in the IDE and execute its `# %%` cells, like
-the convergence analysis. It selects the latest sweep, prints the final metrics,
-then displays the across-sweep comparison and training trajectories. The figure
+the convergence analysis. It selects the latest sweep of each condition, prints the
+final metrics, then displays the per-condition panels, the two-curve figure
+(`grouped MI` against genes expressed per cell, one line per condition, with the
+count-alphabet ceiling dotted) and a printed table of the heteromer gain, and
+finally the training trajectories. The figure
 save lines are present but commented out. Hard codes are a diagnostic, not a
 convergence requirement for the stochastic mean readout.
 
@@ -66,8 +109,8 @@ entropy. Receptor-mode calculations are unchanged. The default alphabet guard
 `cell_grouped_max_states=65536` rejects excessively large enumerations; increase
 it only with an appropriate input batch budget, or use `kt_mi` for larger alphabets.
 
-For the current three expression levels, the count alphabets have 72, 80, and 11
-states. Grouping requires exactly identical abundance rows, not merely similar
+Count alphabet sizes follow the number of distinct repertoires, not the expression
+level directly; the analysis prints the realized ceiling per run. Grouping requires exactly identical abundance rows, not merely similar
 responses. Output enumeration is exact; environmental averages still require
 independent input samples and simulation repetitions. No new simulations or
 changes to saved results are implied by changing these scripts.

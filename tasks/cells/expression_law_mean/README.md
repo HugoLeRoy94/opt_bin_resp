@@ -111,19 +111,64 @@ The receptor pool is the memory bottleneck and grows fast: G=8 at mean 3 reaches
 about 2200 receptors against 629 for the whole of the old G=5 sweep. `--max_pool`
 refuses points above a cap rather than failing hours into a run.
 
-## Running it
+## The size-law comparison: two scripts, one grid
+
+`scripts/size_law_uniform.py` and `scripts/size_law_exponential.py` are thin
+wrappers over `expression_law.py`. Both keep the GENE law uniform and change only
+the SIZE law, so the pair isolates the shape of "how many genes a cell expresses".
+Anything passed on the command line overrides their defaults.
+
+```bash
+python3 tasks/cells/expression_law_mean/scripts/size_law_uniform.py --dry_run
+bash tasks/run_remote.sh cells/expression_law_mean size_law_uniform.py 0
+bash tasks/run_remote.sh cells/expression_law_mean size_law_exponential.py 1
+# the homomer arm of each
+bash tasks/run_remote.sh cells/expression_law_mean size_law_uniform.py 0 -- --condition homomers
+```
+
+Defaults: `--n_genes 3 5`, `--means 1.0 1.5 2.0 2.5 3.0`, `--n_cells 30`,
+`--replicates 3`, `--max_pool 8192`, `--match_size_support`. That is 8 design
+points and 24 optimizations per arm, about 1.0 h (uniform) and 1.5 h (exponential)
+per condition at the calibrated cluster rate; `--dry_run` reprojects it.
+
+Three things make this a controlled comparison, and one thing does not:
+
+**Matched grid.** `--match_size_support` drops the `(G, mean)` points the flat law
+cannot reach. A flat law over `{1..M}` only reaches means `(M+1)/2`, so without
+the flag the exponential arm covers means the uniform arm does not and the two
+curves have different support. The earlier runs in `data/expression_law` have
+exactly that problem: the uniform arm ran `--n_genes 3 5 8`, the exponential arm
+`--n_genes 3 5`.
+
+**Matched environment, unmatched world.** Both arms use the same environmental
+settings (below). They do NOT use the same seed: `world_seed_for()` hashes the
+size family, the gene family and the condition, so latents and per-ligand
+concentration means differ between arms. A gap between the curves has to survive a
+change of environment to mean anything.
+
+**One thing is NOT matched, and cannot be.** At the same mean the exponential law
+spreads mass over the whole range `{1..G}`, so a few cells express every gene and
+the receptor pool saturates immediately: 629 receptors at G=5 for every mean above
+1, against 53 -> 629 as the flat law's mean rises. Matched MEAN is not matched pool
+and not matched cost. That is the laws differing, not a confound, but it is why the
+exponential arm is the more expensive one and why `--max_pool` has to be raised
+past the 4096 default.
+
+Adding `--n_genes 8` back costs about 6 h (uniform) and 15 h (exponential) per
+condition, because the exponential law hits the full G=8 pool of 6560 receptors.
+
+## Running the general script
 
 ```bash
 # inspect the design, the realised means, the pools and the cell-type counts
-python3 tasks/cells/expression_law/scripts/expression_law.py --dry_run
+python3 tasks/cells/expression_law_mean/scripts/expression_law.py --dry_run
 
 # the two baseline arms, uniform size law and uniform gene law
-python3 tasks/cells/expression_law/scripts/expression_law.py --condition heteromers
-python3 tasks/cells/expression_law/scripts/expression_law.py --condition homomers
+python3 tasks/cells/expression_law_mean/scripts/expression_law.py --condition heteromers
+python3 tasks/cells/expression_law_mean/scripts/expression_law.py --condition homomers
 
-# the shape comparisons, at matched mean genes per cell
-python3 tasks/cells/expression_law/scripts/expression_law.py --size_family exponential
-python3 tasks/cells/expression_law/scripts/expression_law.py --gene_family exponential --gene_ratio 10
+# the gene-law comparison, at matched mean genes per cell
+python3 tasks/cells/expression_law_mean/scripts/expression_law.py --gene_family exponential --gene_ratio 10
 ```
 
 Then `bash tasks/cells/expression_law/sync.sh` and edit `SWEEPS` at the top of
@@ -131,10 +176,28 @@ Then `bash tasks/cells/expression_law/sync.sh` and edit `SWEEPS` at the top of
 
 ## Comparability with gene_expression
 
-The environment block is copied verbatim from
-`tasks/cells/gene_expression_mean/scripts/replicates.py` (5 families, 100 ligands,
-latent dimension 6, family spread 0.1, `mu_ligands_per_source` 1e-6), as are
-`cell_readout='mean'`, `k_sub=5`, the interface model and the multinomial
-stoichiometry. What differs is the expression law and the estimator. The
-estimator difference alone shifts MI, so compare the two tasks only through the
-`grouped_kt_mi` / counting arm of `gene_expression`, never through its exact arm.
+The environment matches `tasks/cells/gene_expression_mean/scripts/gene_expression.py`:
+1 family, 100 ligands, latent dimension 6, family spread 0.1, gaussian geometry,
+one presence block, `cell_readout='mean'`, `k_sub=5`, the interface model and the
+multinomial stoichiometry. Two parts of it are now knobs rather than constants,
+and both must stay in step with that script:
+
+- `--mu_ligands` (default 3.0) is the zero-truncated Poisson rate for the number
+  of ligands present per sniff. With one presence block it is the only presence
+  knob. The old value was `1e-6`, effectively exactly one ligand per sniff; 3.0 is
+  a MIXTURE, which is a different problem, not a tweak. Runs in
+  `data/expression_law` from before this change are single-ligand and are not
+  comparable with new ones.
+- `--conc_log10_span` (default 2.0) makes the concentration channel heterogeneous:
+  each ligand's log10 concentration mean is drawn uniformly in `[-span, +span]`,
+  so abundances differ by up to 4 decades. One independent vector per run, seeded
+  from the world seed. The environment initialises its EC50 from the MEAN of that
+  vector, so the spread moves which ligands sit near saturation rather than moving
+  the whole dynamic range. `--conc_log10_span 0` restores the old flat channel.
+
+What still differs from `gene_expression` is the expression law and the
+estimator. `gene_expression` now trains on `kt_mi`; this task trains on
+`grouped_kt_mi` because independent sampling leaves nearly every cell its own type
+and the exact count alphabet is out of reach. Both are KT bounds, but the grouping
+is not a no-op, so compare the two tasks through their KT arms and never against
+an exact-enumeration number.

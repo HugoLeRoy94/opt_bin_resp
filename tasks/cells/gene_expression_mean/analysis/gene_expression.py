@@ -3,6 +3,19 @@
 
 Run the cells in order. Worlds are independent across sweep points and conditions,
 so these figures are descriptive rather than paired estimates of a heteromer effect.
+What IS matched is the gene-set sampling (same cell seed), so at each expression
+level the two conditions hold the same cells and differ only in whether heteromers
+may assemble.
+
+PRIMARY_MI is the metric for the two-curve figure. It must be the metric both
+sweeps optimized, so it follows `entropy` in the scripts: "KT MI lower" for
+entropy="kt_mi" (the current setting), "grouped MI" for entropy="grouped_mi".
+Reading a measured-but-not-optimized metric as the headline would rank the two
+conditions on something neither of them was trained to maximise. The
+identity/concentration channel split is only estimable when presence patterns
+repeat, i.e. near-single-ligand sniffs; at mu_ligands_per_source > 1 rows are
+nearly unique, concentration MI collapses toward 0 and identity MI drifts up
+toward H(A). Those two columns are printed but not used as the headline curve.
 """
 import sys
 from pathlib import Path
@@ -67,14 +80,16 @@ for row, (condition, _) in enumerate(CONDITIONS):
         rows.append({
             "genes_per_cell": genes_per_cell,
             "receptor_pool": len(cfg.receptor_indices),
-            "identity MI": np.mean(test["identity_channel"]),
+            "mu_ligands": cfg.mu_ligands_per_source,
+            "conc_mean_span": float(np.ptp(cfg.conc_mean)),
+            "identity MI": np.mean(test.get("identity_channel", [np.nan])),
             "grouped MI": np.mean(test.get("mutual_information_grouped", [np.nan])),
             "KT MI lower": np.mean(test.get("mutual_information_kt", [np.nan])),
             "KT MI upper": np.mean(test.get("mutual_information_kt_upper", [np.nan])),
             "count entropy": np.mean(test.get("grouped_count_entropy", [np.nan])),
             "count entropy ceiling": np.mean(test.get("grouped_count_entropy_upper", [np.nan])),
-            "counting MI": np.mean(test["mutual_information_counting_mm"]),
-            "response noise": np.mean(test["conditional_entropy_response"]),
+            "counting MI": np.mean(test.get("mutual_information_counting_mm", [np.nan])),
+            "response noise": np.mean(test.get("conditional_entropy_response", [np.nan])),
         })
     summary = pd.DataFrame(rows)
     SUMMARIES[condition] = summary
@@ -84,8 +99,8 @@ for row, (condition, _) in enumerate(CONDITIONS):
 
     ax_mi, ax_noise, ax_pool = axes[row]
     for metric, style in (
-        ("identity MI", "o-"), ("grouped MI", "s-"), ("KT MI lower", "s-"),
-        ("KT MI upper", "s--"), ("counting MI", "^:"),
+        ("grouped MI", "s-"), ("KT MI lower", "s-"), ("KT MI upper", "s--"),
+        ("counting MI", "^:"), ("identity MI", "o--"),
     ):
         if summary[metric].notna().any():
             ax_mi.plot(summary["genes_per_cell"], summary[metric], style, label=metric)
@@ -102,6 +117,50 @@ for ax in axes.flat:
 fig.tight_layout()
 # fig.savefig(FIGURES / "gene_expression_both_final.png", dpi=180, bbox_inches="tight")
 plt.show()
+
+# %%
+# ── THE two-curve figure: MI vs genes/cell, homomers against full repertoire ──
+# Both sweeps optimize PRIMARY_MI, so this is a like-for-like comparison. The
+# count-alphabet ceiling log2(n_states) is drawn per condition when the grouped
+# estimator ran, because it moves with the number of DISTINCT repertoires: when
+# every cell expresses every gene the ten cells collapse into one group and the
+# COUNT code can carry at most log2(11) bits. It bounds "grouped MI" only; the KT
+# estimators see full labelled responses and are not capped by it.
+PRIMARY_MI = "KT MI lower"   # must match `entropy` in the sweep scripts
+STYLES = {"Full repertoire": ("o-", "tab:blue"), "Homomers only": ("s-", "tab:orange")}
+
+fig, ax = plt.subplots(figsize=(7, 5))
+for condition, _ in CONDITIONS:
+    summary = SUMMARIES[condition]
+    if summary.empty or not summary[PRIMARY_MI].notna().any():
+        print(f"{condition}: no {PRIMARY_MI} to plot")
+        continue
+    style, colour = STYLES[condition]
+    ax.plot(summary["genes_per_cell"], summary[PRIMARY_MI], style,
+            color=colour, label=condition)
+    if PRIMARY_MI == "grouped MI" and summary["count entropy ceiling"].notna().any():
+        ax.plot(summary["genes_per_cell"], summary["count entropy ceiling"],
+                ":", color=colour, alpha=.5,
+                label=f"{condition} — count alphabet ceiling")
+ax.set_xlabel("genes expressed per cell")
+ax.set_ylabel(f"{PRIMARY_MI} [bits]")
+regimes = {(row["mu_ligands"], round(row["conc_mean_span"], 2))
+           for summary in SUMMARIES.values() for _, row in summary.iterrows()}
+ax.set_title("Information per sniff: heteromers allowed or not\n"
+             + "; ".join(f"mu={mu:g} ligands/sniff, conc means over "
+                         f"{span:g} decades" for mu, span in sorted(regimes)))
+ax.grid(axis="y", alpha=.2)
+ax.legend(fontsize=8)
+fig.tight_layout()
+# fig.savefig(FIGURES / "gene_expression_mi_vs_genes.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# The heteromer contribution, where both conditions reached the same point.
+both = (SUMMARIES["Full repertoire"][["genes_per_cell", PRIMARY_MI]]
+        .merge(SUMMARIES["Homomers only"][["genes_per_cell", PRIMARY_MI]],
+               on="genes_per_cell", suffixes=(" full", " homomer")))
+both["heteromer gain"] = both[f"{PRIMARY_MI} full"] - both[f"{PRIMARY_MI} homomer"]
+print(f"\nHeteromer gain in {PRIMARY_MI} [bits]\n{both.to_string(index=False)}")
 
 # %%
 # ── training trajectories, one column per condition ────────────────────────

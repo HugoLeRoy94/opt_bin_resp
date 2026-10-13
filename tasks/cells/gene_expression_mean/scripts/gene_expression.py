@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Cell convergence swept over the number of genes expressed per cell.
+"""Full-repertoire cells swept over the number of genes expressed per cell.
 
-Each cell expresses exactly the swept number of genes. Gene identities are
-sampled with a fixed seed; different cells may share a repertoire.
+Each cell expresses exactly the swept number of genes and assembles EVERY
+receptor those genes allow (homomers AND heteromers), with multinomial
+abundance. Pair with gene_expression_homomers.py, which pins the same cells to
+their homomers only: the gap between the two curves is the heteromer
+contribution. Gene identities are sampled with a fixed seed; different cells may
+share a repertoire.
 """
 import sys
 import time
@@ -15,14 +19,36 @@ from src.run import SweepRunner
 
 N_LIG = 100
 N_CELLS = 10
-N_GENES = 3
+N_GENES = 5
 MEAN_GENES = list(range(1, N_GENES + 1))
 CELL_SEED = 0
 WORLD_SEED = 0
+
+# Presence: ZTP rate for the number of ligands drawn per sniff (one source block,
+# so this is the only presence knob in play). > 1 puts the task in the mixture
+# regime, where identity_channel / concentration_channel stop being estimable.
+MU_LIGANDS = 3.0
+
+# Concentration: per-ligand log10 mean, drawn uniformly in [-SPAN, +SPAN], so
+# ligands differ in typical abundance by up to 2*SPAN decades. One independent
+# draw per sweep point, matching the convention that worlds are not matched
+# across expression levels. CONC_SEED differs from the homomer script's, so the
+# two conditions do not share a concentration world either.
+CONC_LOG10_SPAN = 2.0
+CONC_SEED = 1
+
 MEASUREMENTS = (
     "full_array_entropy", "grouped_information", "conditional_entropy_response",
     "identity_channel", "concentration_channel", "codeword_entropy",
 )
+
+
+def conc_means(n_points):
+    """One independent per-ligand log10 concentration-mean vector per sweep point."""
+    gen = torch.Generator().manual_seed(CONC_SEED)
+    return [tuple(((torch.rand(N_LIG, generator=gen) * 2.0 - 1.0)
+                   * CONC_LOG10_SPAN).tolist())
+            for _ in range(n_points)]
 
 
 def main():
@@ -43,15 +69,15 @@ def main():
         # --- Presence (hierarchical sampler) ---
         n_presence_blocks      = 1,
         mu_sources             = 1.0,
-        mu_ligands_per_source  = 1e-6,
+        mu_ligands_per_source  = MU_LIGANDS,
         block_shared_conc_mean = False,
 
         # --- Interface model ---
         use_interface_model = True,
 
-        # --- Concentration ---
+        # --- Concentration: the list of mean vectors is zipped with the cell axis ---
         conc_model_type = "lognormal",
-        conc_mean       = (0.0,) * N_LIG,
+        conc_mean       = conc_means(len(MEAN_GENES)),
         conc_std        = (1.,) * N_LIG,
 
         # --- Physics ---
@@ -83,6 +109,8 @@ def main():
 
     print(config)
     print(f"Mean genes/cell: {MEAN_GENES}; {N_CELLS} cells, {N_GENES} available genes")
+    print(f"~{MU_LIGANDS} ligands/sniff; conc means spread over "
+          f"{2 * CONC_LOG10_SPAN:g} decades")
     t0 = time.time()
     SweepRunner(config).execute()
     h, rem = divmod(time.time() - t0, 3600)

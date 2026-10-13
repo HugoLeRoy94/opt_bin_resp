@@ -83,10 +83,24 @@ def parse_args(argv=None):
     p.add_argument("--eval_chunk_size", type=int, default=512)
     p.add_argument("--max_pool", type=int, default=4096,
                    help="Refuse points whose receptor pool exceeds this; it is the memory bottleneck.")
+    p.add_argument("--match_size_support", action="store_true",
+                   help="size_law only: skip the SAME (G, mean) points the uniform size "
+                        "family has to skip, so a non-uniform law is evaluated on an "
+                        "identical grid. Without it the exponential law reaches means the "
+                        "uniform law cannot, and the two curves have different support.")
     p.add_argument("--n_families", type=int, default=1,
                    help="Environment. 1 family + gaussian matches tasks/cells/gene_expression_mean.")
     p.add_argument("--distribution_type", choices=("gaussian", "uniform", "shell"),
                    default="gaussian")
+    p.add_argument("--n_ligands", type=int, default=100)
+    p.add_argument("--mu_ligands", type=float, default=3.0,
+                   help="Zero-truncated Poisson rate for ligands present per sniff. With one "
+                        "presence block this is the only presence knob. 1e-6 is the old "
+                        "single-ligand regime; > 1 is a mixture.")
+    p.add_argument("--conc_log10_span", type=float, default=2.0,
+                   help="Per-ligand log10 concentration mean is drawn uniformly in "
+                        "[-span, +span], so abundances differ by up to 2*span decades. "
+                        "0 restores the old homogeneous channel.")
     p.add_argument("--base_folder", default="/app/data/expression_law")
     p.add_argument("--dry_run", action="store_true")
     return p.parse_args(argv)
@@ -112,6 +126,10 @@ def validate(args):
                          "distribution; the cumulative design does no sampling at all.")
     if args.design != "cumulative" and args.levels is not None:
         raise ValueError("--levels only applies to --design cumulative.")
+    if args.match_size_support and args.design != "size_law":
+        raise ValueError("--match_size_support only applies to --design size_law.")
+    if args.conc_log10_span < 0:
+        raise ValueError("--conc_log10_span must be non-negative.")
 
 
 def bernoulli_p_for_mean(n_genes: int, mean: float, tol: float = 1e-12) -> float:
@@ -188,7 +206,8 @@ def design(args):
                                                       [p_gene] * n_genes, seed=seed)
                     detail = {"gene_probability": p_gene}
                 else:
-                    if args.size_family == "uniform" and 2 * value - 1 > n_genes:
+                    if ((args.size_family == "uniform" or args.match_size_support)
+                            and 2 * value - 1 > n_genes):
                         continue                  # flat support would exceed the pool
                     if value > n_genes:
                         continue
@@ -293,7 +312,36 @@ def report_expected_bias(args, rows):
               "cells start duplicating, which needs C well above 2^G - 1.")
 
 
-def build_config(args, rows):
+def world_seed_for(args) -> int:
+    """Seed for the optimizer and the concentration draw.
+
+    The key carries the law and the condition, so no two arms of the comparison
+    share a world: the uniform and exponential size laws see different latents and
+    different concentration means, and a difference between their curves has to
+    survive that. Matching here would be matching the environment, which is the
+    thing the comparison is supposed to be robust to.
+    """
+    seed_key = (f"expression_law:{args.design}:{args.condition}:{args.size_family}:"
+                f"{args.gene_family}:{args.gene_ratio}:{args.seed}:{args.replicate_start}")
+    return int(hashlib.sha256(seed_key.encode()).hexdigest()[:15], 16)
+
+
+def conc_means(n_rows, n_ligands, span, world_seed):
+    """One per-ligand log10 concentration-mean vector per run, drawn in [-span, +span].
+
+    A heterogeneous concentration channel: ligands differ in typical abundance by up
+    to 2*span decades, so the array cannot treat every ligand as equally loud. One
+    independent draw per run, matching the convention that worlds are not shared
+    across sweep points. The environment initialises its EC50 from the MEAN of this
+    vector, so the spread moves which ligands sit near saturation rather than moving
+    the whole dynamic range.
+    """
+    gen = torch.Generator().manual_seed(world_seed % (2 ** 62))
+    return [tuple(((torch.rand(n_ligands, generator=gen) * 2.0 - 1.0) * span).tolist())
+            for _ in range(n_rows)]
+
+
+def build_config(args, rows, world_seed):
     """RunConfig with one zipped axis entry per row.
 
     entropy='grouped_kt_mi' with measurement 'grouped_counting' is not a style
@@ -307,12 +355,19 @@ def build_config(args, rows):
                                        for genes in r["cell_gene_sets"]) for r in rows]})
     measurements = ("grouped_counting", "conditional_entropy_response", "codeword_entropy")
     return RunConfig(
-        # --- Environment: matched to the gene_expression task so curves are comparable
-        n_families=args.n_families, n_ligands=100, latent_dim=6, family_spread=0.1,
+        # --- Environment: matched to the gene_expression task so curves are comparable.
+        # mu_ligands > 1 is a MIXTURE regime (several ligands per sniff) and conc_mean
+        # is a per-run heterogeneous vector; both must agree with
+        # tasks/cells/gene_expression_mean/scripts/gene_expression.py or the two tasks
+        # are measuring different problems.
+        n_families=args.n_families, n_ligands=args.n_ligands, latent_dim=6,
+        family_spread=0.1,
         average_family_distance=1.0, environment_geometry="asymmetric",
         distribution_type=args.distribution_type, observation_noise_sigma=0.0,
-        n_presence_blocks=1, mu_sources=1.0, mu_ligands_per_source=1e-6,
-        conc_model_type="lognormal", conc_mean=(0.0,) * 100, conc_std=(1.0,) * 100,
+        n_presence_blocks=1, mu_sources=1.0, mu_ligands_per_source=args.mu_ligands,
+        conc_model_type="lognormal",
+        conc_mean=conc_means(len(rows), args.n_ligands, args.conc_log10_span, world_seed),
+        conc_std=(1.0,) * args.n_ligands,
         block_shared_conc_mean=False,
 
         # --- Physics
@@ -348,16 +403,19 @@ def main(argv=None):
     args = parse_args(argv)
     validate(args)
     rows = design(args)
-    seed_key = (f"expression_law:{args.design}:{args.condition}:{args.size_family}:"
-                f"{args.gene_family}:{args.gene_ratio}:{args.seed}:{args.replicate_start}")
-    world_seed = int(hashlib.sha256(seed_key.encode()).hexdigest()[:15], 16)
+    world_seed = world_seed_for(args)
 
     detail = (f"size law {args.size_family}, gene law {args.gene_family} "
               f"(ratio {args.gene_ratio})" if args.design == "size_law" else
               "each gene independent, size induced" if args.design == "bernoulli" else
               "all combinations up to each level, no sampling")
     print(f"expression_law [{args.design}]: {args.condition}, {detail}")
-    print(f"environment: {args.n_families} famil(y/ies), {args.distribution_type}")
+    print(f"environment: {args.n_families} famil(y/ies), {args.distribution_type}, "
+          f"{args.n_ligands} ligands, mu={args.mu_ligands:g} per sniff, "
+          f"conc means over {2 * args.conc_log10_span:g} decades")
+    if args.match_size_support:
+        print("matched support: skipping the (G, mean) points the uniform size law "
+              "cannot reach")
     print(f"{len(rows)} independent optimizations, {args.replicates} replicates per point")
     print(f"World seed {world_seed}; no warm start, fresh world per run\n")
     print(f"{'G':>3} {'target':>7} {'realised':>9} {'pool':>6} {'types':>6} {'genes seen':>11} rep")
@@ -373,11 +431,14 @@ def main(argv=None):
           "is out of reach: training uses the KT bound and evaluation sampled counting.")
     report_expected_bias(args, rows)
 
-    config = build_config(args, rows)
+    config = build_config(args, rows, world_seed)
     manifest = {
         "schema": 1, "experiment": "expression_law", "condition": args.condition,
         "size_family": args.size_family, "gene_family": args.gene_family,
         "gene_ratio": args.gene_ratio, "design": args.design,
+        "match_size_support": args.match_size_support,
+        "mu_ligands": args.mu_ligands, "conc_log10_span": args.conc_log10_span,
+        "n_ligands": args.n_ligands,
         "world_seed": world_seed,
         "arguments": vars(args), "rows": rows,
     }

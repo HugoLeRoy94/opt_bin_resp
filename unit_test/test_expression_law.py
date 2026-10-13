@@ -105,7 +105,7 @@ def test_independent_sampling_defeats_exact_enumeration():
 
 
 def test_design_builds_and_stays_within_its_pool_cap():
-    from tasks.cells.expression_law.scripts.expression_law import design, parse_args
+    from tasks.cells.expression_law_mean.scripts.expression_law import design, parse_args
     args = parse_args(["--n_genes", "3", "5", "--means", "1.0", "2.0",
                        "--replicates", "2", "--n_cells", "12"])
     rows = design(args)
@@ -181,7 +181,7 @@ def test_grouped_counter_reports_missing_mass():
 
 def test_exponential_gene_law_requires_a_real_skew():
     """ratio 1 IS the uniform law, so accepting it would mislabel a sweep."""
-    from tasks.cells.expression_law.scripts.expression_law import parse_args, validate
+    from tasks.cells.expression_law_mean.scripts.expression_law import parse_args, validate
     with pytest.raises(ValueError, match="needs --gene_ratio > 1"):
         validate(parse_args(["--gene_family", "exponential"]))
     with pytest.raises(ValueError, match="only applies to"):
@@ -192,12 +192,54 @@ def test_exponential_gene_law_requires_a_real_skew():
 
 def test_gene_ratio_reaches_the_sweep_folder_name():
     """Two ratios are different experiments and must not share a folder name."""
-    from tasks.cells.expression_law.scripts.expression_law import (
-        build_config, design, parse_args)
+    from tasks.cells.expression_law_mean.scripts.expression_law import (
+        build_config, design, parse_args, world_seed_for)
     names = set()
     for ratio in ("2", "20"):
         args = parse_args(["--gene_family", "exponential", "--gene_ratio", ratio,
                            "--n_genes", "3", "--means", "1.0", "--replicates", "1",
                            "--n_cells", "8"])
-        names.add(build_config(args, design(args)).sweep_name)
+        names.add(build_config(args, design(args), world_seed_for(args)).sweep_name)
     assert len(names) == 2, names
+
+
+def test_match_size_support_puts_both_size_laws_on_one_grid():
+    """Without it the exponential arm reaches means the flat arm cannot."""
+    from tasks.cells.expression_law_mean.scripts.expression_law import design, parse_args
+    base = ["--n_genes", "3", "--means", "1.0", "1.5", "2.0", "2.5", "3.0",
+            "--replicates", "1", "--n_cells", "8", "--max_pool", "8192"]
+    grid = lambda rows: sorted(r["target_mean_genes"] for r in rows)
+
+    flat = grid(design(parse_args(base + ["--size_family", "uniform"])))
+    free = grid(design(parse_args(base + ["--size_family", "exponential"])))
+    matched = grid(design(parse_args(base + ["--size_family", "exponential",
+                                             "--match_size_support"])))
+    assert flat == [1.0, 1.5, 2.0]       # flat over {1..M} only reaches (M+1)/2
+    assert free == [1.0, 1.5, 2.0, 2.5, 3.0]
+    assert matched == flat
+
+
+def test_the_two_size_law_arms_do_not_share_a_world():
+    """Matched environment, independent world: the seed hashes the size family."""
+    from tasks.cells.expression_law_mean.scripts.expression_law import (
+        build_config, design, parse_args, world_seed_for)
+    base = ["--n_genes", "3", "--means", "1.0", "2.0", "--replicates", "1",
+            "--n_cells", "8", "--max_pool", "8192", "--match_size_support",
+            "--mu_ligands", "3.0", "--conc_log10_span", "2.0"]
+    configs = {}
+    for family in ("uniform", "exponential"):
+        args = parse_args(base + ["--size_family", family])
+        rows = design(args)
+        configs[family] = (world_seed_for(args),
+                           build_config(args, rows, world_seed_for(args)), rows)
+
+    (seed_u, cfg_u, rows_u), (seed_e, cfg_e, rows_e) = (
+        configs["uniform"], configs["exponential"])
+    assert seed_u != seed_e
+    assert cfg_u.conc_mean != cfg_e.conc_mean
+    # one concentration vector per run, and the channel is actually heterogeneous
+    assert len(cfg_u.conc_mean) == len(rows_u)
+    assert max(cfg_u.conc_mean[0]) - min(cfg_u.conc_mean[0]) > 2.0
+    # the environment itself is matched
+    assert cfg_u.mu_ligands_per_source == cfg_e.mu_ligands_per_source == 3.0
+    assert cfg_u.n_ligands == cfg_e.n_ligands

@@ -8,8 +8,8 @@ level the two conditions hold the same cells and differ only in whether heterome
 may assemble.
 
 PRIMARY_MI is the metric for the two-curve figure. It must be the metric both
-sweeps optimized, so it follows `entropy` in the scripts: "KT MI lower" for
-entropy="kt_mi" (the current setting), "grouped MI" for entropy="grouped_mi".
+sweeps optimized, so it follows ENTROPY in the scripts: "grouped MI" for
+ENTROPY="grouped_mi" (the current setting), "KT MI lower" for ENTROPY="kt_mi".
 Reading a measured-but-not-optimized metric as the headline would rank the two
 conditions on something neither of them was trained to maximise. The
 identity/concentration channel split is only estimable when presence patterns
@@ -40,9 +40,11 @@ from src.analysis_helper import (build_latent_umap, plot_latent_umap,
                                  cell_ligand_responses, plot_cell_response_umap)
 FIGURES.mkdir(exist_ok=True)
 
+# Sweep-name prefixes, matching SWEEP_NAME in the two scripts. Point DATA and these
+# prefixes at gene_expression_threshold to read the threshold arm with the same code.
 CONDITIONS = (
-    ("Full repertoire", "cell_gene_expression"),
-    ("Homomers only", "homomer_gene_expression"),
+    ("Full repertoire", "mean_heteromers"),
+    ("Homomers only", "mean_homomers"),
 )
 RUNS = {}
 for condition, prefix in CONDITIONS:
@@ -62,9 +64,8 @@ for condition, prefix in CONDITIONS:
     print(f"{condition}: {sweep}")
     print(f"  completed genes/cell: {[run[0] for run in runs]}")
     if loader.config is not None:
-        expected = len(loader.config._axes().get(
-            "cell_receptors" if prefix == "homomer_gene_expression" else "cell_size_pmf", []
-        ))
+        axes = loader.config._axes()
+        expected = len(axes.get("cell_receptors") or axes.get("cell_gene_sets") or [])
         if len(runs) < expected:
             print(f"  INCOMPLETE SWEEP: {len(runs)}/{expected} runs available")
 
@@ -121,12 +122,14 @@ plt.show()
 # %%
 # ── THE two-curve figure: MI vs genes/cell, homomers against full repertoire ──
 # Both sweeps optimize PRIMARY_MI, so this is a like-for-like comparison. The
-# count-alphabet ceiling log2(n_states) is drawn per condition when the grouped
-# estimator ran, because it moves with the number of DISTINCT repertoires: when
-# every cell expresses every gene the ten cells collapse into one group and the
-# COUNT code can carry at most log2(11) bits. It bounds "grouped MI" only; the KT
-# estimators see full labelled responses and are not capped by it.
-PRIMARY_MI = "KT MI lower"   # must match `entropy` in the sweep scripts
+# count-alphabet ceiling log2(n_states) is drawn per condition whenever the grouped
+# estimator ran. READ IT BEFORE BELIEVING A BUMP. The alphabet is set by how many
+# DISTINCT repertoires the sampler drew, which is NOT monotonic in genes per cell:
+# for G=5, C=30 complete coverage it runs 14.0, 18.8, 18.6, 13.7, 5.0 bits across
+# g=1..5, a hump peaking at g=2 with no biology in it at all. A grouped-MI curve
+# sitting near that line is reporting the ceiling, not the array. The KT estimators
+# see full labelled responses and are not capped by it.
+PRIMARY_MI = "grouped MI"   # must match ENTROPY in the sweep scripts
 STYLES = {"Full repertoire": ("o-", "tab:blue"), "Homomers only": ("s-", "tab:orange")}
 
 fig, ax = plt.subplots(figsize=(7, 5))

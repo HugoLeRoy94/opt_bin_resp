@@ -13,7 +13,7 @@ from src.analysis_helper import count_sampled_responses, mutual_information_coun
 from src.config import RunConfig, SingleRunConfig
 from src.IO import ExperimentLogger
 from src.run import SimulationRunner, _build_loss, resolve_batch_sizes
-from tasks.cells.equivalence.scripts._shared import COMMON, RECEPTORS
+from tasks.cells._archive.equivalence_shared import COMMON, RECEPTORS
 
 
 def _config(**overrides):

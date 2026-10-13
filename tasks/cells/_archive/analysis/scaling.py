@@ -11,7 +11,7 @@ FIGURES = HERE.parent / "figures"
 DATA = ROOT / "data" / "gene_expression"
 assert HERE.is_dir(), HERE
 sys.path.insert(0, str(ROOT))
-from tasks.cells.gene_expression_mean.analysis._shared import load_study, summarize, report, plot_curves
+from tasks.cells._archive.analysis._shared import load_study, summarize, report, plot_curves
 
 # None selects the latest sweep per condition/coverage. Set explicit compatible
 # folders to pool disjoint replicate ranges or select an older campaign.

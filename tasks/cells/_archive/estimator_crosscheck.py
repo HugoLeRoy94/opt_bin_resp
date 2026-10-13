@@ -32,12 +32,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.append('/app')
-sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import torch
 
 from src.IO import SweepLoader
-from tasks.cells.gene_expression_mean.scripts.evaluation_budget import (
+from tasks.cells._archive.evaluation_budget import (
     MI_KEY, evaluate_budgets, prepare_run)
 
 

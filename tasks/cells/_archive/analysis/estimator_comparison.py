@@ -12,7 +12,7 @@ FIGURES = HERE.parent / "figures"
 DATA = ROOT / "data" / "gene_expression"
 assert HERE.is_dir(), HERE
 sys.path.insert(0, str(ROOT))
-from tasks.cells.gene_expression_mean.analysis._method_comparison import load_comparison
+from tasks.cells._archive.analysis._method_comparison import load_comparison
 
 # None finds the latest matching design with multiple methods and selects the
 # latest sweep per method/condition. Set a list of explicit sweep folders to

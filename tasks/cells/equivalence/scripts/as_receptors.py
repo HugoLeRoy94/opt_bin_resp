@@ -1,39 +1,139 @@
 #!/usr/bin/env python3
 """Equivalence check, RECEPTOR side: the same receptors, as a plain receptor array.
 
-The control for as_cells.py: the same initial environment, receptors, stochastic
-response probabilities, and receptor-temperature schedule. The cell run uses W = I and
-the mean readout, so the two forward maps should agree numerically. Compare with
-analysis/equivalence.py.
+Run this and as_cells.py, then compare with analysis/equivalence.py. A cell holding
+exactly one receptor IS that receptor, so cell mode must reproduce the receptor model
+numerically. Any discrepancy diagnoses the cell plumbing, not a modelling difference.
 
-  ../../run_remote.sh cells/equivalence as_receptors.py 0
+This is the ONE task where both scripts deliberately share WORLD_SEED. It is a
+numerical identity check, not a scientific comparison: the two runs must see the same
+world or the check means nothing. Every other task under tasks/cells/ gives each arm
+its own world on purpose.
+
+Every parameter is a constant below, duplicated in as_cells.py. The two files must stay
+identical apart from the cell/receptor block and the sweep name — that is the whole
+point, so the duplication is deliberate, not an oversight.
+
+    python3 tasks/cells/equivalence/scripts/as_receptors.py
+    bash tasks/run_remote.sh cells/equivalence as_receptors.py 0
 """
-import time
 import sys
+import time
+
 sys.path.append('/app')
-sys.path.append(str(__import__("pathlib").Path(__file__).resolve().parent))
+
+import torch
 
 from src.config import RunConfig
 from src.run import SweepRunner
-from _shared import COMMON, RECEPTORS, seed_everything
+
+# ─── Environment: one ligand per sniff at a nearly FIXED concentration ──────
+N_LIGANDS     = 100
+LATENT_DIM    = 6
+FAMILY_SPREAD = 0.1
+FAMILY_DIST   = 1.0
+GEOMETRY      = "asymmetric"
+DISTRIBUTION  = "gaussian"
+NOISE_SIGMA   = 0.0
+MU_LIGANDS    = 1e-6     # ZTP rate -> P(exactly one ligand) ~ 1
+CONC_MEAN     = 0.0      # log10 concentration mean, same for every ligand
+CONC_STD      = 1e-4     # ~fixed: the concentration channel contributes ~0 bits
+
+# ─── The receptor list, SORTED ──────────────────────────────────────────────
+# Sorting matters: CellArray's pool is the sorted unique union, so a sorted input
+# makes the cell run's channel order identical to the receptor run's. Unsorted, W
+# would be a permutation and a per-channel comparison would need undoing it (the
+# entropy would still match, being permutation-invariant).
+RECEPTORS = tuple(sorted([
+    (0, 0, 0, 0, 0),
+    (0, 0, 0, 0, 1),
+    (0, 0, 0, 1, 1),
+    (0, 0, 1, 1, 1),
+    (1, 1, 1, 1, 2),
+    (1, 1, 2, 2, 2),
+    (2, 2, 2, 3, 3),
+    (3, 3, 3, 3, 3),
+]))
+
+N_GENES = 5
+K_SUB   = 5
+
+# ─── Objective ──────────────────────────────────────────────────────────────
+ENTROPY = "kt_mi"
+MEASUREMENTS = ("entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
+                "mutual_information_kt", "mutual_information_kt_upper",
+                "codeword_entropy")
+
+# ─── Training ───────────────────────────────────────────────────────────────
+EPOCHS           = 5000
+LR               = 1e-2
+BATCH_SIZE       = 4096
+TEST_BATCH_SIZE  = 4096
+TEMPERATURE      = 0.05
+INIT_TEMPERATURE = 3.0
+WORLD_SEED       = 0        # SHARED with as_cells.py, on purpose
+
+BASE_FOLDER = "/app/data/equivalence"
+SWEEP_NAME  = "as_receptors"
 
 
 def main():
-    seed_everything()
-    config = RunConfig(
-        # the same receptors, declared directly. RECEPTORS is sorted, and CellArray's
-        # pool is the sorted unique union, so both runs order their channels the same.
-        receptor_indices = RECEPTORS,      # tuple: a list here would read as a sweep axis
-        sweep_name       = "as_receptors",
-        **COMMON,
-    )
-
-    print(config)
     print(f"{len(RECEPTORS)} receptors, declared directly")
 
+    torch.manual_seed(WORLD_SEED)
+    config = RunConfig(
+        # --- Environment ---
+        n_families              = 1,
+        n_ligands               = N_LIGANDS,
+        latent_dim              = LATENT_DIM,
+        family_spread           = FAMILY_SPREAD,
+        average_family_distance = FAMILY_DIST,
+        environment_geometry    = GEOMETRY,
+        distribution_type       = DISTRIBUTION,
+        observation_noise_sigma = NOISE_SIGMA,
+
+        n_presence_blocks      = 1,
+        mu_sources             = 1.0,
+        mu_ligands_per_source  = MU_LIGANDS,
+        block_shared_conc_mean = False,
+
+        conc_model_type = "lognormal",
+        conc_mean       = (CONC_MEAN,) * N_LIGANDS,
+        conc_std        = (CONC_STD,) * N_LIGANDS,
+
+        # --- Physics ---
+        n_genes             = N_GENES,
+        k_sub               = K_SUB,
+        temperature         = TEMPERATURE,
+        initial_temperature = INIT_TEMPERATURE,
+        affinity_kernel     = "gaussian",
+        kernel_params       = (1.0,),
+        use_interface_model = True,
+
+        # --- Receptors: the same list, as a plain receptor array ---
+        # A tuple, not a list: a list here would read as a sweep axis.
+        receptor_indices = RECEPTORS,
+
+        # --- Objective ---
+        entropy               = ENTROPY,
+        measurement_fns       = MEASUREMENTS,
+        final_measurement_fns = MEASUREMENTS + ("mutual_information_counting",),
+
+        # --- Training ---
+        epochs          = EPOCHS,
+        lr              = LR,
+        use_scheduler   = False,
+        batch_size      = BATCH_SIZE,
+        test_batch_size = TEST_BATCH_SIZE,
+
+        # --- Sweep ---
+        sweep_name  = SWEEP_NAME,
+        base_folder = BASE_FOLDER,
+        warm_start  = False,
+    )
     t0 = time.time()
     SweepRunner(config).execute()
-    print(f"\nas_receptors complete!  {time.time() - t0:.0f}s")
+    print(f"\nas_receptors finished in {(time.time() - t0) / 60:.1f} min")
 
 
 if __name__ == "__main__":

@@ -28,13 +28,13 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.append('/app')
-sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import torch
 
 from src.config import RunConfig
 from src.run import SweepRunner
-from tasks.cells.gene_expression_mean._experiments import expression_sets
+from tasks.cells._archive._experiments import expression_sets
 
 K_SUB = 5
 

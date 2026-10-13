@@ -13,7 +13,7 @@ from src.environment import LigandEnvironment, LogNormalConcentration
 from src.IO import ExperimentLogger, SweepLogger, SweepLoader, SingleRunLoader
 from src.physics import BinaryReceptor
 from src.run import SimulationRunner
-from tasks.cells.equivalence.scripts._shared import COMMON, RECEPTORS
+from tasks.cells._archive.equivalence_shared import COMMON, RECEPTORS
 
 
 def _config(**overrides):

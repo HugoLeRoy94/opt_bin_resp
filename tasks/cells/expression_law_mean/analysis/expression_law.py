@@ -39,6 +39,11 @@ SAVE_FIGURES = False
 # 1. WHICH SWEEPS
 # ════════════════════════════════════════════════════════════════════════════
 # Named explicitly. One curve is drawn per (condition, G, size law, gene law).
+# New sweeps are named expression_law_size_uniform_<timestamp> and
+# expression_law_size_exponential_<timestamp> (SWEEP_NAME in each script). The four
+# below are the OLD sweeps from the archived command-line script: single-ligand, and
+# the uniform arm ran G=3,5,8 while the exponential arm ran G=3,5, so their curves
+# do not share a grid. `available()` lists everything on disk.
 SWEEPS = [
     "expression_law_heteromers_uniform_uniform_20260924_151241",
     "expression_law_homomers_uniform_uniform_20260924_151313",

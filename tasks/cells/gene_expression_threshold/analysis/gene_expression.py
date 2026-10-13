@@ -65,16 +65,23 @@ GOALS = {
 # rule: that is what once put a KT-trained sweep on the same axis as three
 # exactly-trained ones without anyone noticing.
 #
-# The mean entries below are replicate 0 of the G=5, C=30 complete-coverage
-# sweeps, which used exactly the gene sets this task reproduces.
+# Sweep names after the tasks/cells flattening, from SWEEP_NAME in each script:
+#   threshold_heteromers_<timestamp>   gene_expression_threshold/scripts/heteromers.py
+#   threshold_homomers_<timestamp>     gene_expression_threshold/scripts/homomers.py
+#   mean_heteromers_<timestamp>        gene_expression_mean/scripts/heteromers.py
+#   mean_homomers_<timestamp>          gene_expression_mean/scripts/homomers.py
+# The mean and threshold scripts are byte-identical apart from the readout block, so
+# a mean entry here is the right control for a threshold one. Older folders named
+# replicates_* / threshold_*_complete_* came from the archived _experiments.py
+# machinery and used a different objective; do not mix them onto one axis.
 
 TODO = "<paste the folder name printed above>"
 
 SWEEPS = [
-    ("threshold", "threshold", TODO),   # threshold_heteromers_complete_<timestamp>
-    ("threshold", "threshold", TODO),   # threshold_homomers_complete_<timestamp>
-    ("mean",      "mean",      "replicates_heteromers_complete_20260923_112537"),
-    ("mean",      "mean",      "replicates_homomers_complete_20260923_112624"),
+    ("threshold", "threshold", TODO),   # threshold_heteromers_<timestamp>
+    ("threshold", "threshold", TODO),   # threshold_homomers_<timestamp>
+    ("mean",      "mean",      TODO),   # mean_heteromers_<timestamp>
+    ("mean",      "mean",      TODO),   # mean_homomers_<timestamp>
 ]
 
 

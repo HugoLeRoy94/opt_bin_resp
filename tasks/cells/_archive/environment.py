@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Increase genes and cells at fixed cells/genes ratio and fixed environment.
+"""Vary environmental complexity independently of the expression strategy.
 
 Run each condition separately; use --dry_run to inspect the experiment first.
 """
@@ -7,20 +7,38 @@ import sys
 from pathlib import Path
 
 sys.path.append('/app')
-sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.config import RunConfig
-from tasks.cells.gene_expression_mean._experiments import (
+from tasks.cells._archive._experiments import (
     BASE_ENVIRONMENT, measurements, argument_parser, cell_axes, launch, make_rows,
 )
+
+# One-factor changes and their combination; a single chemical family throughout.
+# Increasing dimension holds family_spread * sqrt(latent_dim) constant.
+ENVIRONMENTS = {
+    "base": BASE_ENVIRONMENT,
+    "ligands": dict(BASE_ENVIRONMENT, profile="ligands", n_ligands=300),
+    "dimension": dict(BASE_ENVIRONMENT, profile="dimension", latent_dim=12,
+                      family_spread=.1 * (6 / 12) ** .5),
+    "mixtures": dict(BASE_ENVIRONMENT, profile="mixtures", mu_ligands_per_source=3.0),
+    "combined": dict(BASE_ENVIRONMENT, profile="combined", n_ligands=300, latent_dim=12,
+                     family_spread=.1 * (6 / 12) ** .5, mu_ligands_per_source=3.0),
+}
 
 
 def main(argv=None):
     parser = argument_parser(__doc__)
-    parser.add_argument("--n_genes", type=int, nargs="+", default=[3, 4, 5, 6])
+    parser.add_argument("--n_genes", type=int, nargs="+", default=[6])
     parser.add_argument("--cells_per_gene", type=int, default=3)
+    parser.add_argument("--profiles", nargs="+", choices=tuple(ENVIRONMENTS), default=list(ENVIRONMENTS))
+    parser.add_argument("--baseline_only", action="store_true", help="Screen one-gene baselines before full expression sweeps.")
     args = parser.parse_args(argv)
-    rows = make_rows(args, args.n_genes, [BASE_ENVIRONMENT], cells_per_gene=args.cells_per_gene)
+    if len(set(args.profiles)) != len(args.profiles):
+        parser.error("--profiles must not contain duplicates")
+    rows = make_rows(args, args.n_genes, [ENVIRONMENTS[p] for p in args.profiles],
+                     cells_per_gene=args.cells_per_gene,
+                     expression_levels=(1,) if args.baseline_only else None)
 
     config = RunConfig(
         # --- Environment: explicit lists are zipped, not crossed ---
@@ -60,10 +78,10 @@ def main(argv=None):
         final_measurement_fns=measurements(args),
 
         # --- Sweep: one runner, fresh environment and optimizer at every point ---
-        sweep_name=f"scaling_{args.condition}_{args.coverage}",
+        sweep_name=f"environment_{args.condition}_{args.coverage}",
         base_folder=args.base_folder, warm_start=False,
     )
-    return launch(config, args, rows, "scaling")
+    return launch(config, args, rows, "environment")
 
 
 if __name__ == "__main__":

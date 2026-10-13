@@ -59,10 +59,11 @@ def test_heteromer_and_homomer_arms_hold_the_same_cells(task):
 
 
 def test_count_alphabet_cap_is_not_monotonic_in_genes_per_cell():
-    """The reason a grouped-MI hump is not evidence on its own.
+    """The array's own information ceiling, which is a hump before any training.
 
-    The cap is log2(prod_j (n_j + 1)) over groups of identical cells, which tracks how
-    many DISTINCT repertoires the sampler drew, not the expression level.
+    The cap is log2(prod_j (n_j + 1)) over groups of identical cells. Grouping is
+    lossless for MI, so this bounds the real channel: it tracks how many DISTINCT
+    repertoires exist, C(G, g), which peaks at g = G/2 and collapses to one at g = G.
     """
     mean = load("gene_expression_mean/scripts/heteromers.py")
     caps = [math.log2(math.prod(n + 1 for n in Counter(s).values()))

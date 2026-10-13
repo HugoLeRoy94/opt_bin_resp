@@ -43,9 +43,16 @@ Both scripts print this before training:
 ```
 
 `grouped_mi` keeps only how many cells fired within each group of identical cells,
-so it cannot exceed log2 of that alphabet. The cap is itself a hump peaking at g=2,
-set purely by how many distinct repertoires the sampler drew. A measured maximum at
-two genes per cell is only a result if the curve is well BELOW this line.
+so it cannot exceed log2 of that alphabet. That is not an estimator limitation:
+grouping is lossless for MI (the count vector is a sufficient statistic and the
+label term cancels), so this is a real ceiling on what the array can carry.
+
+The cap is a hump peaking at g=2 because the number of distinct repertoires
+available is `C(5, g) = 5, 10, 10, 5, 1`. At g=5 all thirty cells express all five
+genes, so they are thirty noisy copies of one measurement and log2(31) bits is all
+there is. Read the measured curve against this line: ON it means the array is
+saturating its combinatorial ceiling, BELOW it means receptor chemistry is the
+binding constraint.
 
 The 7 GiB column is the fp32 (batch, states) training table, before gradients.
 

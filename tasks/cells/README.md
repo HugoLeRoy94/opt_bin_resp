@@ -42,9 +42,12 @@ numerical identity check and would be meaningless otherwise.
 ## Two traps these scripts now print at you
 
 **The grouped count-alphabet ceiling.** `grouped_mi` keeps only how many cells fired
-within each group of IDENTICAL cells, so it cannot exceed `log2(prod_j (n_j + 1))`.
-That number is set by how many distinct repertoires the sampler happened to draw,
-and it is not monotonic in genes per cell. For G=5, C=30 complete coverage it runs
+within each group of IDENTICAL cells. That is not an approximation: the count vector
+is a sufficient statistic, the label term cancels between `H(Y)` and `H(Y|X)`, and
+grouped MI equals the labelled-codeword MI exactly. So `log2(prod_j (n_j + 1))` is a
+real ceiling on what the ARRAY can carry. It is not monotonic in genes per cell,
+because the number of distinct repertoires available, `C(G, g)`, is not. For G=5,
+C=30 complete coverage it runs
 
 ```
 g=1  5 distinct   14.04 bits
@@ -54,9 +57,12 @@ g=4  5 distinct   13.66 bits
 g=5  1 distinct    4.95 bits
 ```
 
-— a hump peaking at g=2 with no biology in it. The four `gene_expression` scripts
-print this table before training. If a grouped-MI curve sits near that line, it is
-reporting the ceiling, not the array.
+— a hump peaking at g=2, tracking `C(5, g) = 5, 10, 10, 5, 1`. At g=5 every cell
+expresses every gene, so thirty identical cells are thirty noisy copies of ONE
+measurement and the array genuinely cannot carry more than log2(31) bits. The four
+`gene_expression` scripts print this table before training. A curve sitting on that
+line is saturating its combinatorial ceiling; a curve well below it is limited by
+receptor chemistry instead. Both are results, but they are different results.
 
 **The mixture regime.** `MU_LIGANDS` is the zero-truncated Poisson rate for ligands
 present per sniff. `1e-6` means effectively exactly one. Anything above 1 is a

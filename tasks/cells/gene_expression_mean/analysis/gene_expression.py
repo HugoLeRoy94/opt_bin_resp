@@ -122,13 +122,13 @@ plt.show()
 # %%
 # ── THE two-curve figure: MI vs genes/cell, homomers against full repertoire ──
 # Both sweeps optimize PRIMARY_MI, so this is a like-for-like comparison. The
-# count-alphabet ceiling log2(n_states) is drawn per condition whenever the grouped
-# estimator ran. READ IT BEFORE BELIEVING A BUMP. The alphabet is set by how many
-# DISTINCT repertoires the sampler drew, which is NOT monotonic in genes per cell:
-# for G=5, C=30 complete coverage it runs 14.0, 18.8, 18.6, 13.7, 5.0 bits across
-# g=1..5, a hump peaking at g=2 with no biology in it at all. A grouped-MI curve
-# sitting near that line is reporting the ceiling, not the array. The KT estimators
-# see full labelled responses and are not capped by it.
+# count-alphabet ceiling log2(n_states), drawn per condition whenever the grouped
+# estimator ran. Grouping is LOSSLESS for MI, so this is a real ceiling on the array,
+# not an estimator artifact — and the KT estimators are bounded by the same number
+# even though they see full labelled responses. It is non-monotonic in genes per cell
+# because C(G, g) is: for G=5, C=30 complete coverage it runs 14.0, 18.8, 18.6, 13.7,
+# 5.0 bits across g=1..5. A curve ON the line is saturating its combinatorics; a curve
+# BELOW it is limited by the receptors.
 PRIMARY_MI = "grouped MI"   # must match ENTROPY in the sweep scripts
 STYLES = {"Full repertoire": ("o-", "tab:blue"), "Homomers only": ("s-", "tab:orange")}
 

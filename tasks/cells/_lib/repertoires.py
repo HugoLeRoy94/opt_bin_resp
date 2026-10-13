@@ -72,10 +72,17 @@ def count_alphabet(gene_sets):
     """Size of the grouped count alphabet these cells produce: prod_j (n_j + 1).
 
     Cells with an IDENTICAL gene set are one group, and the grouped estimator keeps
-    only how many of them fired. So this number is the ceiling on grouped MI:
-    log2(count_alphabet) bits, no matter how good the receptors are. It is set by how
-    many DISTINCT repertoires the sampler happened to draw, which is not monotonic in
-    genes per cell — print it next to any grouped-MI curve before believing a bump.
+    only how many of them fired. That loses nothing: the count vector is a sufficient
+    statistic of the labelled response for the input, and the label term cancels
+    between H(Y) = H(K) + d and H(Y|X) = H(K|X) + d, so grouped MI equals the
+    labelled-codeword MI exactly.
+
+    So log2(count_alphabet) is a real ceiling on what the ARRAY can carry, however
+    good the receptors are. Thirty cells with one shared repertoire are thirty noisy
+    copies of one measurement. The ceiling is not monotonic in genes per cell because
+    the number of distinct repertoires available, C(G, g), is not — print it next to
+    any grouped-MI curve to tell "saturating its combinatorics" from "limited by the
+    receptors".
     """
     from collections import Counter
     import math

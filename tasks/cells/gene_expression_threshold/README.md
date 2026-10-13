@@ -37,9 +37,10 @@ the sweep name. If anything else appears, the comparison is confounded.
 
 ## The count-alphabet ceiling applies here too
 
-Same table, same warning as the mean task: the `grouped_mi` ceiling is 14.0, 18.8,
-18.6, 13.7, 5.0 bits across g=1..5, a hump peaking at g=2 that contains no biology.
-Both scripts print it before training.
+Same table as the mean task: the ceiling is 14.0, 18.8, 18.6, 13.7, 5.0 bits across
+g=1..5, a hump peaking at g=2 that tracks `C(5, g)`. Grouping is lossless for MI, so
+this is a real limit on the array, not an estimator artifact. Both scripts print it
+before training.
 
 Why theta placement matters: with uniform homomer abundances a cell's drive can only
 take the values k/g, so theta has to land in a gap between atoms. The analysis prints

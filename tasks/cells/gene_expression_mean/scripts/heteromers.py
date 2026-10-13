@@ -48,7 +48,7 @@ NOISE_SIGMA   = 0.0
 # sniff. Anything above 1 is a MIXTURE, which is a different problem, not a tweak:
 # it also breaks identity_channel / concentration_channel, which need presence
 # patterns to repeat.
-MU_LIGANDS = 1e-6
+MU_LIGANDS = 3.#1e-6
 
 # Per-ligand log10 concentration mean, drawn uniformly in +/- CONC_SPAN, one
 # independent vector per sweep point. 0.0 is the flat channel: every ligand has the
@@ -113,9 +113,12 @@ MANIFEST = dict(
 
 
 def main():
-    # grouped MI cannot exceed log2 of the count alphabet, and that alphabet is set
-    # by how many DISTINCT repertoires the sampler drew — which is NOT monotonic in
-    # genes per cell. Read this table before believing a bump in the MI curve.
+    # grouped MI cannot exceed log2 of the count alphabet. Grouping is LOSSLESS for
+    # MI — the count vector is a sufficient statistic and the label term cancels
+    # between H(Y) and H(Y|X) — so this is a real ceiling on the ARRAY, not an
+    # estimator artifact. It is non-monotonic in genes per cell because the number
+    # of distinct repertoires available, C(G, g), is. A curve ON this line is
+    # saturating its combinatorics; a curve BELOW it is limited by the receptors.
     print(f"{'g':>2} {'cells':>6} {'distinct':>9} {'count states':>13} "
           f"{'grouped MI cap':>15} {'train table':>12}")
     for g, sets in zip(GENES_PER_CELL, GENE_SETS):

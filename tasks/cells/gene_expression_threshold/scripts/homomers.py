@@ -128,9 +128,12 @@ MANIFEST = dict(
 
 
 def main():
-    # grouped MI cannot exceed log2 of the count alphabet, and that alphabet is set
-    # by how many DISTINCT repertoires the sampler drew — which is NOT monotonic in
-    # genes per cell. Read this table before believing a bump in the MI curve.
+    # grouped MI cannot exceed log2 of the count alphabet. Grouping is LOSSLESS for
+    # MI — the count vector is a sufficient statistic and the label term cancels
+    # between H(Y) and H(Y|X) — so this is a real ceiling on the ARRAY, not an
+    # estimator artifact. It is non-monotonic in genes per cell because the number
+    # of distinct repertoires available, C(G, g), is. A curve ON this line is
+    # saturating its combinatorics; a curve BELOW it is limited by the receptors.
     print(f"{'g':>2} {'cells':>6} {'distinct':>9} {'count states':>13} "
           f"{'grouped MI cap':>15} {'train table':>12}")
     for g, sets in zip(GENES_PER_CELL, GENE_SETS):

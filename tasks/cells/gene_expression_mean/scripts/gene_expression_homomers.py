@@ -27,7 +27,7 @@ WORLD_SEED = 0
 # Presence: ZTP rate for the number of ligands drawn per sniff (one source block,
 # so this is the only presence knob in play). > 1 puts the task in the mixture
 # regime, where identity_channel / concentration_channel stop being estimable.
-MU_LIGANDS = 3.0
+MU_LIGANDS = 0.001
 
 # Concentration: per-ligand log10 mean, drawn uniformly in [-SPAN, +SPAN], so
 # ligands differ in typical abundance by up to 2*SPAN decades. One independent

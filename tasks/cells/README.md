@@ -19,6 +19,8 @@ from `src/`, which is the actual library.
 | `gene_expression_threshold` | `homomers.py` | the same, homomers only | threshold | `grouped_mi`, exact |
 | `expression_law_mean` | `size_law_uniform.py` | mean genes/cell, FLAT size law | mean | `grouped_kt_mi`, counting |
 | `expression_law_mean` | `size_law_exponential.py` | the same, EXPONENTIAL size law | mean | `grouped_kt_mi`, counting |
+| `fig2` | `complete_heteromers.py` / `complete_homomers.py` | G x C x genes/cell, complete coverage | mean | `kt_mi`, counting |
+| `fig2` | `bernoulli_heteromers.py` / `bernoulli_homomers.py` | the same, independent per-gene expression | mean | `kt_mi`, counting |
 | `convergence` | `convergence.py` | nothing — one run against the log2(100) limit | mean | `kt_mi` |
 | `equivalence` | `as_cells.py` / `as_receptors.py` | nothing — a numerical identity check | mean | `kt_mi` |
 
@@ -30,6 +32,9 @@ from `src/`, which is the actual library.
 - `gene_expression_mean/heteromers.py` vs `gene_expression_threshold/heteromers.py`
   → the readout. **Every other constant in the two files is byte-identical.** Diff
   them if you doubt it.
+- the four `fig2` scripts against each other
+  → the sampling strategy (complete coverage vs independent) and the heteromer
+  contribution, on one axis. Same environment, same G x C grid, same objective.
 - `expression_law_mean/size_law_uniform.py` vs `size_law_exponential.py`
   → the shape of the law for how many genes a cell expresses. The gene law is
   uniform in both.

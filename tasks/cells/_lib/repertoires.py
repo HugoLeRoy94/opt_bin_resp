@@ -101,3 +101,43 @@ def heterogeneous_conc_means(n_points, n_ligands, log10_span, seed):
     return [tuple(((torch.rand(n_ligands, generator=generator) * 2.0 - 1.0)
                    * log10_span).tolist())
             for _ in range(n_points)]
+
+
+def bernoulli_p_for_mean(n_genes, mean, p_floor=0.02):
+    """Per-gene expression probability giving the requested mean genes per cell.
+
+    Each gene is expressed independently at probability p, so the NUMBER per cell is
+    induced (Binomial), never chosen. Cells expressing nothing are redrawn, so the
+    realised mean is the ZERO-TRUNCATED one, G*p / (1 - (1-p)^G), not G*p. Setting
+    p = mean/G would overshoot badly at small means.
+
+    p_floor exists because mean -> 1 needs p -> 0, and at p -> 0 almost every draw is
+    an empty cell that gets rejected, so the sampler stalls. The floor bounds the
+    rejection rate (acceptance ~ G*p_floor) at the price of a realised mean a little
+    above 1. Plot the REALISED mean, which bernoulli_gene_sets reports.
+    """
+    if not 1 <= mean <= n_genes:
+        raise ValueError(f"mean must lie in [1, {n_genes}], got {mean}.")
+    realised = lambda p: n_genes * p / (1 - (1 - p) ** n_genes)
+    if mean <= realised(p_floor):
+        return p_floor
+    lo, hi = p_floor, 1.0 - 1e-12
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if realised(mid) < mean else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+def bernoulli_gene_sets(n_genes, n_cells, mean, seed, p_floor=0.02):
+    """Independent per-gene expression at a uniform probability, size induced.
+
+    The counterpart to complete_coverage_gene_sets: no anchor, no size law, and no
+    coordination between cells. A gene can end up expressed nowhere, and the spread
+    of cell sizes is whatever the Binomial gives rather than something imposed.
+
+    Returns (gene_sets, p, realised_mean).
+    """
+    from src.cells import sample_gene_sets_bernoulli   # keeps this module import-light
+    p = bernoulli_p_for_mean(n_genes, mean, p_floor)
+    sets = tuple(sample_gene_sets_bernoulli(n_cells, n_genes, [p] * n_genes, seed=seed))
+    return sets, p, sum(map(len, sets)) / len(sets)

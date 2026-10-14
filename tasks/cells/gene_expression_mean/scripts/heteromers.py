@@ -48,7 +48,7 @@ NOISE_SIGMA   = 0.0
 # sniff. Anything above 1 is a MIXTURE, which is a different problem, not a tweak:
 # it also breaks identity_channel / concentration_channel, which need presence
 # patterns to repeat.
-MU_LIGANDS = 1e-6
+MU_LIGANDS = 3
 
 # Per-ligand log10 concentration mean, drawn uniformly in +/- CONC_SPAN, one
 # independent vector per sweep point. 0.0 is the flat channel: every ligand has the

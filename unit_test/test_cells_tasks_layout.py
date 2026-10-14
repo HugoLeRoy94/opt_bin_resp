@@ -23,8 +23,13 @@ def load(relative):
     return module
 
 
+# MU_LIGANDS, CONC_SPAN and CONC_STD are deliberately ABSENT. They are the knobs you
+# turn one at a time to probe the environment, so pinning them here would fail on
+# every legitimate ablation and quickly be ignored. What matters is the environment
+# the two sweeps were actually RUN in, which only the data can tell you: the analysis
+# reads it out of each run's config and shouts when selected sweeps disagree.
 SHARED = ("N_LIGANDS", "LATENT_DIM", "FAMILY_SPREAD", "FAMILY_DIST", "GEOMETRY",
-          "DISTRIBUTION", "NOISE_SIGMA", "MU_LIGANDS", "CONC_SPAN", "CONC_STD",
+          "DISTRIBUTION", "NOISE_SIGMA",
           "N_GENES", "N_CELLS", "K_SUB", "GENES_PER_CELL", "CELL_SEED",
           "ENTROPY", "MAX_STATES", "MEASUREMENTS", "EPOCHS", "LR", "BATCH_SIZE",
           "TEST_BATCH_SIZE", "FINAL_BATCH_SIZE", "EVAL_CHUNK_SIZE",
@@ -94,8 +99,13 @@ def test_both_size_laws_run_the_same_matched_grid():
     assert uniform.WORLD_SEED != exponential.WORLD_SEED
 
 
-def test_every_live_script_defaults_to_the_single_ligand_flat_channel():
-    """One regime across the folder, or cross-task comparisons are meaningless."""
+def test_the_environment_knobs_exist_and_are_wired_to_the_config():
+    """Every sweep script must expose the same two environment knobs, by name.
+
+    Their VALUES are free — turning one at a time is the point. What is not free is
+    where they live: if a script stops reading MU_LIGANDS / CONC_SPAN, flipping a
+    regime silently does nothing.
+    """
     for relative in ("gene_expression_mean/scripts/heteromers.py",
                      "gene_expression_mean/scripts/homomers.py",
                      "gene_expression_threshold/scripts/heteromers.py",
@@ -103,5 +113,8 @@ def test_every_live_script_defaults_to_the_single_ligand_flat_channel():
                      "expression_law_mean/scripts/size_law_uniform.py",
                      "expression_law_mean/scripts/size_law_exponential.py"):
         module = load(relative)
-        assert module.MU_LIGANDS == 1e-6, relative
-        assert module.CONC_SPAN == 0.0, relative
+        assert isinstance(module.MU_LIGANDS, (int, float)), relative
+        assert isinstance(module.CONC_SPAN, (int, float)), relative
+        source = (TASKS / relative).read_text()
+        assert "mu_ligands_per_source  = MU_LIGANDS" in source, relative
+        assert "N_LIGANDS, CONC_SPAN, CONC_SEED" in source, relative

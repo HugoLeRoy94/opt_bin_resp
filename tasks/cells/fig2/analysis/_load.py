@@ -62,12 +62,30 @@ def runs():
                     "genes": plan["realised_genes"], "target": plan["target_genes"],
                     "types": plan["distinct_gene_sets"],
                     "per_cell": per_cell,
+                    "replicate": plan.get("replicate", 0),
                     **{label: np.mean(result[key]) for label, key in METRICS.items()
                        if key in result},
                 })
     if not rows:
         raise SystemExit(f"No finished fig2 run under {DATA}. Run the four scripts first.")
     return pd.DataFrame(rows)
+
+
+def across_replicates(points, keys=("arm", "G", "C", "target")):
+    """Collapse replicates to mean and min/max.
+
+    Replicates are INDEPENDENT WORLDS, so their spread is the quantity that belongs
+    on an error bar. With only three of them a standard error would be fiction;
+    min/max is the honest summary and is what the figures band.
+    """
+    numeric = [c for c in points.columns
+               if c not in keys and pd.api.types.is_numeric_dtype(points[c])]
+    agg = points.groupby(list(keys))[numeric].agg(["mean", "min", "max"])
+    out = agg.xs("mean", axis=1, level=1).copy()
+    for column in numeric:
+        out[f"{column} lo"] = agg[(column, "min")]
+        out[f"{column} hi"] = agg[(column, "max")]
+    return out.reset_index()
 
 
 STYLE = {"complete/heteromers":  ("o-",  "tab:blue"),

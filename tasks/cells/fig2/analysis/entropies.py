@@ -16,18 +16,20 @@ from pathlib import Path
 HERE = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp/tasks/cells/fig2/analysis")
 sys.path.insert(0, str(HERE))
 import matplotlib.pyplot as plt
-from _load import runs, STYLE
+from _load import runs, across_replicates, STYLE
 
 G, C = 5, 50
 
-points = runs()
-panel = points[(points["G"] == G) & (points["C"] == C)].sort_values("genes")
+points = across_replicates(runs())
+panel = points[(points["G"] == G) & (points["C"] == C)].sort_values("target")
 
 fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 for arm, curve in panel.groupby("arm"):
     marker, colour = STYLE[arm]
     for ax, column in zip(axes, ("H(Y)", "H(Y|X)", "MI")):
         ax.plot(curve["genes"], curve[column], marker, color=colour, label=arm)
+        ax.fill_between(curve["genes"], curve[f"{column} lo"], curve[f"{column} hi"],
+                        color=colour, alpha=.15, linewidth=0)
 for ax, column in zip(axes, ("H(Y) response entropy", "H(Y|X) response noise",
                              "MI = H(Y) - H(Y|X)")):
     ax.set(xlabel="genes expressed per cell", ylabel="bits", title=column)

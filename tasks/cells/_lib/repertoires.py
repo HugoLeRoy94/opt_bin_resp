@@ -7,13 +7,15 @@ of picking which genes land in which cell.
 
 Everything below is pure: same arguments, same output, no global state.
 """
+import math
 import random
 
 import torch
 
 from src.geometry import _canonical_rotation
 
-__all__ = ["complete_coverage_gene_sets", "random_gene_sets", "homomers_only",
+__all__ = ["complete_coverage_gene_sets", "complete_coverage_gene_sets_mixed",
+           "random_gene_sets", "homomers_only",
            "receptor_pool", "shared_subsets",
            "count_alphabet", "heterogeneous_conc_means"]
 
@@ -45,6 +47,50 @@ def complete_coverage_gene_sets(n_genes, n_cells, genes_per_cell, seed):
     priority.scatter_(1, anchors[:, None], -1.)
     genes = priority.topk(genes_per_cell, dim=1, largest=False).indices.sort(dim=1).values
     return tuple(map(tuple, genes.tolist()))
+
+
+def complete_coverage_gene_sets_mixed(n_genes, n_cells, mean, seed):
+    """Complete coverage at a NON-INTEGER mean genes per cell.
+
+    complete_coverage_gene_sets gives every cell exactly `genes_per_cell` genes, so
+    the mean is forced to an integer and the covering arm cannot share an x axis with
+    a continuously-parameterised one. Here `n_big = round(frac * n_cells)` cells get
+    floor(mean)+1 genes and the rest get floor(mean).
+
+    Coverage survives because the anchor mechanism is untouched: every cell still
+    gets one mandatory gene dealt round-robin, so with n_cells >= n_genes every gene
+    is expressed somewhere whatever the sizes are. Which cells get the extra gene is
+    itself shuffled, so the big cells are not systematically the ones holding any
+    particular anchor.
+
+    Returns (gene_sets, realised_mean). The realised mean is exact when frac*n_cells
+    is a whole number and rounds otherwise, so plot the realised value, not the
+    target. At integer `mean` this reduces exactly to complete_coverage_gene_sets.
+    """
+    if not 1 <= mean <= n_genes:
+        raise ValueError(f"mean must lie in [1, {n_genes}], got {mean}.")
+    if n_cells < n_genes:
+        raise ValueError(f"Complete coverage needs n_cells >= n_genes, got {n_cells} < {n_genes}.")
+    base = int(math.floor(mean + 1e-9))
+    n_big = int(round((mean - base) * n_cells))
+    if n_big == 0:
+        return complete_coverage_gene_sets(n_genes, n_cells, base, seed), float(base)
+    if base + 1 > n_genes:
+        raise ValueError(f"mean {mean} needs {base + 1} genes but only {n_genes} exist.")
+
+    generator = torch.Generator().manual_seed(seed)
+    priority = torch.rand(n_cells, n_genes, generator=generator)
+    permutation = torch.randperm(n_genes, generator=generator)
+    anchors = permutation[torch.arange(n_cells) % n_genes]
+    anchors = anchors[torch.randperm(n_cells, generator=generator)]
+    priority.scatter_(1, anchors[:, None], -1.)
+
+    sizes = torch.full((n_cells,), base, dtype=torch.long)
+    sizes[torch.randperm(n_cells, generator=generator)[:n_big]] = base + 1
+    gene_sets = tuple(
+        tuple(sorted(priority[c].topk(int(sizes[c]), largest=False).indices.tolist()))
+        for c in range(n_cells))
+    return gene_sets, sum(map(len, gene_sets)) / n_cells
 
 
 def random_gene_sets(n_genes, n_cells, genes_per_cell, seed):

@@ -31,8 +31,23 @@ first point rather than a silent error.
 
 ## The grid
 
-G in {2,3,4,5} x C in {10,20,30,50} x genes-per-cell 1..G = **56 runs per script**,
-224 in total. Largest receptor pool is 629 (G=5, g=5, heteromers).
+G in {2,3,4,5} x C in **{20,30}** x mean genes/cell from 1.0 to G in steps of
+**0.25** x **3 replicates** = **264 runs per script**, 1056 in total, about 39 h.
+
+Replicates are independent worlds, not repeated measurements: each row draws its own
+latent space and its own concentration means, so their spread is what belongs on an
+error bar. The analyses band min/max across them; with n=3 a standard error would be
+fiction.
+
+**C = 50 is gone on purpose.** H(K|X) is a sum over cells, and at C=50 it reaches
+~15 bits on this grid, which needs a counting budget of 2^30 (345 h) to keep the
+bias under 0.2 bits. At C=30 the same grid projects 0.04 bits at 2^26. The old C=50
+runs are exactly where MI went negative.
+
+The complete-coverage arm now reaches non-integer means through
+`complete_coverage_gene_sets_mixed`, which splits cells between floor(mean) and
+floor(mean)+1 genes while leaving the anchor mechanism intact, so coverage still
+holds. Both arms therefore sit on the same continuous x axis.
 
 ## Environment
 
@@ -63,6 +78,13 @@ alphabet is `2^C`, which at C=50 is `10^15` symbols, so it is pinned near
 
 The runner builds its own cell grouping for `grouped_counting`, so a grouped loss is
 not required.
+
+**Pre-flight budget check.** Each script calls
+`counting_budget_report` from `tasks/cells/_lib/budget.py` before building the
+config and **raises** if the projected counting bias exceeds 0.2 bits. Above that
+the bias differs between design points, so it distorts the curve SHAPE rather than
+shifting it, and no amount of staring at the figure afterwards reveals that. This is
+what caught C=50: it fails in seconds instead of after 39 h.
 
 **No per-epoch evaluation.** `per_epoch_measure=False`, so the only thing logged
 during training is `loss` and `train_mutual_information` every 1% of epochs, reused

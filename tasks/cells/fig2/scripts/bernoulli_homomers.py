@@ -5,14 +5,18 @@ Gene sets drawn independently per gene at a uniform probability, with no size
 law; each cell is pinned to the homomers of its genes.
 
 One of four arms. The other three are complete_heteromers.py, complete_homomers.py, bernoulli_heteromers.py. All four hold the same
-environment, the same G x C grid and the same objective, so the only thing that
-differs across the figure is how gene sets are drawn and what each cell may
-assemble.
+environment, the same grid and the same objective, so the only thing that differs
+across the figure is how gene sets are drawn and what each cell may assemble.
 
 Every parameter is a constant below. No command line.
 
-Grid: G in {2,3,4,5} x C in {10,20,30,50} x genes-per-cell 1..G, which is
-56 independent optimizations.
+Grid: G in {2,3,4,5} x C in {20,30} x mean genes/cell from 1.0 to G in steps of
+0.25, x 3 replicates = 264 independent optimizations.
+
+Replicates are INDEPENDENT WORLDS, not repeated measurements: each row draws its own
+latent space from the torch stream and its own concentration means, so the spread
+across them is what belongs on an error bar. A gap between arms smaller than that
+spread is not a result.
 
     python3 tasks/cells/fig2/scripts/bernoulli_homomers.py
     bash tasks/run_remote.sh cells/fig2 bernoulli_homomers.py 0
@@ -25,10 +29,12 @@ from pathlib import Path
 sys.path.append('/app')
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import numpy as np
 import torch
 
 from src.config import RunConfig
 from src.run import SweepRunner
+from _lib.budget import counting_budget_report
 from _lib.repertoires import (bernoulli_gene_sets, count_alphabet, heterogeneous_conc_means, homomers_only)
 
 # ─── Environment ────────────────────────────────────────────────────────────
@@ -42,23 +48,24 @@ NOISE_SIGMA   = 0.0
 MU_LIGANDS    = 3.0    # ZTP rate: ~3 of the 100 ligands present per sniff
 CONC_SPAN     = 1.0    # log10 mean drawn in [-1, +1] -> 2 decades of variation
 CONC_STD      = 1.0    # 1 decade of log10 spread per ligand, per sniff
-CONC_SEED     = 44
+CONC_SEED     = 64
 
 # ─── The design ─────────────────────────────────────────────────────────────
+# C = 50 is deliberately ABSENT. H(K|X) is a sum over cells, and at C=50 it reaches
+# ~15 bits, which needs a counting budget of 2^30 (345 h) to stay under 0.2 bits of
+# bias. At C=30 the same grid projects 0.04 bits at 2^26. The pre-flight below will
+# refuse to launch if you put C=50 back without raising FINAL_BATCH_SIZE.
 N_GENES_LIST = (2, 3, 4, 5)
-N_CELLS_LIST = (10, 20, 30, 50)
+N_CELLS_LIST = (20, 30)
+GENE_STEP    = 0.25
 K_SUB        = 5
+REPLICATES   = 3
 CELL_SEED    = 0
 
 # ─── Objective and measurements ─────────────────────────────────────────────
-# kt_mi trains; grouped_counting is the ONLY measurement, and it already carries
-# everything the analyses need:
-#   mutual_information_grouped_counting_mm        MI
-#   response_entropy_grouped_counting_mm          H(Y)
-#   conditional_entropy_response_grouped_counting H(Y|X)   (analytic, not sampled)
-#   grouped_counting_K_hat / _missing_mass        alphabet coverage
-# They are one estimator family, so MI = H(Y) - H(Y|X) holds exactly in the figure.
-# The runner builds its own cell grouping, so a grouped loss is not required.
+# kt_mi trains; grouped_counting is the ONLY measurement and already carries
+# everything the analyses need: MI, H(Y), H(Y|X) and alphabet coverage, as one
+# estimator family so MI = H(Y) - H(Y|X) holds exactly.
 ENTROPY      = "kt_mi"
 MEASUREMENTS = ("grouped_counting",)
 
@@ -67,41 +74,40 @@ EPOCHS           = 5000
 LR               = 1e-2
 BATCH_SIZE       = 4096
 TEST_BATCH_SIZE  = 4096
-FINAL_BATCH_SIZE = 2 ** 20   # scripts/evaluation_budget.py re-measures at other budgets
+FINAL_BATCH_SIZE = 2 ** 26   # see the pre-flight: 2^20 made C=50 MI go NEGATIVE
 EVAL_CHUNK_SIZE  = 512
 TEMPERATURE      = 0.05
 INIT_TEMPERATURE = 3.0
-WORLD_SEED       = 20260204
+MAX_BIAS         = 0.2       # bits; above this the bias distorts the curve SHAPE
+WORLD_SEED       = 20260404
 
 BASE_FOLDER = "/app/data/fig2"
 SWEEP_NAME  = "fig2_bernoulli_homomers"
 
 
 def design():
-    """One row per planned run: every (G, C, genes per cell) in the grid.
-
-    The seed is unique per row, so the analysis can join a finished run back to the
-    design point it was supposed to be.
-    """
+    """One row per planned run: replicate x G x C x mean genes per cell."""
     rows = []
-    for n_genes in N_GENES_LIST:
-        for n_cells in N_CELLS_LIST:
-            for target in range(1, n_genes + 1):
-                seed = CELL_SEED * 100000 + n_genes * 10000 + n_cells * 10 + target
-                # Independent expression: each gene on at probability p, the SAME p for
-                # every gene, so the number per cell is induced (Binomial) rather than
-                # chosen. p is solved for the target mean; empty cells are redrawn, so
-                # the realised mean sits slightly above the target at target=1.
-                sets, probability, realised = bernoulli_gene_sets(
-                    n_genes, n_cells, float(target), seed)
-                rows.append(dict(
-                    strategy="bernoulli", condition="homomers",
-                    n_genes=n_genes, n_cells=n_cells, cell_sampling_seed=seed,
-                    target_genes=float(target), realised_genes=realised,
-                    gene_probability=probability, gene_sets=sets,
-                    distinct_gene_sets=len(set(sets)),
-                    genes_seen=len({g for gs in sets for g in gs}),
-                    count_states=count_alphabet(sets)))
+    for replicate in range(REPLICATES):
+        for n_genes in N_GENES_LIST:
+            for n_cells in N_CELLS_LIST:
+                for target in np.arange(1.0, n_genes + 1e-9, GENE_STEP):
+                    target = round(float(target), 4)
+                    seed = (replicate * 1000000 + n_genes * 10000
+                            + n_cells * 100 + int(round(target * 4)))
+                    # Independent expression: each gene on at probability p, the
+                    # SAME p for every gene, so the number per cell is induced
+                    # (Binomial) rather than chosen. p is solved for the target mean.
+                    sets, probability, realised = bernoulli_gene_sets(
+                        n_genes, n_cells, target, seed)
+                    rows.append(dict(
+                        strategy="bernoulli", condition="homomers",
+                        replicate=replicate, n_genes=n_genes, n_cells=n_cells,
+                        cell_sampling_seed=seed, target_genes=target,
+                        realised_genes=realised, gene_probability=probability,
+                        gene_sets=sets, distinct_gene_sets=len(set(sets)),
+                        genes_seen=len({g for gs in sets for g in gs}),
+                        count_states=count_alphabet(sets)))
     return rows
 
 
@@ -110,14 +116,20 @@ ROWS = design()
 
 def main():
     print(f"{'G':>2} {'C':>4} {'target':>7} {'realised':>9} {'p':>6} "
-          f"{'types':>6} {'seen':>5} {'count states':>13}")
+          f"{'types':>6} {'seen':>5}   (replicate 0 only)")
     for row in ROWS:
-        print(f"{row['n_genes']:>2} {row['n_cells']:>4} {row['target_genes']:>7.1f} "
+        if row["replicate"]:
+            continue
+        print(f"{row['n_genes']:>2} {row['n_cells']:>4} {row['target_genes']:>7.2f} "
               f"{row['realised_genes']:>9.2f} {row['gene_probability']:>6.3f} "
-              f"{row['distinct_gene_sets']:>6} {row['genes_seen']:>3}/{row['n_genes']:<2} "
-              f"{row['count_states']:>13,}")
-    print(f"\n{len(ROWS)} runs; {N_LIGANDS} ligands, mu={MU_LIGANDS:g} per sniff, "
-          f"conc means over {2 * CONC_SPAN:g} decades, std {CONC_STD:g} decades")
+              f"{row['distinct_gene_sets']:>6} {row['genes_seen']:>3}/{row['n_genes']:<2}")
+    print(f"\n{len(ROWS)} runs ({REPLICATES} replicates); {N_LIGANDS} ligands, "
+          f"mu={MU_LIGANDS:g} per sniff, conc means over {2 * CONC_SPAN:g} decades")
+
+    # Refuses to launch if sampled counting cannot resolve this design. Checked on
+    # replicate 0, which has the same group structure as the others.
+    counting_budget_report([r for r in ROWS if r["replicate"] == 0],
+                           FINAL_BATCH_SIZE, limit=MAX_BIAS)
 
     torch.manual_seed(WORLD_SEED)
     config = RunConfig(
@@ -171,9 +183,6 @@ def main():
         test_batch_size       = TEST_BATCH_SIZE,
         final_test_batch_size = FINAL_BATCH_SIZE,
         eval_chunk_size       = EVAL_CHUNK_SIZE,
-        # No per-epoch evaluation: stats.csv still gets `loss` and
-        # `train_mutual_information` every 1% of epochs, reusing the objective already
-        # computed for the gradient step, so the convergence trace costs nothing.
         per_epoch_measure     = False,
 
         # --- Sweep ---
@@ -186,6 +195,7 @@ def main():
         arguments=dict(entropy=ENTROPY, mu_ligands=MU_LIGANDS, conc_span=CONC_SPAN,
                        conc_std=CONC_STD, n_ligands=N_LIGANDS, epochs=EPOCHS,
                        batch_size=BATCH_SIZE, final_batch_size=FINAL_BATCH_SIZE,
+                       gene_step=GENE_STEP, replicates=REPLICATES,
                        world_seed=WORLD_SEED, cell_seed=CELL_SEED),
         rows=[dict(r, gene_sets=[list(g) for g in r["gene_sets"]]) for r in ROWS],
     )

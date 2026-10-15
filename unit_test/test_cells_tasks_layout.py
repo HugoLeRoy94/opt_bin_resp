@@ -118,3 +118,61 @@ def test_the_environment_knobs_exist_and_are_wired_to_the_config():
         source = (TASKS / relative).read_text()
         assert "mu_ligands_per_source  = MU_LIGANDS" in source, relative
         assert "N_LIGANDS, CONC_SPAN, CONC_SEED" in source, relative
+
+
+# ---------------------------------------------------------------------------
+# Mixed-size complete coverage: a continuous axis that still covers every gene
+# ---------------------------------------------------------------------------
+
+def test_mixed_coverage_hits_the_mean_and_still_covers():
+    """Continuous mean is the whole point; losing coverage would silently change
+    the experiment into the independent one."""
+    import sys
+    sys.path.insert(0, str(TASKS))
+    from _lib.repertoires import (complete_coverage_gene_sets,
+                                  complete_coverage_gene_sets_mixed)
+    for n_cells in (20, 50):
+        for mean in (1.0, 1.25, 1.5, 2.75, 4.0, 5.0):
+            sets, realised = complete_coverage_gene_sets_mixed(5, n_cells, mean, 0)
+            assert len(sets) == n_cells
+            assert abs(realised - mean) <= 1.0 / n_cells, (n_cells, mean, realised)
+            assert {g for gs in sets for g in gs} == set(range(5)), (n_cells, mean)
+            assert {len(gs) for gs in sets} <= {int(mean), int(mean) + 1}
+    # at an integer mean it must BE the integer generator, or the two arms of the
+    # sweep would silently use different samplers at the grid points they share
+    for g in (1, 3, 5):
+        assert complete_coverage_gene_sets_mixed(5, 20, float(g), 0)[0] == \
+               complete_coverage_gene_sets(5, 20, g, 0)
+
+
+def test_mixed_coverage_rejects_impossible_means():
+    import sys
+    sys.path.insert(0, str(TASKS))
+    from _lib.repertoires import complete_coverage_gene_sets_mixed
+    with pytest.raises(ValueError, match="mean must lie"):
+        complete_coverage_gene_sets_mixed(5, 20, 5.5, 0)
+    with pytest.raises(ValueError, match="n_cells >= n_genes"):
+        complete_coverage_gene_sets_mixed(8, 5, 2.0, 0)
+
+
+# ---------------------------------------------------------------------------
+# The pre-flight that stops a doomed sweep before it starts
+# ---------------------------------------------------------------------------
+
+def test_counting_budget_refuses_an_unresolvable_design():
+    """The failure this guards against already happened twice: MI went NEGATIVE
+    because H(K|X) exceeded log2(B)."""
+    import sys
+    sys.path.insert(0, str(TASKS))
+    from _lib.budget import counting_budget_report, projected_counting_bias
+    from _lib.repertoires import complete_coverage_gene_sets
+    rows = [{"gene_sets": complete_coverage_gene_sets(5, 50, g, 0)} for g in (1, 2, 3)]
+    # bias must fall as the budget rises, and the guard must fire on a small one
+    big, _, _ = projected_counting_bias(rows[1]["gene_sets"], 2 ** 26)
+    small, _, _ = projected_counting_bias(rows[1]["gene_sets"], 2 ** 16)
+    assert small > big
+    counting_budget_report(rows, 2 ** 26, limit=0.2)
+    with pytest.raises(ValueError, match="exceeds"):
+        counting_budget_report(rows, 2 ** 16, limit=0.2)
+
+

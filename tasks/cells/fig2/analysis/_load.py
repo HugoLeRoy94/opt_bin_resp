@@ -12,6 +12,7 @@ ROOT = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
 sys.path.insert(0, str(ROOT))
 import numpy as np
 import pandas as pd
+from src.cells import expand_gene_set
 from src.IO import SweepLoader
 
 DATA = ROOT / "data/fig2"
@@ -45,6 +46,14 @@ def runs():
                     continue
                 plan = design[cfg.cell_sampling_seed]
                 result = json.loads(path.read_text())
+                # Receptors averaged per cell — the dilution knob. With the mean
+                # readout a cell's firing probability is the abundance-weighted mean
+                # of its receptors, so this is what pushes the drive toward 0.5.
+                if cfg.cell_receptors is not None:
+                    per_cell = np.mean([len(c) for c in cfg.cell_receptors])
+                else:
+                    per_cell = np.mean([len(expand_gene_set(g, cfg.k_sub, True))
+                                        for g in cfg.cell_gene_sets])
                 rows.append({
                     "sweep": root.name, "run": run_dir,
                     "strategy": plan["strategy"], "condition": plan["condition"],
@@ -52,6 +61,7 @@ def runs():
                     "G": plan["n_genes"], "C": plan["n_cells"],
                     "genes": plan["realised_genes"], "target": plan["target_genes"],
                     "types": plan["distinct_gene_sets"],
+                    "per_cell": per_cell,
                     **{label: np.mean(result[key]) for label, key in METRICS.items()
                        if key in result},
                 })

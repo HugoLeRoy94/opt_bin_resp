@@ -7,9 +7,14 @@ of picking which genes land in which cell.
 
 Everything below is pure: same arguments, same output, no global state.
 """
+import random
+
 import torch
 
+from src.geometry import _canonical_rotation
+
 __all__ = ["complete_coverage_gene_sets", "random_gene_sets", "homomers_only",
+           "receptor_pool", "shared_subsets",
            "count_alphabet", "heterogeneous_conc_means"]
 
 
@@ -141,3 +146,54 @@ def bernoulli_gene_sets(n_genes, n_cells, mean, seed, p_floor=0.02):
     p = bernoulli_p_for_mean(n_genes, mean, p_floor)
     sets = tuple(sample_gene_sets_bernoulli(n_cells, n_genes, [p] * n_genes, seed=seed))
     return sets, p, sum(map(len, sets)) / len(sets)
+
+
+def receptor_pool(n_genes, k_sub, n_distinct, size, seed, use_interface_model=True):
+    """`size` distinct receptors, each built from exactly `n_distinct` genes.
+
+    The knob this exists for: a receptor's binding pocket is formed at the interface
+    between adjacent subunits, so a HOMOMER (n_distinct=1) presents k_sub copies of
+    one pocket while a fully mixed word presents k_sub different ones. Varying
+    n_distinct at FIXED pool size and fixed receptors-per-cell isolates that
+    per-receptor expressiveness from every other effect.
+
+    n_distinct=1 can only ever yield n_genes receptors, so size <= n_genes there.
+    """
+    if not 1 <= n_distinct <= k_sub:
+        raise ValueError(f"n_distinct must lie in [1, {k_sub}], got {n_distinct}.")
+    if n_distinct == 1:
+        if size > n_genes:
+            raise ValueError(f"Only {n_genes} homomers exist, asked for {size}.")
+        rng = random.Random(seed)
+        return tuple(sorted(tuple((g,) * k_sub) for g in rng.sample(range(n_genes), size)))
+
+    rng = random.Random(seed)
+    found = set()
+    for _ in range(200000):
+        if len(found) == size:
+            break
+        genes = rng.sample(range(n_genes), n_distinct)
+        word = tuple(genes) + tuple(rng.choice(genes) for _ in range(k_sub - n_distinct))
+        word = tuple(word[i] for i in rng.sample(range(k_sub), k_sub))   # shuffle positions
+        if len(set(word)) != n_distinct:
+            continue
+        found.add(_canonical_rotation(word) if use_interface_model else tuple(sorted(word)))
+    if len(found) < size:
+        raise ValueError(f"Only found {len(found)} receptors with {n_distinct} distinct "
+                         f"genes out of {n_genes}; asked for {size}.")
+    return tuple(sorted(found))
+
+
+def shared_subsets(n_cells, pool_size, per_cell, seed):
+    """One sorted tuple of `per_cell` POOL INDICES per cell, drawn without replacement.
+
+    Indices, not receptors, so the same pattern can be applied to several different
+    pools. Two arms built from the same subsets have byte-identical cell-type
+    structure — same number of distinct repertoires, same multiplicities — and differ
+    only in what the pool contains. That is what makes the comparison single-variable.
+    """
+    if per_cell > pool_size:
+        raise ValueError(f"per_cell={per_cell} exceeds pool_size={pool_size}.")
+    rng = random.Random(seed)
+    return tuple(tuple(sorted(rng.sample(range(pool_size), per_cell)))
+                 for _ in range(n_cells))

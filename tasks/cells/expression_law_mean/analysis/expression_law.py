@@ -45,10 +45,12 @@ SAVE_FIGURES = False
 # the uniform arm ran G=3,5,8 while the exponential arm ran G=3,5, so their curves
 # do not share a grid. `available()` lists everything on disk.
 SWEEPS = [
-    "expression_law_heteromers_uniform_uniform_20260924_151241",
-    "expression_law_homomers_uniform_uniform_20260924_151313",
-    "expression_law_heteromers_exponential_exponential_20260924_190805",
-    "expression_law_homomers_exponential_exponential_20260924_190829",
+    #"expression_law_heteromers_uniform_uniform_20260924_151241",
+    #"expression_law_homomers_uniform_uniform_20260924_151313",
+    #"expression_law_heteromers_exponential_exponential_20260924_190805",
+    #"expression_law_homomers_exponential_exponential_20260924_190829",
+    "expression_law_size_law_heteromers_exponential_uniform_20261013_094316",
+    "expression_law_size_law_heteromers_uniform_uniform_20261013_094259",
 ]
 
 

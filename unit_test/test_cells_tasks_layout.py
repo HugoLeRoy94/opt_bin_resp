@@ -176,3 +176,42 @@ def test_counting_budget_refuses_an_unresolvable_design():
         counting_budget_report(rows, 2 ** 16, limit=0.2)
 
 
+# ---------------------------------------------------------------------------
+# fig3
+# ---------------------------------------------------------------------------
+
+FIG3_SHARED = ("N_LIGANDS", "LATENT_DIM", "FAMILY_SPREAD", "FAMILY_DIST", "GEOMETRY",
+               "DISTRIBUTION", "NOISE_SIGMA", "N_GENES", "N_CELLS", "GENES_PER_CELL",
+               "REPLICATES", "CELL_SEED", "ENTROPY", "MEASUREMENTS", "EPOCHS", "LR",
+               "BATCH_SIZE", "TEST_BATCH_SIZE", "FINAL_BATCH_SIZE", "EVAL_CHUNK_SIZE",
+               "TEMPERATURE", "INIT_TEMPERATURE", "MU_LIGANDS", "CONC_SPAN", "CONC_STD")
+
+
+def test_fig3_arms_differ_only_in_k_sub():
+    """Three curves on one axis are worthless if anything else drifts between them."""
+    arms = {k: load(f"fig3/scripts/k{k}.py") for k in (2, 3, 5)}
+    reference = arms[5]
+    for k, module in arms.items():
+        for name in FIG3_SHARED:
+            assert getattr(module, name) == getattr(reference, name), (k, name)
+        assert module.K_SUB == k
+        assert module.ROWS[0]["gene_sets"] == reference.ROWS[0]["gene_sets"]
+    # ... but they must NOT share a world
+    seeds = {(m.WORLD_SEED, m.CONC_SEED) for m in arms.values()}
+    assert len(seeds) == 3
+
+
+def test_fig3_pool_saturates_soonest_at_low_k_sub():
+    """The mechanism the task tests: at k=2 the pool is exhausted by g=2, so any
+    decline past there is pure dilution."""
+    import sys
+    sys.path.insert(0, str(TASKS.parent.parent))
+    from src.cells import expand_gene_set
+    pools = {k: [len(expand_gene_set(range(g), k, True)) for g in range(1, 6)]
+             for k in (2, 3, 5)}
+    assert pools[2] == [1, 3, 6, 10, 15]
+    assert pools[5] == [1, 8, 51, 208, 629]
+    # union over cells covering every pair saturates at g=2 for k=2
+    assert len(expand_gene_set(range(2), 2, True)) == 3
+    for k in (2, 3, 5):
+        assert pools[k] == sorted(pools[k])

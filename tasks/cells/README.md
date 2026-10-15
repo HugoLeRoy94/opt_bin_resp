@@ -21,6 +21,7 @@ from `src/`, which is the actual library.
 | `expression_law_mean` | `size_law_exponential.py` | the same, EXPONENTIAL size law | mean | `grouped_kt_mi`, counting |
 | `fig2` | `complete_heteromers.py` / `complete_homomers.py` | G x C x genes/cell, complete coverage | mean | `kt_mi`, counting |
 | `fig2` | `bernoulli_heteromers.py` / `bernoulli_homomers.py` | the same, independent per-gene expression | mean | `kt_mi`, counting |
+| `fig3` | `k2.py` / `k3.py` / `k5.py` | genes/cell at three subunit counts, to move the MI peak | mean | `kt_mi`, counting |
 | `dilution` | `homomers.py` / `dimers.py` / `full_heteromers.py` | receptors per cell, at fixed pool size and cell-type structure | mean | `kt_mi`, counting |
 | `convergence` | `convergence.py` | nothing — one run against the log2(100) limit | mean | `kt_mi` |
 | `equivalence` | `as_cells.py` / `as_receptors.py` | nothing — a numerical identity check | mean | `kt_mi` |
@@ -33,6 +34,9 @@ from `src/`, which is the actual library.
 - `gene_expression_mean/heteromers.py` vs `gene_expression_threshold/heteromers.py`
   → the readout. **Every other constant in the two files is byte-identical.** Diff
   them if you doubt it.
+- the three `fig3` scripts against each other
+  → whether the MI maximum moves with `k_sub`. Same gene sets, same
+  environment; only the number of subunits per receptor differs.
 - the three `dilution` scripts against each other
   → heteromerisation with dilution, pool size and cell-type structure all
   pinned. A vertical gap is heteromerisation; the slope is dilution.

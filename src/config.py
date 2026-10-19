@@ -128,6 +128,12 @@ class SingleRunConfig:
     # When True, use the per-interface biophysics model (dual-face units, ordered ring).
     use_interface_model: bool = False
 
+    # One learnable (E_base, E_max) pair for the WHOLE array instead of one per gene.
+    # This is assumption A6 of analytics/homomer_array_mi.tex: the closed form there
+    # describes a shared-energy array, so set this True whenever a run is meant to be
+    # compared against it. Classic per-unit model only (not use_interface_model).
+    shared_unit_energies: bool = False
+
     # --- Performance (exact / near-exact; no effect on the model) ---
     # Evaluate each DISTINCT energy source (gene, or unique +/- face pocket) once and
     # contract to receptors with one matmul, instead of gathering k_sub values per
@@ -356,6 +362,9 @@ class RunConfig:
 
     # --- Interface model ---
     use_interface_model: Union[bool, List[bool]] = False
+
+    # --- Shared unit energies (A6 of the analytics; see SingleRunConfig) ---
+    shared_unit_energies: Union[bool, List[bool]] = False
 
     # --- Performance ---
     use_composition: Union[bool, List[bool]] = True

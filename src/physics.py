@@ -179,9 +179,9 @@ class BaseReceptor(nn.Module, ABC):
                 )  # (R, k)
         else:
             ref_latents   = env.unit_latent[receptor_indices]                               # (R, k, D)
-            base_energies = env.base_energy_u[receptor_indices]                             # (R, k)
+            base_energies = env.base_energies()[receptor_indices]                           # (R, k)
             if env.affinity_kernel == "gaussian":
-                max_energies = torch.nn.functional.softplus(env.max_energy_u_raw)[receptor_indices]  # (R, k)
+                max_energies = torch.nn.functional.softplus(env.max_energies_raw())[receptor_indices]  # (R, k)
 
         # 5. Calculate energies using the configured affinity kernel
         diff = v_samples.view(n_quad, 1, 1, env.latent_dim) - ref_latents.view(1, *ref_latents.shape)
@@ -197,7 +197,7 @@ class BaseReceptor(nn.Module, ABC):
                     + torch.nn.functional.softplus(env.energy_slope_raw_minus[receptor_indices.roll(-1, dims=1)])
                 )
             else:
-                dE = torch.nn.functional.softplus(env.energy_slope_raw)[receptor_indices]
+                dE = torch.nn.functional.softplus(env.energy_slopes_raw())[receptor_indices]
             E_open_samples = base_energies.unsqueeze(0) + dE.unsqueeze(0) * dist_sq
 
         # 5. Compute p_open for each sample and concentration, then average

@@ -409,13 +409,13 @@ def plot_latent_radar_chart(env, receptor_indices, receptors_to_plot=None, famil
     diff = env.unit_latent.unsqueeze(1) - env.family_latent.unsqueeze(0)  # (U, F, D)
     dist_sq = (diff ** 2).sum(dim=-1)  # (U, F)
     if env.affinity_kernel == "gaussian":
-        max_e = torch.nn.functional.softplus(env.max_energy_u_raw)  # (U,)
+        max_e = torch.nn.functional.softplus(env.max_energies_raw())  # (U,)
         lambda_sq = env.kernel_params[0] ** 2
-        unit_family_energies = (env.base_energy_u.unsqueeze(1)
+        unit_family_energies = (env.base_energies().unsqueeze(1)
                                 + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))).cpu()
     else:  # "quadratic"
-        dE = torch.nn.functional.softplus(env.energy_slope_raw)  # (U,)
-        unit_family_energies = (env.base_energy_u.unsqueeze(1) + dE.unsqueeze(1) * dist_sq).cpu()
+        dE = torch.nn.functional.softplus(env.energy_slopes_raw())  # (U,)
+        unit_family_energies = (env.base_energies().unsqueeze(1) + dE.unsqueeze(1) * dist_sq).cpu()
     
     # 2. Compute Receptor Energies
     # Indexing yields (N_Receptors, k_sub, n_families)

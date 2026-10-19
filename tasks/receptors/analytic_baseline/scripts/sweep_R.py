@@ -153,6 +153,11 @@ def main():
         block_shared_conc_mean = False,
 
         use_interface_model = False,
+        # A6 of the analytics: ONE learnable (E_base, E_max) pair for the whole
+        # array. Without this the simulator optimises n_genes of each, which is a
+        # different model from the closed form, and the comparison is only valid
+        # where the optimiser happens to make them equal.
+        shared_unit_energies = True,
 
         # --- concentration: lognormal, identical for every ligand ------------
         conc_model_type = "lognormal",

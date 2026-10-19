@@ -29,16 +29,22 @@ def load(goal: str = GOAL, **filters):
 
 
 def _emax(env) -> np.ndarray:
-    """Learned selectivity ceiling per gene, natural-log units."""
-    if hasattr(env, "max_energy_u_raw"):
-        return F.softplus(env.max_energy_u_raw.detach()).cpu().numpy()
+    """Learned selectivity ceiling per gene, natural-log units.
+
+    Goes through env.max_energies_raw(), which returns (n_genes,) whether the
+    underlying parameter is per-gene or the single shared scalar of
+    shared_unit_energies. Reading the parameter directly would break in shared
+    mode, where no attribute of that name exists.
+    """
+    if hasattr(env, "max_energies_raw"):
+        return F.softplus(env.max_energies_raw().detach()).cpu().numpy()
     return 0.5 * (F.softplus(env.max_energy_u_raw_plus.detach())
                   + F.softplus(env.max_energy_u_raw_minus.detach())).cpu().numpy()
 
 
 def _ebase(env) -> np.ndarray:
-    if hasattr(env, "base_energy_u"):
-        return env.base_energy_u.detach().cpu().numpy()
+    if hasattr(env, "base_energies"):
+        return env.base_energies().detach().cpu().numpy()
     return 0.5 * (env.base_energy_u_plus.detach()
                   + env.base_energy_u_minus.detach()).cpu().numpy()
 
@@ -101,6 +107,7 @@ def geometry(run_row) -> dict:
         "sigma_c": sigma_c, "m": m, "conc_std": float(cfg["conc_std"]),
         "centre": centre, "pos": pos, "U": U, "dirs": dirs,
         "Emax": emax, "Ebase": ebase,
+        "shared_energies": bool(getattr(env, "shared_unit_energies", False)),
         "Emax_drift": float(np.mean(emax) / 10.0 - 1.0),
         "zbar_meas": np.array([T.zbar_from_ebase(
             T.Params(D=D, sigma=sigma, lam=lam, Emax=float(e), sigma_c=sigma_c, m=m), b)

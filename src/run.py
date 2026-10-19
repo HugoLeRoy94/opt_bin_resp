@@ -555,6 +555,7 @@ class SimulationRunner:
                 distribution_type=self.config.distribution_type,
                 use_interface_model=self.config.use_interface_model,
                 block_shared_conc_mean=self.config.block_shared_conc_mean,
+                shared_unit_energies=self.config.shared_unit_energies,
             ).to(self.device)
 
         physics = BinaryReceptor(

@@ -54,24 +54,41 @@ also flattens the match across the cloud, which kills the private signal. At
 the self-consistency group of Eq. 41 staying usable. That is the sweep the
 script implements.
 
-## The degeneracy you must control for: `Emax` is learnable
+## Does the analytics describe the simulation? Now yes, with one flag
 
-`base_energy_u` and `max_energy_u_raw` are unconstrained `nn.Parameter`s
-(`src/environment.py:377`, `:403`), one per gene. Two consequences.
+It did not before. `base_energy_u` and `max_energy_u_raw` are per-gene learnable
+tensors (`src/environment.py`), while the closed form assumes a single shared
+`E_base` and `E_max` (assumption A6). With per-gene energies the simulator
+optimises a strictly larger family, and the closed form describes only the
+special case in which the optimiser happens to make them equal.
 
-- Because `Ebase` is free, the balance condition Eq. 26 constrains the operating
-  point and **not** the receptor norm. The norm is fixed only by the lever-arm
-  trade-off of Section 7, which exists only for the gaussian kernel. Under
-  `affinity_kernel="quadratic"` the optimum runs away: `nu` decreases
-  monotonically in `U` (Eq. 34), so norms drift outward and baselines drift down
-  without converging. Do not run this task with the quadratic kernel.
-- Because `Emax` is free and unbounded above, the optimiser can raise `Gamma`,
-  shrink the concentration common mode, and lower `nu` below the value predicted
-  at the initial `Emax = 10`. **Every prediction must therefore be evaluated at
-  the measured `Emax`, not the initial one.** `_lib/runs.geometry` returns both
-  (`pred_init` and `pred_meas`) and the drift, and `analysis/geometry_norms.py`
-  plots the drift first. A large positive drift is a result in its own right: it
-  says the array buys information by becoming concentration-blind.
+`RunConfig.shared_unit_energies = True` collapses both to one learnable scalar
+each, still optimised, positions still per gene. **`sweep_R.py` sets it**, and any
+run compared against the tex must. Implementation notes in
+`doc/theory/07_optimization_pipeline.md`; the short version is that all readers go
+through `env.base_energies()` / `env.max_energies_raw()`, which return `(n_genes,)`
+in both modes, and the gradient reaching the scalar is the sum over genes, which is
+the true shared-parameter gradient. Not available with `use_interface_model`.
+
+What the flag does NOT fix, and what therefore remains a difference between the
+analytics and the simulation:
+
+| | analytics | simulation | consequence |
+|---|---|---|---|
+| ligand draw | fresh continuous Gaussian each sniff | fixed pool of `n_ligands` | caps the alphabet at `log2(L(R+1))`; keep `L` large |
+| readout | hard step | sigmoid at temperature `T` | need `T << 0.1 * Delta_priv`; the dry run prints the bound |
+| objective | exact `H(A)`, global maximum | annealed blocked-Shannon / collision estimator, gradient descent | cannot be removed. Compare against the MEASURED codeword entropy, never the training loss, and treat a shortfall as possible non-convergence |
+
+The third is the one with no remedy. A disagreement in check 3 is therefore not
+automatically a refutation of the analytics: it can equally be the optimiser failing
+to find the optimum the analytics describes. Checks 1 and 2 exist precisely to tell
+those apart, which is why they come first.
+
+**`Emax` still drifts.** Even shared, the single `Emax` is unbounded above, and
+raising it shrinks the concentration common mode and so lowers `nu` below the value
+predicted at the initial `Emax = 10`. Every prediction must be evaluated at the
+measured `Emax`. `_lib/runs.geometry` returns both (`pred_init`, `pred_meas`) and the
+drift, and `analysis/geometry_norms.py` plots the drift first.
 
 ## Layout
 
@@ -235,7 +252,9 @@ Figures are built and shown. Nothing is written to `figures/` unless asked.
 
 ## Status
 
-Tier 0 written and passing. The sweep and the three analysis scripts are written
-and import-clean, but **no simulation has been run**, so nothing in checks 1 to 3
-has been executed against data. Start with `--dry-run`, then one `conc_std` value
-and a short R list to confirm the plumbing before launching the full 120-run grid.
+The simulator now has `shared_unit_energies`, so the model being simulated matches
+the model that was computed, up to the three residual differences tabulated above.
+Tier 0 passes. The sweep and the three analysis scripts are written and import-clean,
+but **no simulation has been run**, so nothing in checks 1 to 3 has been executed
+against data. Start with `--dry-run`, then one `conc_std` and a short R list to
+confirm the plumbing before launching the full 120-run grid.

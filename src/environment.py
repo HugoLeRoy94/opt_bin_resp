@@ -225,7 +225,8 @@ class LigandEnvironment(nn.Module):
                  avg_family_distance: float, n_presence_blocks: int,
                  mu_sources: float, mu_ligands_per_source: float,
                  affinity_kernel: str = "gaussian", kernel_params: list = None,
-                 use_interface_model: bool = False, block_shared_conc_mean: bool = False):
+                 use_interface_model: bool = False, block_shared_conc_mean: bool = False,
+                 shared_unit_energies: bool = False):
         """
         Args:
             n_genes: Number of gene units.
@@ -266,6 +267,16 @@ class LigandEnvironment(nn.Module):
         self.affinity_kernel = affinity_kernel
         self.kernel_params = kernel_params if kernel_params is not None else []
         self.use_interface_model = use_interface_model
+        # One learnable (E_base, E_max) pair for the WHOLE array instead of one per
+        # gene. The analytics in analytics/homomer_array_mi.tex assumes this (A6):
+        # with per-gene energies the closed form is only the special case in which
+        # the optimiser happens to make them equal. Not implemented for the
+        # interface model, whose +/- faces would need a second convention.
+        self.shared_unit_energies = shared_unit_energies
+        if shared_unit_energies and use_interface_model:
+            raise NotImplementedError(
+                "shared_unit_energies is implemented for the classic per-unit model "
+                "only; use_interface_model splits each unit into +/- faces.")
         # Composition binding (see bind_receptors). None → the original gather path.
         self.composition = None        # (n_sources, R)
         self.pocket_pairs = None       # (P, 2) interface only: distinct (+face, -face) genes
@@ -374,9 +385,15 @@ class LigandEnvironment(nn.Module):
             # Classic per-unit model.
             self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
             if affinity_kernel == "gaussian":
-                self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), _init_val))
+                if shared_unit_energies:
+                    self.max_energy_u_raw_shared = nn.Parameter(torch.full((1,), _init_val))
+                else:
+                    self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), _init_val))
             else:  # "quadratic"
-                self.energy_slope_raw = nn.Parameter(torch.full((n_genes,), _init_val))
+                if shared_unit_energies:
+                    self.energy_slope_raw_shared = nn.Parameter(torch.full((1,), _init_val))
+                else:
+                    self.energy_slope_raw = nn.Parameter(torch.full((n_genes,), _init_val))
 
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -399,8 +416,37 @@ class LigandEnvironment(nn.Module):
         if use_interface_model:
             self.base_energy_u_plus  = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
             self.base_energy_u_minus = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
+        elif shared_unit_energies:
+            self.base_energy_u_shared = nn.Parameter(torch.full((1,), global_avg_log_c))
         else:
             self.base_energy_u = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
+
+    # ----------------------------------------------------------------------
+    # Energy accessors (classic model).
+    #
+    # Always return a (n_genes,) tensor so every caller can index it by gene,
+    # whether the underlying parameter is per-gene or a single shared scalar.
+    # expand() returns a view, so autograd accumulates the SUM over genes into
+    # the scalar, which is exactly the gradient of a genuinely shared parameter
+    # rather than an average of per-gene gradients.
+    # ----------------------------------------------------------------------
+    def base_energies(self) -> torch.Tensor:
+        """Per-gene baseline energy E_base, shape (n_genes,)."""
+        if self.shared_unit_energies:
+            return self.base_energy_u_shared.expand(self.n_genes)
+        return self.base_energy_u
+
+    def max_energies_raw(self) -> torch.Tensor:
+        """Pre-softplus E_max, shape (n_genes,). Gaussian kernel only."""
+        if self.shared_unit_energies:
+            return self.max_energy_u_raw_shared.expand(self.n_genes)
+        return self.max_energy_u_raw
+
+    def energy_slopes_raw(self) -> torch.Tensor:
+        """Pre-softplus dE, shape (n_genes,). Quadratic kernel only."""
+        if self.shared_unit_energies:
+            return self.energy_slope_raw_shared.expand(self.n_genes)
+        return self.energy_slope_raw
 
     def clone_with_extra_units(self, extra_units: int = 1):
         """Creates a copy of the environment with additional gene units.
@@ -430,6 +476,7 @@ class LigandEnvironment(nn.Module):
             kernel_params=self.kernel_params,
             use_interface_model=self.use_interface_model,
             block_shared_conc_mean=self.block_shared_conc_mean,
+            shared_unit_energies=self.shared_unit_energies,
         ).to(device)
 
         with torch.no_grad():
@@ -448,6 +495,14 @@ class LigandEnvironment(nn.Module):
                     new_env.energy_slope_raw_minus.data[:self.n_genes] = self.energy_slope_raw_minus.data.clone()
                 new_env.base_energy_u_plus.data[:self.n_genes]  = self.base_energy_u_plus.data.clone()
                 new_env.base_energy_u_minus.data[:self.n_genes] = self.base_energy_u_minus.data.clone()
+            elif self.shared_unit_energies:
+                # One scalar covers every gene, so extra units need no new values.
+                new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
+                if self.affinity_kernel == "gaussian":
+                    new_env.max_energy_u_raw_shared.data.copy_(self.max_energy_u_raw_shared.data)
+                else:
+                    new_env.energy_slope_raw_shared.data.copy_(self.energy_slope_raw_shared.data)
+                new_env.base_energy_u_shared.data.copy_(self.base_energy_u_shared.data)
             else:
                 new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
                 if self.affinity_kernel == "gaussian":
@@ -512,13 +567,14 @@ class LigandEnvironment(nn.Module):
         """
         diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0)  # (U, L, D)
         dist_sq = (diff ** 2).sum(dim=-1)  # (U, L)
+        base_e = self.base_energies()                  # (U,)
         if self.affinity_kernel == "gaussian":
-            max_e = F.softplus(self.max_energy_u_raw)  # (U,)
+            max_e = F.softplus(self.max_energies_raw())  # (U,)
             lambda_sq = self.kernel_params[0] ** 2
-            return self.base_energy_u.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
+            return base_e.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
         else:  # "quadratic"
-            dE = F.softplus(self.energy_slope_raw)  # (U,)
-            return self.base_energy_u.unsqueeze(1) + dE.unsqueeze(1) * dist_sq
+            dE = F.softplus(self.energy_slopes_raw())  # (U,)
+            return base_e.unsqueeze(1) + dE.unsqueeze(1) * dist_sq
 
     def interaction_mu_interface(self, receptor_indices: torch.Tensor) -> torch.Tensor:
         """
@@ -763,14 +819,15 @@ class LigandEnvironment(nn.Module):
             b_sq    = (self.unit_latent ** 2).sum(dim=-1)                      # (U,)
             ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent) # (B, L, U)
             dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)  # (B, L, U)
+            base_e = self.base_energies()                                     # (U,)
             if self.affinity_kernel == "gaussian":
-                max_e     = F.softplus(self.max_energy_u_raw)                  # (U,)
+                max_e     = F.softplus(self.max_energies_raw())                # (U,)
                 lambda_sq = self.kernel_params[0] ** 2
-                return (self.base_energy_u[None, None, :]
+                return (base_e[None, None, :]
                         + max_e[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
             else:  # "quadratic"
-                dE = F.softplus(self.energy_slope_raw)                         # (U,)
-                return self.base_energy_u[None, None, :] + dE[None, None, :] * dist_sq
+                dE = F.softplus(self.energy_slopes_raw())                      # (U,)
+                return base_e[None, None, :] + dE[None, None, :] * dist_sq
 
         # ----------------------------------------------------------------------
         # Interface path

@@ -51,7 +51,7 @@ CONC_STD_DEFAULT = [1.7372, 0.8686, 0.4343, 0.2171]
 R_DEFAULT = [2, 3, 4, 5, 6, 8, 10, 12, 14, 16]
 
 TEMPERATURE = 0.05     # see the preflight: needs T << 0.1 * Delta_priv ~ 0.11
-N_LIGANDS = 50000      # one ligand per sniff, so s_upper = 1: a big pool is cheap
+N_LIGANDS       = 10000   # was 50000
 TEST_BATCH = 2 ** 18   # log2 B = 18, the ceiling on any counting MI estimate
 
 
@@ -149,7 +149,7 @@ def main():
         # --- presence: exactly one ligand per sniff (A2) ---------------------
         n_presence_blocks      = 1,
         mu_sources             = 1,
-        mu_ligands_per_source  = 1,
+        mu_ligands_per_source  = 1e-6,
         block_shared_conc_mean = False,
 
         use_interface_model = False,
@@ -183,7 +183,7 @@ def main():
                                  "entropy_collision", "mutual_information_ligand",
                                  "mutual_information_concentration"),
         final_test_batch_size = TEST_BATCH,
-        eval_chunk_size       = 16384,
+        eval_chunk_size = 4096,     # was 16384
 
         # --- sweep: homomers, R = n_genes ------------------------------------
         n_genes     = blk_R * args.replicates,

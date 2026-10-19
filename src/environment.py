@@ -333,10 +333,16 @@ class LigandEnvironment(nn.Module):
         _log_pmf_l -= _log_pmf_l.logsumexp(dim=1, keepdim=True)
         self.register_buffer('_log_pmf_ligand', _log_pmf_l)      # (K, max_m)
 
-        # Usual sparse allocation width, not a support bound. _sample_masks widens
-        # batches whose realized ligand count exceeds this tail heuristic.
-        _poisson_tail = int(mu_sources + 4.0 * mu_sources ** 0.5) + 1
-        self.s_upper = min(n_ligands, _poisson_tail * _max_m)
+        # Sparse allocation width. A high-water mark, not a support bound and not a
+        # distributional guess: it starts at the minimum and _sample_masks grows it to
+        # the largest mixture ever realized, converging to the tightest width that
+        # never truncates, for any presence model (including the nonuniform-weight
+        # HOOKs in _sample_masks, which no closed-form heuristic would survive).
+        # It replaces tail(mu_sources) * _max_m, which took a QUANTILE of the source
+        # count but the WORST CASE of the ligands-per-source count, and so collapsed
+        # to the whole pool whenever K was not much larger than that quantile. One
+        # block of 50k ligands allocated 50k slots per sniff to hold a single ligand.
+        self.s_upper = 1
 
         if distribution_type not in ['gaussian', 'uniform', 'shell']:
             raise ValueError("distribution_type must be 'gaussian', 'uniform', or 'shell'")
@@ -686,9 +692,14 @@ class LigandEnvironment(nn.Module):
         safe_flat    = self._safe_block_members.view(K * max_m)                 # (K*max_m,)
         selected_flat = torch.where(picked_flat.bool(), safe_flat.unsqueeze(0), L)  # (B, K*max_m)
         # topk on picked_flat (1.0 = selected) brings selected positions to front without sorting.
+        # s_upper is a high-water mark: grow it on overflow, never shrink. Monotone
+        # growth keeps the output shape stable at one allocator block size instead of
+        # oscillating with the per-batch maximum.
         width = self.s_upper
         if width < L:
-            width = max(width, int(n_lig.sum(dim=1).max().item()))
+            mx = int(n_lig.sum(dim=1).max().item())
+            if mx > width:
+                width = self.s_upper = mx
         _, front_order = picked_flat.topk(width, dim=-1, sorted=False)     # (B, width)
         sparse_idx = selected_flat.gather(1, front_order)                  # (B, width)
 
@@ -903,9 +914,9 @@ class LigandEnvironment(nn.Module):
             concs:         (B, s_upper)
             mixture_masks: (B, L)
 
-        The usual sparse width s_upper is set at __init__ from a Poisson-tail heuristic.
-        The returned ligand axis widens to the actual maximum count if a batch exceeds
-        it; no selected ligands are discarded. Padding slots carry index L
+        The sparse width s_upper starts at 1 and is a high-water mark: the returned
+        ligand axis widens to the actual maximum count whenever a batch exceeds it, and
+        that width is retained. No selected ligands are ever discarded. Padding slots carry index L
         with concentration 0, contributing exp(-27) ≈ 0 to the logsumexp in physics.
         The hierarchical sampler guarantees S >= 1 for every row by construction.
         """

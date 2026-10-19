@@ -1,0 +1,241 @@
+# analytic_baseline — validating the closed-form homomer MI against simulation
+
+Reference: `analytics/homomer_array_mi.tex`. Equation numbers below are that
+document's, as built on 2026-10-19. MI = mutual information, GT = Good-Turing,
+MM = Miller-Madow.
+
+## What is being tested
+
+For a single Gaussian ligand family, the **gaussian (saturating) kernel**, one
+ligand per sniff, a deterministic threshold readout and `R <= D` freely placed
+homomers, the analytics predicts that the whole parameter dependence collapses
+onto one scalar:
+
+```
+match      K   = exp(-||l-u||^2 / lambda^2)            in (0,1]
+demand     Z   = (Ebase + Emax - s) / Emax             Gaussian, Eq. 9
+fires iff  K > Z                                        exact, no expansion
+nu^2(w)    = [ rho^2/2 + Q e^{2w} ] / w                 Eq. 32
+             rho = sigma sqrt(D)/lambda,  Gamma = Emax/sigma_c,  w = U^2/lambda^2
+             Q   = D e^{2 rho^2} / (4 rho^2 Gamma^2)
+optimum    Lambda = W( P/(Qe) ),  w* = (1+Lambda)/2,  nu_min^2 = rho^2/Lambda   Eq. 39
+MI         = R eta(nu) + I(A;q)                         Eq. 48
+eta(nu)    = E_z[ h2( Phibar(nu z) ) ],  z ~ N(0,1)
+```
+
+`sigma` is the per-coordinate spread of the ligand cloud (`family_spread`),
+`sigma_c` and `m` the standard deviation and mean of `ln c`, `lambda` the
+affinity length scale, `h2` the binary entropy in bits, `Phibar` the standard
+normal upper tail and `W` the Lambert function.
+
+**Energy units.** The analytics is in natural log. The simulator stores
+`conc_mean` and `conc_std` in log10, so `sigma_c = conc_std * ln10`. Use
+`_lib/theory.from_log10`. Getting this wrong rescales `nu` by 2.3.
+
+## Three facts about the parameters, before designing any sweep
+
+These are not obvious and two of them cost a wasted sweep if ignored.
+
+**1. `nu` does not depend on R.** Varying the number of receptors moves the
+array between the regimes of Section 13 (`R <= D` exchangeable, `R > D`
+geometric saturation) and changes the crossover `nu_star ~ 2.08 R/log2 R`, but
+it leaves `nu` itself untouched. An R sweep alone will not show you different
+`nu` regimes.
+
+**2. `lambda` has a floor and cannot reach small `nu`.** `nu_min` is
+*non-monotone* in `lambda`. Large `lambda` reduces `rho`, which helps, but it
+also flattens the match across the cloud, which kills the private signal. At
+`D=8, sigma=1, Emax=10, sigma_c=1` the floor is `nu ~ 0.98` near `lambda ~ 5`.
+`lambda` is the geometry knob, not the `nu` knob.
+
+**3. The clean knob for `nu` is `conc_std`.** At fixed `lambda = 4`, `D = 8`,
+`sigma_c = 4, 2, 1, 0.5` gives `Gamma = 2.5, 5, 10, 20` and
+`nu = 3.15, 1.68, 0.99, 0.67`, spanning strong degradation to near-ideal with
+the self-consistency group of Eq. 41 staying usable. That is the sweep the
+script implements.
+
+## The degeneracy you must control for: `Emax` is learnable
+
+`base_energy_u` and `max_energy_u_raw` are unconstrained `nn.Parameter`s
+(`src/environment.py:377`, `:403`), one per gene. Two consequences.
+
+- Because `Ebase` is free, the balance condition Eq. 26 constrains the operating
+  point and **not** the receptor norm. The norm is fixed only by the lever-arm
+  trade-off of Section 7, which exists only for the gaussian kernel. Under
+  `affinity_kernel="quadratic"` the optimum runs away: `nu` decreases
+  monotonically in `U` (Eq. 34), so norms drift outward and baselines drift down
+  without converging. Do not run this task with the quadratic kernel.
+- Because `Emax` is free and unbounded above, the optimiser can raise `Gamma`,
+  shrink the concentration common mode, and lower `nu` below the value predicted
+  at the initial `Emax = 10`. **Every prediction must therefore be evaluated at
+  the measured `Emax`, not the initial one.** `_lib/runs.geometry` returns both
+  (`pred_init` and `pred_meas`) and the drift, and `analysis/geometry_norms.py`
+  plots the drift first. A large positive drift is a result in its own right: it
+  says the array buys information by becoming concentration-blind.
+
+## Layout
+
+```
+_lib/theory.py     closed form, both routes. No src/ dependency.
+_lib/runs.py       loads runs, pulls geometry out of best_model.pt, attaches
+                   the matching prediction at the measured Emax.
+scripts/selftest_theory.py   tier 0, CPU, seconds. Run first, always.
+scripts/sweep_R.py           the simulation sweep. --dry-run prints the budget.
+analysis/geometry_norms.py          check 1
+analysis/geometry_orthogonality.py  check 2
+analysis/mi_regimes.py              check 3
+```
+
+`theory.py` offers two routes and they must agree where both are valid:
+
+| route | what it does | when to use |
+|---|---|---|
+| delta | expands `ln Z` about its mean, Lambert-W optimum in closed form | `selfcons` (Eq. 41) above ~2 |
+| exact | product quadrature over the two shared scalars, saturation atoms kept | always valid, slower |
+
+`selfcons = sqrt(Lambda D / (2 rho^4))` is `Gamma*zbar` at the optimum and is
+independent of `Gamma`: the operating point is set by geometry alone. Measured
+agreement, from `selftest_theory.py`: at `selfcons = 3.4` the two routes differ
+by 1.6% in `U*` and 0.0% in `eta`; at `selfcons = 0.44` they differ by 14% and
+21%. The criterion works, so trust it rather than eyeballing `rho`.
+
+---
+
+## Tier 0 — self-consistency of the closed form
+
+`scripts/selftest_theory.py`, no GPU, no `src/`. Currently **all checks pass**.
+It asserts normalisation of `P(K)`, agreement of the two MI routes (Eq. 45 vs
+Eq. 46), `eta(1) = 1/(2 ln 2)` to 1e-9, the small- and large-`nu` laws, the
+limits `MI -> R` and `MI -> 1 bit`, the constant
+`A = 2.6060764897` recomputed to 1e-6 (it matches the tex), and the
+degeneracy of the quadratic kernel.
+
+One implementation note that cost an hour: Gauss-Hermite weights **overflow to
+NaN** above a few hundred nodes, silently. `q_nodes_delta` uses a normalised
+uniform grid in `z`, refined so the kernel width `1/nu` is always resolved.
+Separately, `q = 0` and `q = 1` occur exactly, at the grid edges and at the
+saturation atoms, so the count distribution must avoid `0 * log 0`.
+
+---
+
+## The sweep
+
+`scripts/sweep_R.py`. Single family, gaussian kernel, exactly one ligand per
+sniff (`n_presence_blocks = mu_sources = mu_ligands_per_source = 1`), homomers
+(`receptor_indices` left `None`, so `R = n_genes`), `observation_noise_sigma = 0`.
+
+| axis | default | role |
+|---|---|---|
+| `n_genes` = R | 2,3,4,5,6,8,10,12,14,16 | crosses `D = 8`, six runs below and four above |
+| `conc_std` | 1.7372, 0.8686, 0.4343, 0.2171 (log10) | the `nu` axis: 3.15, 1.68, 0.99, 0.67 |
+| replicates | 3 | independent environments, never a shared seed (AGENTS.md) |
+
+Fixed: `D = 8`, `family_spread = 1`, `lambda = 4` so `rho = 0.707`,
+`temperature = 0.05`, `n_ligands = 50000`, `final_test_batch_size = 2^18`.
+
+Three budget constraints, all printed by `--dry-run`:
+
+1. **Hard threshold (A3).** The sigmoid width must be small against the private
+   signal in energy units, `Delta_priv = 2 U sigma Emax zbar / lambda^2`, which
+   is 1.08 to 1.30 across the grid. `T = 0.05` is about 1/22 of it.
+2. **Counting ceiling.** Any counting MI is capped by `log2 B = 18`. The worst
+   node (`R=16`, `nu=0.67`) predicts 14.6 bits, a margin of 3.4. Larger `R`
+   needs a larger batch, not a larger pool.
+3. **Fixed ligand pool.** With `L` ligands and one per sniff the reachable
+   alphabet is `L(R+1)`, here `log2 = 19.7` bits. Because one ligand per sniff
+   makes `s_upper = 1`, a large `L` is nearly free in memory, so keep it large.
+
+---
+
+## Check 1 — where the receptors sit
+
+`analysis/geometry_norms.py`. This is first because it is the most exact part of
+the calculation: it tests the geometry before any entropy estimator is involved.
+
+| sub-check | prediction | source |
+|---|---|---|
+| 1a | all receptors at the same distance `U` from the family centre | Lemma 1 |
+| 1b | that distance equals `U* = lambda sqrt(w*)` | Eq. 39 |
+| 1c | operating point `zbar = exp(-(rho^2 + w*))`, read off `Ebase` | Eq. 30 |
+
+1a needs no closed form, only isotropy, so it fails only if the reduction of
+Sections 1 to 5 is wrong. 1b additionally tests the lever-arm argument. Distances
+are measured from `env.family_latent[0]`, **not** from the origin: with one family
+the centre is a random point in a ball, not the origin.
+
+The prediction **inverts above `nu = 1`**. Section 12 says the optimal array
+stops being a balanced shell and becomes a ladder of thresholds, so a rising
+`std(U)/<U>` at `nu > 1` confirms the theory rather than contradicting it. The
+script plots that spread against `nu` with the predicted transition marked.
+
+Expect a small positive bias in `U/U*` even where everything works: the exact
+route puts `U*` 1.6 to 2.5% below the Lambert value at these parameters.
+
+---
+
+## Check 2 — are the directions orthogonal
+
+`analysis/geometry_orthogonality.py`. Assumption A5 is what makes the private
+projections independent (Lemma 2) and therefore what makes the whole
+exchangeable reduction work. It is only available for `R <= D`.
+
+Compare against two reference lines, never against zero:
+
+- **Welch bound** `sqrt((R-D)/(D(R-1)))`, the smallest achievable maximum
+  `|cos|` for `R > D`. Above `R = D` this, not zero, is the target.
+- **Random directions** `sqrt(2/(pi D))`. A measurement sitting here means the
+  optimiser never spread the receptors and any other agreement is luck.
+
+The script reports where the measurement sits between those two as a single
+"spreading quality" number, 1 at the bound and 0 at random.
+
+---
+
+## Check 3 — the information, and the two regimes in R
+
+`analysis/mi_regimes.py`. Run it last. The measured quantity is
+`codeword_entropy`, which binarises the activity at 0.5 and so is exactly the
+`H(A)` of assumption A3, hence exactly the MI. Miller-Madow is the less biased of
+its two estimates, but neither is a bound.
+
+| prediction | where it lives |
+|---|---|
+| `MI = R eta(nu) + I(A;q)` for `R <= D` | Eq. 48 |
+| MI falls below that extrapolation past `R = D`, bending toward `O(D log2 R)` | Section 13 |
+| `(MI - I(A;q))/R` collapses onto `eta(nu)` for every `(R, D)` | the core claim |
+| `eta(1) = 0.7213` exactly | Eq. 52 |
+
+The collapse is the real claim, more than any single value: it asserts that `nu`
+is the **only** control parameter. If each `(R, conc_std)` curve is smooth but
+they do not collapse, the theory is wrong in a way no single-point agreement
+would reveal.
+
+Two estimator guards are applied before any point is plotted: GT missing mass
+below 1e-3, and MI at least 2 bits below `log2 B`. Points failing either are
+dropped and listed, because both failure modes mimic the real sublinearity that
+check 3 is looking for.
+
+Figures are built and shown. Nothing is written to `figures/` unless asked.
+
+---
+
+## Diagnostic table
+
+| symptom | most likely cause |
+|---|---|
+| `U/U*` systematically high and `Emax` drifted up | expected; re-read the prediction at the measured `Emax` before calling it a failure |
+| receptor norms drift outward without converging | the quadratic kernel was used, Eq. 34 degeneracy |
+| 1a passes, 1b fails | the reduction is fine, the lever-arm argument of Section 7 is not |
+| 1b fails only where `selfcons < 2` | the delta method, not the theory. Use `theory.exact_optimum` |
+| `|cos|` near `sqrt(2/pi D)` | optimiser never spread the array; check convergence before anything else |
+| MI below theory, worsening with R | the `log2 B` ceiling or the ligand pool, not physics. Check the diagnostics panel |
+| MI above theory anywhere | estimator bias; check GT missing mass first |
+| collapse fails but each curve is smooth | `nu` is not the only control parameter, which falsifies the core claim |
+| everything agrees at `nu ~ 1` and fails at `nu ~ 3` | `selfcons = 0.90` there; the delta route is not quantitative |
+
+## Status
+
+Tier 0 written and passing. The sweep and the three analysis scripts are written
+and import-clean, but **no simulation has been run**, so nothing in checks 1 to 3
+has been executed against data. Start with `--dry-run`, then one `conc_std` value
+and a short R list to confirm the plumbing before launching the full 120-run grid.

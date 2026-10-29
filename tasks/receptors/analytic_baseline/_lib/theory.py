@@ -349,3 +349,74 @@ def eta_large_nu(nu):
 def mi_predicted(nu: float, R: int, n: int = 0) -> float:
     """MI including the I(A;q) term, the quantity to compare with a measurement."""
     return mi(nu, R, n)["MI"]
+
+
+# --------------------------------------------------------------------------- #
+# Receptor DIRECTIONS: the simplex correction that replaces assumption A5
+# --------------------------------------------------------------------------- #
+# A5 assumed orthogonal directions, cos = 0, on the grounds that Lemma 2 makes the
+# private projections independent there. That is true of the PROJECTIONS and false
+# of the OUTPUTS: a_r = 1[p_r > tau] share tau, so orthogonal directions leave the
+# whole common-mode correlation standing. The cosine is a free knob that can cancel
+# it, because for an equiangular array
+#
+#     Cov(x_r, x_r') = 4 U^2 sigma^2 cos  +  Var(theta)
+#     Var(x_r)       = 4 U^2 sigma^2      +  Var(theta)
+#
+# so the drive covariance is STILL of one-factor form, alpha' I + beta' J, with
+# alpha' = 4U^2 sigma^2 (1 - cos) and beta' = 4U^2 sigma^2 cos + Var(theta). The
+# entire exchangeable reduction therefore survives verbatim with nu -> nu_eff below.
+
+def mean_cos_floor(R: int) -> float:
+    """Smallest possible MEAN pairwise cosine of R unit vectors, any dimension.
+
+    ||sum_r u_r||^2 = R + R(R-1) <cos> >= 0 gives <cos> >= -1/(R-1), with equality
+    if and only if the directions sum to zero. Holds for every R and D, which is why
+    the measured mean cosine tracks it even above R = D.
+    """
+    return -1.0 / (R - 1) if R > 1 else 0.0
+
+
+def cos_opt(nu: float, R: int) -> float:
+    """Optimal pairwise cosine: cancel the common mode as far as geometry allows.
+
+    Zero output correlation needs cos = -nu^2. The floor above clips it. Below the
+    clip the array is LOSSLESS: the outputs are exactly independent and MI = R bits.
+    """
+    return max(-float(nu) ** 2, mean_cos_floor(R))
+
+
+def nu_eff_from_cos(nu: float, cos: float) -> float:
+    """Effective control parameter for an equiangular array, nu_eff^2 = (cos+nu^2)/(1-cos).
+
+    cos = 0 returns nu (the old A5 result). cos = -nu^2 returns 0 (full
+    cancellation). cos = -1/(R-1) gives (nu^2 (R-1) - 1)/R.
+    """
+    val = (float(cos) + float(nu) ** 2) / (1.0 - float(cos))
+    return math.sqrt(max(0.0, val))
+
+
+def nu_eff(nu: float, R: int) -> float:
+    """nu_eff at the OPTIMAL cosine for this R. Tends to nu as R grows."""
+    return nu_eff_from_cos(nu, cos_opt(nu, R))
+
+
+def R_lossless(nu: float) -> float:
+    """Largest array that reaches exactly R bits: cos = -nu^2 is still reachable."""
+    nu = float(nu)
+    return float("inf") if nu <= 0 else 1.0 + 1.0 / nu ** 2
+
+
+def nu_stagger(R: int) -> float:
+    """Raw nu at which nu_eff crosses 1, i.e. where the norms should start to ladder.
+
+    Section 12 puts the transition at nu_eff = 1, not at nu = 1. Solving
+    (nu^2 (R-1) - 1)/R = 1 gives nu^2 = (R+1)/(R-1), so SMALL arrays stay balanced
+    to higher nu. That R-dependence is a prediction, not a fudge.
+    """
+    return math.sqrt((R + 1) / (R - 1)) if R > 1 else float("inf")
+
+
+def mi_eff(nu: float, R: int, n: int = 0) -> dict:
+    """mi() evaluated at nu_eff. This is the prediction to compare against data."""
+    return mi(nu_eff(nu, R), R, n=n)

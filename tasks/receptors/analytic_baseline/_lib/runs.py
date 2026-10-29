@@ -85,7 +85,11 @@ def geometry(run_row) -> dict:
 
     D = int(cfg["latent_dim"])
     sigma = float(cfg["family_spread"])
-    lam = float(np.atleast_1d(cfg["kernel_params"])[0])
+    # kernel_params is list-valued, so index_goal drops it: the run frame holds
+    # SCALAR config fields only (IO.py). Take it from the env, which load_model
+    # built through SingleRunLoader.load_config() and which therefore also carries
+    # the affinity_length_scale -> kernel_params back-compat shim for older runs.
+    lam = float(np.atleast_1d(env.kernel_params)[0])
     sigma_c = float(cfg["conc_std"]) * T.LN10
     m = float(cfg["conc_mean"]) * T.LN10
 

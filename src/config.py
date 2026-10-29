@@ -134,6 +134,10 @@ class SingleRunConfig:
     # compared against it. Classic per-unit model only (not use_interface_model).
     shared_unit_energies: bool = False
 
+    # Fixed selectivity ceiling E_max (natural-log units), shared by every gene and
+    # not learned. None keeps E_max learnable. Gaussian kernel, classic model only.
+    fixed_max_energy: Optional[float] = None
+
     # --- Performance (exact / near-exact; no effect on the model) ---
     # Evaluate each DISTINCT energy source (gene, or unique +/- face pocket) once and
     # contract to receptors with one matmul, instead of gathering k_sub values per
@@ -365,6 +369,9 @@ class RunConfig:
 
     # --- Shared unit energies (A6 of the analytics; see SingleRunConfig) ---
     shared_unit_energies: Union[bool, List[bool]] = False
+
+    # --- Fixed E_max (see SingleRunConfig) ---
+    fixed_max_energy: Union[Optional[float], List[Optional[float]]] = None
 
     # --- Performance ---
     use_composition: Union[bool, List[bool]] = True

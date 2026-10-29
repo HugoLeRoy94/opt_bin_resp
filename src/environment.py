@@ -226,7 +226,8 @@ class LigandEnvironment(nn.Module):
                  mu_sources: float, mu_ligands_per_source: float,
                  affinity_kernel: str = "gaussian", kernel_params: list = None,
                  use_interface_model: bool = False, block_shared_conc_mean: bool = False,
-                 shared_unit_energies: bool = False):
+                 shared_unit_energies: bool = False,
+                 fixed_max_energy: Optional[float] = None):
         """
         Args:
             n_genes: Number of gene units.
@@ -277,6 +278,13 @@ class LigandEnvironment(nn.Module):
             raise NotImplementedError(
                 "shared_unit_energies is implemented for the classic per-unit model "
                 "only; use_interface_model splits each unit into +/- faces.")
+        # Fixed E_max: one value for every gene, stored as a buffer so it is saved
+        # with the model but never optimised.
+        self.fixed_max_energy = fixed_max_energy
+        if fixed_max_energy is not None and (use_interface_model or affinity_kernel != "gaussian"):
+            raise NotImplementedError(
+                "fixed_max_energy is implemented for the classic model with the "
+                "gaussian kernel only.")
         # Composition binding (see bind_receptors). None → the original gather path.
         self.composition = None        # (n_sources, R)
         self.pocket_pairs = None       # (P, 2) interface only: distinct (+face, -face) genes
@@ -391,7 +399,10 @@ class LigandEnvironment(nn.Module):
             # Classic per-unit model.
             self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
             if affinity_kernel == "gaussian":
-                if shared_unit_energies:
+                if fixed_max_energy is not None:
+                    raw = math.log(math.expm1(fixed_max_energy))   # inverse softplus
+                    self.register_buffer('max_energy_u_raw_fixed', torch.full((1,), raw))
+                elif shared_unit_energies:
                     self.max_energy_u_raw_shared = nn.Parameter(torch.full((1,), _init_val))
                 else:
                     self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), _init_val))
@@ -444,6 +455,8 @@ class LigandEnvironment(nn.Module):
 
     def max_energies_raw(self) -> torch.Tensor:
         """Pre-softplus E_max, shape (n_genes,). Gaussian kernel only."""
+        if getattr(self, 'fixed_max_energy', None) is not None:
+            return self.max_energy_u_raw_fixed.expand(self.n_genes)
         if self.shared_unit_energies:
             return self.max_energy_u_raw_shared.expand(self.n_genes)
         return self.max_energy_u_raw
@@ -483,6 +496,7 @@ class LigandEnvironment(nn.Module):
             use_interface_model=self.use_interface_model,
             block_shared_conc_mean=self.block_shared_conc_mean,
             shared_unit_energies=self.shared_unit_energies,
+            fixed_max_energy=self.fixed_max_energy,
         ).to(device)
 
         with torch.no_grad():
@@ -504,14 +518,18 @@ class LigandEnvironment(nn.Module):
             elif self.shared_unit_energies:
                 # One scalar covers every gene, so extra units need no new values.
                 new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
-                if self.affinity_kernel == "gaussian":
+                if self.fixed_max_energy is not None:
+                    pass
+                elif self.affinity_kernel == "gaussian":
                     new_env.max_energy_u_raw_shared.data.copy_(self.max_energy_u_raw_shared.data)
                 else:
                     new_env.energy_slope_raw_shared.data.copy_(self.energy_slope_raw_shared.data)
                 new_env.base_energy_u_shared.data.copy_(self.base_energy_u_shared.data)
             else:
                 new_env.unit_latent.data[:self.n_genes] = self.unit_latent.data.clone()
-                if self.affinity_kernel == "gaussian":
+                if self.fixed_max_energy is not None:
+                    pass
+                elif self.affinity_kernel == "gaussian":
                     new_env.max_energy_u_raw.data[:self.n_genes] = self.max_energy_u_raw.data.clone()
                 else:
                     new_env.energy_slope_raw.data[:self.n_genes] = self.energy_slope_raw.data.clone()

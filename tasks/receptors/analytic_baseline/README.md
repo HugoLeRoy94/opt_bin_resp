@@ -84,11 +84,14 @@ automatically a refutation of the analytics: it can equally be the optimiser fai
 to find the optimum the analytics describes. Checks 1 and 2 exist precisely to tell
 those apart, which is why they come first.
 
-**`Emax` still drifts.** Even shared, the single `Emax` is unbounded above, and
-raising it shrinks the concentration common mode and so lowers `nu` below the value
-predicted at the initial `Emax = 10`. Every prediction must be evaluated at the
-measured `Emax`. `_lib/runs.geometry` returns both (`pred_init`, `pred_meas`) and the
-drift, and `analysis/geometry_norms.py` plots the drift first.
+**`Emax` is fixed.** With `Emax` learnable the closed form has no finite optimum:
+raising `Emax` together with `U` lowers `nu` without limit. In the 2026-10-19 sweep
+the optimiser did not follow that direction to the end. `Emax` went from 10 to
+between 6 and 23, depending on `conc_std` and on R (R and the number of epochs were
+confounded). The learned value was therefore set by the training dynamics, not by
+an optimum. `RunConfig.fixed_max_energy` fixes `Emax` to one value for every gene and
+removes it from the optimised parameters. `sweep_R.py` sets it through `--emax`
+(default 10). Gaussian kernel and classic model only.
 
 ## Layout
 
@@ -146,9 +149,20 @@ sniff (`n_presence_blocks = mu_sources = mu_ligands_per_source = 1`), homomers
 | `n_genes` = R | 2,3,4,5,6,8,10,12,14,16 | crosses `D = 8`, six runs below and four above |
 | `conc_std` | 1.7372, 0.8686, 0.4343, 0.2171 (log10) | the `nu` axis: 3.15, 1.68, 0.99, 0.67 |
 | replicates | 3 | independent environments, never a shared seed (AGENTS.md) |
+| epochs | `600 R + 2000` | see below |
 
-Fixed: `D = 8`, `family_spread = 1`, `lambda = 4` so `rho = 0.707`,
-`temperature = 0.05`, `n_ligands = 50000`, `final_test_batch_size = 2^18`.
+Fixed: `D = 8`, `family_spread = 1`, `lambda = 4` so `rho = 0.707`, `Emax = 10`,
+`temperature = 0.05`, `n_ligands = 10000`, `final_test_batch_size = 2^18`.
+
+**Epochs.** The 2026-10-19 sweep used `170 R + 500`. The receptor temperature
+anneals over the first 80% of the epochs. Over the last 20%, at fixed temperature,
+the measured entropy was flat only for `R <= 3`. For `R >= 5` it was still rising
+by 0.3 to 1.5 bits per 1000 epochs. Exponential fits to the tail of the learning
+curves put the number of epochs needed to come within 0.05 bit of the plateau
+between about 2000 (`R = 5`, low `conc_std`) and 8000 (`R = 8` to 12,
+`conc_std = 0.87`), and about 10000 at `R = 8`, `conc_std = 1.74`. `600 R + 2000`
+covers all of these except the last. The fits are rough. Check that the tail of each
+new learning curve is flat before using a run.
 
 Three budget constraints, all printed by `--dry-run`:
 
@@ -159,7 +173,7 @@ Three budget constraints, all printed by `--dry-run`:
    node (`R=16`, `nu=0.67`) predicts 14.6 bits, a margin of 3.4. Larger `R`
    needs a larger batch, not a larger pool.
 3. **Fixed ligand pool.** With `L` ligands and one per sniff the reachable
-   alphabet is `L(R+1)`, here `log2 = 19.7` bits. Because one ligand per sniff
+   alphabet is `L(R+1)`, here `log2 = 17.4` bits at `R = 16`. Because one ligand per sniff
    makes `s_upper = 1`, a large `L` is nearly free in memory, so keep it large.
 
 ---
@@ -190,21 +204,25 @@ route puts `U*` 1.6 to 2.5% below the Lambert value at these parameters.
 
 ---
 
-## Check 2 — are the directions orthogonal
+## Check 2 — how the directions are arranged
 
-`analysis/geometry_orthogonality.py`. Assumption A5 is what makes the private
-projections independent (Lemma 2) and therefore what makes the whole
-exchangeable reduction work. It is only available for `R <= D`.
+`analysis/geometry_orthogonality.py`. The directions are not orthogonal: assumption
+A5 was wrong. Orthogonal directions make the projections independent, but the
+outputs still share the threshold. A negative pairwise cosine cancels part of that
+shared fluctuation. Full cancellation needs `cos = -nu^2`, and geometry imposes
+`<cos> >= -1/(R-1)`, with equality iff the directions sum to zero. On this grid
+`-nu^2` is always below that floor, so the optimum is the zero-sum configuration, a
+regular simplex for `R <= D+1`.
 
-Compare against two reference lines, never against zero:
+| quantity | prediction |
+|---|---|
+| mean cos | on `-1/(R-1)` at every R, including above `R = D` |
+| zero-sum residual `||sum_r u_r|| / R` | zero |
+| std of the cosines | zero for `R <= D+1`, positive above (no simplex fits) |
 
-- **Welch bound** `sqrt((R-D)/(D(R-1)))`, the smallest achievable maximum
-  `|cos|` for `R > D`. Above `R = D` this, not zero, is the target.
-- **Random directions** `sqrt(2/(pi D))`. A measurement sitting here means the
-  optimiser never spread the receptors and any other agreement is luck.
-
-The script reports where the measurement sits between those two as a single
-"spreading quality" number, 1 at the bound and 0 at random.
+Measured in the 2026-10-19 sweep: mean cos on the floor to about 0.01 everywhere.
+Spread about 0.02 for `R <= D` at the two lowest `conc_std`, 0.2 to 0.28 for
+`R > D`, and up to 0.8 at small R for the two highest `conc_std`.
 
 ---
 
@@ -240,7 +258,6 @@ Figures are built and shown. Nothing is written to `figures/` unless asked.
 
 | symptom | most likely cause |
 |---|---|
-| `U/U*` systematically high and `Emax` drifted up | expected; re-read the prediction at the measured `Emax` before calling it a failure |
 | receptor norms drift outward without converging | the quadratic kernel was used, Eq. 34 degeneracy |
 | 1a passes, 1b fails | the reduction is fine, the lever-arm argument of Section 7 is not |
 | 1b fails only where `selfcons < 2` | the delta method, not the theory. Use `theory.exact_optimum` |
@@ -252,9 +269,19 @@ Figures are built and shown. Nothing is written to `figures/` unless asked.
 
 ## Status
 
-The simulator now has `shared_unit_energies`, so the model being simulated matches
-the model that was computed, up to the three residual differences tabulated above.
-Tier 0 passes. The sweep and the three analysis scripts are written and import-clean,
-but **no simulation has been run**, so nothing in checks 1 to 3 has been executed
-against data. Start with `--dry-run`, then one `conc_std` and a short R list to
-confirm the plumbing before launching the full 120-run grid.
+`shared_unit_energies` and `fixed_max_energy` make the simulated model the one that
+was computed, up to the three residual differences tabulated above.
+
+The first sweep (2026-10-19, learnable `Emax`, `170 R + 500` epochs) has been run
+and audited by Monte Carlo on the learned arrays (2026-10-28):
+
+- the simulator's codeword entropy equals the exact MI of its arrays to 0.02 bit for
+  `R <= 10`;
+- assumption A4 and the Gaussian threshold each underestimate the MI, by at most
+  about 0.25 bit for `R <= 8`, and are negligible at `R = 2`;
+- the closed form at the measured `nu` and mean cosine is within 0.02 bit of the
+  exact MI for `R <= D` at the lowest `conc_std`, and fails for `R > D` and at the
+  highest `conc_std`, where the norms are unequal (`std(U)/<U>` = 0.5 to 0.8);
+- runs with `R >= 5` had not converged.
+
+Next: rerun with `Emax` fixed and the longer epoch schedule.

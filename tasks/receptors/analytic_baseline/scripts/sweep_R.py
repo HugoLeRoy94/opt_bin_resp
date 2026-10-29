@@ -42,7 +42,7 @@ LN10 = math.log(10.0)
 D_DEFAULT = 8
 SIGMA = 1.0            # family_spread, per-coordinate ligand cloud spread
 LAMBDA = 4.0           # kernel range; rho = sigma sqrt(D)/lambda = 0.707 at D=8
-EMAX_INIT = 10.0       # softplus init in environment.py, natural-log units
+EMAX = 10.0            # fixed E_max (fixed_max_energy), natural-log units
 CONC_MEAN = 0.0        # log10; only sets Ebase init, which is learnable anyway
 
 # conc_std in log10. sigma_c = conc_std * ln10, so these are sigma_c = 4,2,1,0.5
@@ -55,12 +55,12 @@ N_LIGANDS       = 10000   # was 50000
 TEST_BATCH = 2 ** 18   # log2 B = 18, the ceiling on any counting MI estimate
 
 
-def theory_table(D, lam, conc_stds, Rs):
+def theory_table(D, lam, conc_stds, Rs, emax):
     """Print what the closed form expects, before spending any GPU time."""
     import theory as T
     print(f"\nclosed form at D={D}, sigma={SIGMA}, lambda={lam}, "
-          f"Emax={EMAX_INIT} (ln units)")
-    p0 = T.Params(D=D, sigma=SIGMA, lam=lam, Emax=EMAX_INIT, sigma_c=1.0)
+          f"Emax={emax} (ln units, fixed)")
+    p0 = T.Params(D=D, sigma=SIGMA, lam=lam, Emax=emax, sigma_c=1.0)
     print(f"  rho = sigma sqrt(D) / lambda = {p0.rho:.3f}"
           f"   (A1 wants this below about 1)")
     print(f"\n  {'conc_std':>8} {'sigma_c':>8} {'Gamma':>7} {'nu':>7} {'eta':>7} "
@@ -68,11 +68,11 @@ def theory_table(D, lam, conc_stds, Rs):
     nus = []
     for cs in conc_stds:
         sc = cs * LN10
-        p = T.Params(D=D, sigma=SIGMA, lam=lam, Emax=EMAX_INIT, sigma_c=sc,
+        p = T.Params(D=D, sigma=SIGMA, lam=lam, Emax=emax, sigma_c=sc,
                      m=CONC_MEAN * LN10)
         o = T.lambert_optimum(p)
         nus.append(o["nu_min"])
-        d_priv = 2 * o["U_star"] * SIGMA * EMAX_INIT * o["zbar"] / lam ** 2
+        d_priv = 2 * o["U_star"] * SIGMA * emax * o["zbar"] / lam ** 2
         print(f"  {cs:8.4f} {sc:8.3f} {p.Gamma:7.1f} {o['nu_min']:7.3f} "
               f"{T.eta(o['nu_min']):7.3f} {o['U_star']:7.3f} {o['zbar']:7.3f} "
               f"{o['Ebase']:8.2f} {o['selfcons']:9.2f} {0.1*d_priv:7.4f}")
@@ -104,7 +104,10 @@ def main():
     ap.add_argument("--conc-std", type=float, nargs="+", default=CONC_STD_DEFAULT)
     ap.add_argument("--replicates", type=int, default=3,
                     help="independent environments per grid node")
-    ap.add_argument("--epochs-per-R", type=int, default=170)
+    ap.add_argument("--epochs-per-R", type=int, default=600)
+    ap.add_argument("--epochs-base", type=int, default=2000)
+    ap.add_argument("--emax", type=float, default=EMAX,
+                    help="fixed E_max, natural-log units")
     ap.add_argument("--base-folder", default="/app/data/analytic_baseline")
     args = ap.parse_args()
 
@@ -116,7 +119,7 @@ def main():
           f"{sum(r <= D for r in Rs)} runs below, {sum(r > D for r in Rs)} above")
 
     try:
-        theory_table(D, lam, stds, Rs)
+        theory_table(D, lam, stds, Rs, args.emax)
     except Exception as exc:                                   # pragma: no cover
         print(f"  (theory table unavailable: {exc})")
 
@@ -132,7 +135,7 @@ def main():
     # no seed is shared between conditions, per AGENTS.md.
     blk_R = Rs * len(stds)
     blk_cs = np.repeat(stds, len(Rs)).tolist()
-    blk_ep = [int(args.epochs_per_R * r + 500) for r in Rs] * len(stds)
+    blk_ep = [int(args.epochs_per_R * r + args.epochs_base) for r in Rs] * len(stds)
 
     config = RunConfig(
         # --- environment: one family, continuous-ish ligand pool -------------
@@ -158,6 +161,7 @@ def main():
         # different model from the closed form, and the comparison is only valid
         # where the optimiser happens to make them equal.
         shared_unit_energies = True,
+        fixed_max_energy     = args.emax,
 
         # --- concentration: lognormal, identical for every ligand ------------
         conc_model_type = "lognormal",

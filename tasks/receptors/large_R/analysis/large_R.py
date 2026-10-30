@@ -1,5 +1,5 @@
 # %%
-"""large_R: the large-R expansion and the counting bounds against simulation.
+"""large_R: the small-R theory and the large-R expansion against simulation.
 
 Predictions, for R >> D (README):
   MI vs R      below the shell bound (~D log2 R) if the norms stay equal, up to
@@ -16,7 +16,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_lib"))
+# Anchored on tasks/receptors, not on this file: a shared interactive kernel can
+# keep __file__ from another task's script.
+_RECEPTORS = next(p for p in Path(__file__).resolve().parents if p.name == "receptors")
+sys.path.insert(0, str(_RECEPTORS / "large_R" / "_lib"))
 import large_r as LR                                           # noqa: E402
 
 T, RU = LR.T, LR.RU
@@ -42,7 +45,6 @@ for path, grp in df.groupby("path"):
                      cos_mean=float(C[np.triu_indices(R, 1)].mean()) if R > 1 else np.nan,
                      zero_sum=float(np.linalg.norm(g["dirs"].sum(0)) / R),
                      sd_c=cl["sd_c"], p_atoms=cl["p_on"] + cl["p_off"],
-                     exp_meas=float(T.mi_large_R(p, U, eb, R)),
                      params=p))
 X = pd.DataFrame(rows)
 
@@ -56,36 +58,39 @@ CS = sorted(X["conc_std"].unique())
 COL = dict(zip(CS, plt.rcParams["axes.prop_cycle"].by_key()["color"]))
 
 # %%
-# MI vs R, one panel per D.
-fig, axes = plt.subplots(1, len(DS), figsize=(5.6 * len(DS), 4.2), squeeze=False)
+# MI vs R, one panel per D. Colour = conc_std, line style = which theory.
+#   solid   small-R closed form (simplex, nu_eff), valid for R <= D+1
+#   dotted  the same formula extrapolated past R = D+1
+#   dashed  large-R expansion at U*, valid for R >> D^2
+fig, axes = plt.subplots(1, len(DS), figsize=(6.2 * len(DS), 4.4), squeeze=False)
 for ax, D in zip(axes[0], DS):
     sub = ok[ok["D"] == D]
-    rr = np.unique(np.geomspace(2, X["R"].max(), 40).astype(int))
+    rr = np.arange(2, X["R"].max() + 1)
+    top = sub["MI"].max()
     for cs, s in sub.groupby("conc_std"):
         col = COL[cs]
         a = s.groupby("R")["MI"].agg(["mean", "std"])
-        ax.errorbar(a.index, a["mean"], yerr=a["std"], fmt="o", color=col, capsize=3,
-                    label=f"conc_std={cs:g}")
-        e = s.groupby("R")["exp_meas"].mean()
-        ax.plot(e.index, e.values, "x", color=col, ms=7)
+        ax.errorbar(a.index, a["mean"], yerr=a["std"].fillna(0), fmt="o", color=col,
+                    ms=6, capsize=3, zorder=3)
         p0 = s["params"].iloc[0]
         o = T.lambert_optimum(p0)
-        ax.plot(rr, T.mi_large_R(p0, o["U_star"], o["Ebase"], rr), color=col, lw=1.2,
-                dashes=(6, 2))
-        small = rr[rr <= D + 1]
-        ax.plot(small, [T.mi_eff(o["nu_min"], int(r))["MI"] for r in small], "-",
-                color=col, lw=1.0)
-    ax.plot(rr, [LR.log2_shell_bound(int(r), D) for r in rr], "k-", lw=.9,
-            label="shell bound")
-    ax.plot(rr, [LR.log2_ladder_bound(int(r), D) for r in rr], "-", color="grey",
-            lw=.9, label="ladder bound")
-    ax.plot([], [], "k", lw=1.2, dashes=(6, 2), label="expansion at U*")
-    ax.plot([], [], "kx", label="expansion at measured U, Ebase")
-    ax.plot([], [], "k-", lw=1.0, label="small-R theory (R <= D+1)")
-    ax.axvline(D ** 2, color="grey", lw=.6, ls=":")
-    ax.set_xscale("log", base=2); ax.set_ylim(bottom=0)
+        small = np.array([T.mi_eff(o["nu_min"], int(r))["MI"] for r in rr])
+        ax.plot(rr[rr <= D + 1], small[rr <= D + 1], "-", color=col, lw=2.2)
+        ax.plot(rr[rr >= D + 1], small[rr >= D + 1], ":", color=col, lw=1.5)
+        big = T.mi_large_R(p0, o["U_star"], o["Ebase"], rr)
+        ax.plot(rr, big, "--", color=col, lw=1.5)
+        top = max(top, big.max())
+        ax.plot([], [], "s", color=col, label=f"conc_std = {cs:g}  (nu = {o['nu_min']:.2f})")
+    ax.plot([], [], "ko", label="simulation")
+    ax.plot([], [], "k-", lw=2.2, label="small-R theory (R <= D+1)")
+    ax.plot([], [], "k:", lw=1.5, label="small-R theory, extrapolated")
+    ax.plot([], [], "k--", lw=1.5, label="large-R expansion")
+    ax.axvline(D ** 2, color="grey", lw=1.0)
+    ax.text(D ** 2 * 1.04, 0.3, "R = D$^2$", color="grey", fontsize=8)
+    # the extrapolated small-R line reaches R bits; let it leave the frame
+    ax.set_xscale("log", base=2); ax.set_ylim(0, 1.25 * top)
     ax.set_xlabel("R"); ax.set_ylabel("MI [bits]"); ax.set_title(f"D = {D}")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=8)
 plt.tight_layout(); plt.show()
 
 # %%

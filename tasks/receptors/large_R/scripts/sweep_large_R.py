@@ -35,7 +35,7 @@ SIGMA = 1.0
 EMAX = 10.0
 CONC_MEAN = 0.0
 TEMPERATURE = 0.05
-N_LIGANDS = 50000
+N_LIGANDS = 10000
 TEST_BATCH = 2 ** 20
 D_DEFAULT = [2, 3]
 R_DEFAULT = [2, 4, 8, 16, 32, 64]
@@ -143,9 +143,10 @@ def main():
         test_batch_size = "auto",
         block_size      = 10,
         measurement_fns = ("full_array_entropy", "codeword_entropy"),
-        final_measurement_fns = ("full_array_entropy", "codeword_entropy",
-                                 "mutual_information_ligand",
-                                 "mutual_information_concentration"),
+        # No mutual_information_ligand / _concentration: they enumerate all 2^R
+        # patterns (bin_loss.compute_shannon_joint_entropy) and run out of memory at
+        # R = 32. codeword_entropy counts observed codewords and scales to R = 64.
+        final_measurement_fns = ("full_array_entropy", "codeword_entropy"),
         final_test_batch_size = TEST_BATCH,
         eval_chunk_size = 4096,
 

@@ -1,8 +1,13 @@
 path,state,label
+analytic_baseline/homomer_R_20261019_170223,keep,delete
+analytic_baseline/homomer_R_20261029_122655,keep,fixed E_max
 concentration_vs_family_spread/sparsity_het_20260626_135647,keep,Sparsity response — heteromers
 concentration_vs_family_spread/sparsity_hom_20260626_135839,keep,Sparsity response — homomers
 convergence/cell_convergence_20260917_072907,keep,Current cell convergence reference
 convergence/cell_convergence_20260918_110953,keep,k
+dilution/dilution_dimers_20261015_090103,keep,idk
+dilution/dilution_full_heteromers_20261015_090116,keep,idk
+dilution/dilution_homomers_20261015_090033,keep,idk
 equivalence/as_cells_20260918_111005,keep,k
 equivalence/as_receptors_20260918_110959,keep,"working equivalence, with mean activation."
 fig1/ng10_20260724_132647,keep,Figure 1 KT — 10 genes
@@ -19,8 +24,28 @@ fig1_2/ng2_20260626_145839,keep,Figure 1 annealed — 2 genes
 fig1_2/ng3_20260623_102629,keep,Figure 1 annealed — 3 genes
 fig1_2/ng5_20260624_124405,keep,Figure 1 annealed — 5 genes
 fig1_2/ng7_20260625_131836,keep,Figure 1 annealed — 7 genes
+fig2/fig2_bernoulli_heteromers_20261014_100429,keep,idk
+fig2/fig2_bernoulli_heteromers_20261015_143821,keep,idk
+fig2/fig2_bernoulli_homomers_20261014_100412,keep,idk
+fig2/fig2_bernoulli_homomers_20261015_143814,keep,idk
+fig2/fig2_complete_heteromers_20261014_100350,keep,idk
+fig2/fig2_complete_heteromers_20261015_143807,keep,idk
+fig2/fig2_complete_homomers_20261014_100341,keep,idk
+fig2/fig2_complete_homomers_20261015_143802,keep,idk
 gene_expression/cell_gene_expression_20260918_145105,keep,"only 3 genes, but works"
 gene_expression/homomer_gene_expression_20260921_091927,keep,works but only 3 genes
+gene_expression/homomer_gene_expression_20261013_095626,keep,idk
+gene_expression/mean_heteromers_20261013_111933,keep,idk
+gene_expression/mean_heteromers_20261013_130403,keep,idk
+gene_expression/mean_heteromers_20261013_130949,keep,idk
+gene_expression/mean_homomers_20261013_111944,keep,idk
+gene_expression/replicates_heteromers_complete_20260923_112537,keep,idk
+gene_expression/replicates_heteromers_complete_20260923_135950,keep,idk
+gene_expression/replicates_heteromers_random_20260922_084038,keep,idk
+gene_expression/replicates_homomers_complete_20260923_112624,keep,idk
+gene_expression/replicates_homomers_random_20260922_084103,keep,idk
+gene_expression/scaling_heteromers_complete_20260922_085125,keep,idk
+gene_expression/scaling_homomers_complete_20260922_085205,keep,idk
 mix_size/het_ng15_20260623_232423,keep,Mixture-size sweep — 15-gene heteromers
 mix_size/hom_20260623_232719,keep,Mixture-size sweep — homomers
 optimizer/optimizer_20260705_142229,keep,Optimizer comparison — blocked variants

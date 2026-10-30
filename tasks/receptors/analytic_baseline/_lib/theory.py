@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
-from scipy.special import lambertw, logsumexp, gammaln
+from scipy.special import lambertw, logsumexp, gammaln, betaln
 from scipy.stats import norm, chi2
 from scipy.optimize import brentq, minimize_scalar
 
@@ -420,3 +421,67 @@ def nu_stagger(R: int) -> float:
 def mi_eff(nu: float, R: int, n: int = 0) -> dict:
     """mi() evaluated at nu_eff. This is the prediction to compare against data."""
     return mi(nu_eff(nu, R), R, n=n)
+
+
+# --------------------------------------------------------------------------- #
+# Large R (R >> D): high-resolution expansion for a shell of equal norms
+# --------------------------------------------------------------------------- #
+# With equal norms, receptor r fires iff u_r . omega > c, omega = l/||l|| and
+# c = tau/||l||. The array quantises (omega, c), and for many receptors spread
+# uniformly over directions
+#
+#   H(A) ~ log2|S^{D-1}| + h(c) + D log2(R f_D) + (D-1)/2 E log2(1-c^2) - kappa_D
+#
+# f_D(c) = (1-c^2)^((D-3)/2) / B(1/2,(D-1)/2) is the density of u.omega, and
+# kappa_D the mean log2-volume of the cell containing the stimulus in the
+# unit-density local arrangement. |c| >= 1 are atoms (all off / all on).
+
+@lru_cache(maxsize=None)
+def cell_kappa(D: int, n_cells: int = 400, n_dirs: int = 8000, L: float = 150.0,
+               seed: int = 0) -> float:
+    """kappa_D by Monte Carlo: hyperplanes v.y - c = -delta, v uniform on S^{D-2},
+    delta of unit density; volume from the radial function of the zero cell."""
+    rng = np.random.default_rng(seed)
+    log_area = math.log2(2 * math.pi ** (D / 2) / math.gamma(D / 2))
+    out = np.empty(n_cells)
+    for i in range(n_cells):
+        n = rng.poisson(2 * L)
+        delta = rng.uniform(-L, L, n)
+        v = rng.standard_normal((n, D - 1))
+        v /= np.linalg.norm(v, axis=1, keepdims=True)
+        normals = np.hstack([v, -np.ones((n, 1))]) / math.sqrt(2)
+        th = rng.standard_normal((n_dirs, D))
+        th /= np.linalg.norm(th, axis=1, keepdims=True)
+        with np.errstate(divide="ignore"):
+            t = (-delta / math.sqrt(2))[None, :] / (th @ normals.T)
+        t[t <= 0] = np.inf
+        out[i] = log_area - math.log2(D) + np.log2(np.mean(t.min(1) ** D))
+    return float(out.mean())
+
+
+def mi_large_R(p: Params, U: float, ebase: float, R, n: int = 400_000,
+               seed: int = 0) -> np.ndarray:
+    """High-resolution H(A) of R receptors on a shell of radius U, directions
+    spread uniformly. Valid for R >> D; returns an array over R."""
+    rng = np.random.default_rng(seed)
+    D = p.D
+    l2 = p.sigma ** 2 * rng.chisquare(D, n)
+    s = p.m + p.sigma_c * rng.standard_normal(n)
+    arg = 1.0 - (s - ebase) / p.Emax
+    with np.errstate(divide="ignore", invalid="ignore"):
+        B = np.where(arg > 0, -p.lam ** 2 * np.log(arg), np.inf)
+    c = (l2 - B + U ** 2) / (2 * U * np.sqrt(l2))
+    probs = np.array([np.mean(c <= -1), np.mean(c >= 1)])
+    p_in = 1.0 - probs.sum()
+    probs = np.append(probs[probs > 0], p_in)
+    H_atoms = -np.sum(probs * np.log2(probs))
+    ci = c[np.abs(c) < 1]
+    hist, edges = np.histogram(ci, bins=512, density=True)
+    w = hist * np.diff(edges)
+    m = hist > 0
+    h_c = -np.sum(w[m] * np.log2(hist[m]))
+    L1 = np.mean(np.log2(1 - ci ** 2))
+    log_area = math.log2(2 * math.pi ** (D / 2) / math.gamma(D / 2))
+    log_f = (D - 3) / 2 * L1 - betaln(0.5, (D - 1) / 2) / math.log(2)
+    core = log_area + h_c + D * log_f + (D - 1) / 2 * L1 - cell_kappa(D)
+    return H_atoms + p_in * (core + D * np.log2(np.asarray(R, dtype=float)))

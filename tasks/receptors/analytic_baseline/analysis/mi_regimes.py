@@ -2,7 +2,8 @@
 """Check 3: the information itself, and the two regimes in R.
 
 Only run this after checks 1 and 2. If the geometry is wrong, an MI agreement
-here is a coincidence and a disagreement has two possible causes.
+here is a coincidence and a disagree
+ment has two possible causes.
 
 Measured quantity: codeword_entropy. The analytics assumes a deterministic
 threshold readout (A3), so MI = H(A) exactly, and codeword_entropy is the
@@ -55,9 +56,11 @@ if missing:
 
 # per-run predicted nu, taken at the MEASURED Emax (it is learnable)
 rows = []
+PRED = {}
 for path, grp in df.groupby("path"):
     g = RU.geometry(grp)
     pm = g["pred_meas"]
+    PRED[float(grp["conc_std"].iloc[0])] = pm
     rows.append(dict(path=path, nu=pm["nu_min"], eta_pred=pm["eta"],
                      selfcons=pm["selfcons"], Emax_drift=g["Emax_drift"]))
 P = pd.DataFrame(rows)
@@ -99,13 +102,29 @@ for cs, sub in ok.groupby("conc_std"):
     th_o = [T.mi(nu_g, int(r))["MI"] for r in rr]            # old A5
     ax.plot(rr[rr <= D], np.array(th)[rr <= D], "-", color=col, lw=1.4)
     ax.plot(rr[rr >= D], np.array(th)[rr >= D], ":", color=col, lw=1.0)
-    ax.plot(rr, th_o, "-", color=col, lw=.7, alpha=.45)      # faint: orthogonal
+    # large-R expansion (shell at U*, uniform directions), from R = D on
+    pg = PRED[float(cs)]
+    rl = rr[rr >= D]
+    ax.plot(rl, T.mi_large_R(pg["Params"], pg["U_star"], pg["Ebase"], rl),
+            color=col, lw=1.2, dashes=(6, 2))
+    #ax.plot(rr, th_o, "-", color=col, lw=.7, alpha=.45)      # faint: orthogonal
+    # asymptotic laws of eta, each drawn only on its own side of nu_eff = 1
+    #ne = np.array([T.nu_eff(nu_g, int(r)) for r in rr])
+    #iq = np.array([T.mi(n, int(r))["I_A_q"] for n, r in zip(ne, rr)])
+    #lo, hi = ne <= 1, ne >= 1
+    #ax.plot(rr[lo], rr[lo] * T.eta_small_nu(ne[lo]) + iq[lo], "--", color=col, lw=.8)
+    #ax.plot(rr[hi], rr[hi] * T.eta_large_nu(ne[hi]) + iq[hi], "-.", color=col, lw=.8)
 ax.plot(rr, rr, "k--", lw=.8, label="R bits (ideal)")
+ax.plot([], [], "k", lw=1.2, dashes=(6, 2), label="large-R expansion (shell)")
+ax.set_ylim(bottom=0)
+#ax.plot([], [], "k-", lw=.7, alpha=.45, label="orthogonal directions")
+#ax.plot([], [], "k--", lw=.8, label=r"$R(1-\nu_{\rm eff}^2/\pi\ln 2)+I(A;q)$")
+#ax.plot([], [], "k-.", lw=.8, label=r"$1.04R/\nu_{\rm eff}+I(A;q)$")
 ax.axvline(D, color="grey", lw=.8)
 ax.text(D * 1.02, .5, "R = D", rotation=90, fontsize=8, color="grey")
 ax.set_xlabel("R"); ax.set_ylabel("MI  [bits]")
-ax.set_title("Check 3: solid = theory where A5 holds, dotted = extrapolation past R=D")
-ax.legend(fontsize=8); plt.tight_layout(); plt.show()
+ax.set_title("Check 3: solid = theory for R <= D, dotted = extrapolation past R = D")
+ax.legend(fontsize=7); plt.tight_layout(); plt.show()
 
 # %%
 # The same thing as a residual, which is where a small systematic shows up.
@@ -130,13 +149,15 @@ ax.legend(fontsize=8); plt.tight_layout(); plt.show()
 
 # %%
 # The collapse. This is the claim that nu is the only control parameter.
-sub = ok[ok["R"] <= D].copy()
+sub = ok.copy()
 sub["eta_meas"] = (sub["MI"] - sub["I_A_q"]) / sub["R"]
 fig, ax = plt.subplots(figsize=(5.8, 4.0))
 for R, s in sub.groupby("R"):
     # x axis is nu_eff: with zero-sum directions that is the control parameter.
     # Plotting against raw nu smears the small-R points to the right.
-    ax.plot(s["nu_eff"], s["eta_meas"], "o", ms=5, label=f"R={R}")
+    # Open markers past R = D, where no simplex fits and the reduction is not exact.
+    ax.plot(s["nu_eff"], s["eta_meas"], "o", ms=5, label=f"R={R}",
+            mfc="none" if R > D else None)
 nug = np.logspace(-1, 1.2, 300)
 ax.plot(nug, [T.eta(n) for n in nug], "k-", lw=1.4, label=r"$\eta(\nu)$, Eq. 48")
 ax.plot(nug, T.eta_small_nu(nug), "r--", lw=.9, label=r"$1-\nu^2/\pi\ln 2$")
@@ -144,7 +165,7 @@ ax.plot(nug, T.eta_large_nu(nug), "b--", lw=.9, label=r"$1.04/\nu$")
 ax.plot([1.0], [T.ETA_AT_ONE], "k*", ms=13, label=r"$\eta(1)=1/2\ln 2$")
 ax.set_xscale("log"); ax.set_ylim(0, 1.05)
 ax.set_xlabel(r"$\nu_{\rm eff}$"); ax.set_ylabel(r"$(\mathrm{MI}-I(A;q))\,/\,R$")
-ax.set_title(r"Check 3b: collapse onto one curve vs $\nu_{\rm eff}$ (R <= D only)")
+ax.set_title(r"Check 3b: collapse vs $\nu_{\rm eff}$ (open: R > D)")
 ax.legend(fontsize=7, ncol=2); plt.tight_layout(); plt.show()
 
 # %%

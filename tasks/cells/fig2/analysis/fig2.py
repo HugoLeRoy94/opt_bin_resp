@@ -60,3 +60,5 @@ axes[0, 0].legend(fontsize=8)
 fig.suptitle(f"G = {G} genes available")
 plt.tight_layout()
 plt.show()
+
+# %%

@@ -557,6 +557,7 @@ class SimulationRunner:
                 block_shared_conc_mean=self.config.block_shared_conc_mean,
                 shared_unit_energies=self.config.shared_unit_energies,
                 fixed_max_energy=self.config.fixed_max_energy,
+                family_weights=self.config.family_weights,
             ).to(self.device)
 
         physics = BinaryReceptor(

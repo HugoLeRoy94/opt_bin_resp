@@ -187,6 +187,7 @@ def load_model(runs=None, *, goal: str = None, run_dir: str = None,
         block_shared_conc_mean=cfg.block_shared_conc_mean,
         shared_unit_energies=getattr(cfg, 'shared_unit_energies', False),
         fixed_max_energy=getattr(cfg, 'fixed_max_energy', None),
+        family_weights=getattr(cfg, 'family_weights', None),
     ).to(device)
     env.load_state_dict(ckpt["env_state"])
     env.eval()

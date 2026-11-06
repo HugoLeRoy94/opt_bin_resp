@@ -227,7 +227,8 @@ class LigandEnvironment(nn.Module):
                  affinity_kernel: str = "gaussian", kernel_params: list = None,
                  use_interface_model: bool = False, block_shared_conc_mean: bool = False,
                  shared_unit_energies: bool = False,
-                 fixed_max_energy: Optional[float] = None):
+                 fixed_max_energy: Optional[float] = None,
+                 family_weights: Optional[list] = None):
         """
         Args:
             n_genes: Number of gene units.
@@ -254,6 +255,8 @@ class LigandEnvironment(nn.Module):
                                  adjacent subunits in the ring.
             block_shared_conc_mean: When True and n_presence_blocks > 1, all ligands
                                     in the same block share one concentration mean.
+            family_weights: probability that a pool ligand belongs to each family
+                            (length n_families). None draws families uniformly.
         """
         super().__init__()
         self.n_genes = n_genes
@@ -281,6 +284,10 @@ class LigandEnvironment(nn.Module):
         # Fixed E_max: one value for every gene, stored as a buffer so it is saved
         # with the model but never optimised.
         self.fixed_max_energy = fixed_max_energy
+        self.family_weights = family_weights
+        if family_weights is not None and len(family_weights) != n_families:
+            raise ValueError(f"family_weights has {len(family_weights)} entries, "
+                             f"expected n_families = {n_families}")
         if fixed_max_energy is not None and (use_interface_model or affinity_kernel != "gaussian"):
             raise NotImplementedError(
                 "fixed_max_energy is implemented for the classic model with the "
@@ -419,7 +426,12 @@ class LigandEnvironment(nn.Module):
         # 2.5 Ligand Pool Initialization
         with torch.no_grad():
             # Assign each ligand to a family randomly
-            ligand_family_assignments = torch.randint(0, n_families, (n_ligands,))
+            if family_weights is None:
+                ligand_family_assignments = torch.randint(0, n_families, (n_ligands,))
+            else:
+                w = torch.as_tensor(family_weights, dtype=torch.float)
+                ligand_family_assignments = torch.multinomial(w / w.sum(), n_ligands,
+                                                              replacement=True)
             self.register_buffer('ligand_family_assignments', ligand_family_assignments)
 
             # Draw permanent base coordinates for the ligands
@@ -497,6 +509,7 @@ class LigandEnvironment(nn.Module):
             block_shared_conc_mean=self.block_shared_conc_mean,
             shared_unit_energies=self.shared_unit_energies,
             fixed_max_energy=self.fixed_max_energy,
+            family_weights=self.family_weights,
         ).to(device)
 
         with torch.no_grad():

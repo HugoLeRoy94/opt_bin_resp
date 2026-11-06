@@ -24,7 +24,7 @@ _SWEEP_CONTROL_FIELDS = frozenset({
 # Fields whose values are arrays (tuple = fixed, list-of-tuples = axis).
 # Used when converting RunConfig values to lists for SingleRunConfig.
 _TUPLE_FIELDS = frozenset({"kernel_params", "measurement_fns", "final_measurement_fns", "conc_mean", "conc_std",
-                           "cell_gene_probs", "cell_size_pmf"})
+                           "cell_gene_probs", "cell_size_pmf", "family_weights"})
 
 # cell_gene_sets is nested one level deeper (a tuple of gene tuples), so it needs
 # its own round-trip handling rather than the flat _TUPLE_FIELDS rule.
@@ -137,6 +137,10 @@ class SingleRunConfig:
     # Fixed selectivity ceiling E_max (natural-log units), shared by every gene and
     # not learned. None keeps E_max learnable. Gaussian kernel, classic model only.
     fixed_max_energy: Optional[float] = None
+
+    # Probability that a ligand of the pool belongs to each family, one entry per
+    # family. None draws families uniformly (the original behaviour).
+    family_weights: Optional[List[float]] = None
 
     # --- Performance (exact / near-exact; no effect on the model) ---
     # Evaluate each DISTINCT energy source (gene, or unique +/- face pocket) once and
@@ -372,6 +376,9 @@ class RunConfig:
 
     # --- Fixed E_max (see SingleRunConfig) ---
     fixed_max_energy: Union[Optional[float], List[Optional[float]]] = None
+
+    # --- Family weights (see SingleRunConfig); tuple = fixed, list of tuples = axis ---
+    family_weights: Union[Optional[Tuple[float, ...]], List[Tuple[float, ...]]] = None
 
     # --- Performance ---
     use_composition: Union[bool, List[bool]] = True

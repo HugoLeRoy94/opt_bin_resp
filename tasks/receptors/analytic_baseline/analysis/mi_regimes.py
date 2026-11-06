@@ -92,12 +92,16 @@ ok = df.drop(bad.index)
 # MI against R, one line per nu, with theory.
 fig, ax = plt.subplots(figsize=(6.2, 4.2))
 rr = np.arange(1, df["R"].max() + 1)
-for cs, sub in ok.groupby("conc_std"):
+for cs, sub in df.groupby("conc_std"):
     nu_g = NU[cs]
     a = sub.groupby("R")["MI"].agg(["mean", "std", "count"])
-    line = ax.errorbar(a.index, a["mean"], yerr=a["std"], fmt="o", capsize=3,
-                       label=LAB[cs])
-    col = line.lines[0].get_color()
+    # hollow: at least one run of this point failed the estimator check
+    a["flag"] = pd.Series(sub.index.isin(bad.index), index=sub.index).groupby(sub["R"]).any()
+    col = ax._get_lines.get_next_color()
+    for hollow, b in a.groupby("flag"):
+        ax.errorbar(b.index, b["mean"], yerr=b["std"], fmt="o", capsize=3, color=col,
+                    mfc="white" if hollow else col)
+    ax.plot([], [], "o", color=col, label=LAB[cs])
     th = [T.mi_eff(nu_g, int(r))["MI"] for r in rr]          # corrected
     th_o = [T.mi(nu_g, int(r))["MI"] for r in rr]            # old A5
     ax.plot(rr[rr <= D], np.array(th)[rr <= D], "-", color=col, lw=1.4)
@@ -115,6 +119,7 @@ for cs, sub in ok.groupby("conc_std"):
     #ax.plot(rr[lo], rr[lo] * T.eta_small_nu(ne[lo]) + iq[lo], "--", color=col, lw=.8)
     #ax.plot(rr[hi], rr[hi] * T.eta_large_nu(ne[hi]) + iq[hi], "-.", color=col, lw=.8)
 ax.plot(rr, rr, "k--", lw=.8, label="R bits (ideal)")
+ax.plot([], [], "ko", mfc="white", label="estimate unreliable")
 ax.plot([], [], "k", lw=1.2, dashes=(6, 2), label="large-R expansion (shell)")
 ax.set_ylim(bottom=0)
 #ax.plot([], [], "k-", lw=.7, alpha=.45, label="orthogonal directions")
@@ -124,6 +129,29 @@ ax.axvline(D, color="grey", lw=.8)
 ax.text(D * 1.02, .5, "R = D", rotation=90, fontsize=8, color="grey")
 ax.set_xlabel("R"); ax.set_ylabel("MI  [bits]")
 ax.set_title("Check 3: solid = theory for R <= D, dotted = extrapolation past R = D")
+ax.legend(fontsize=7); plt.tight_layout(); plt.show()
+
+# %%
+# Same data on a log2 R axis, with a D log2 R slope anchored on the highest curve
+# at the largest R.
+fig, ax = plt.subplots(figsize=(6.2, 4.2))
+top_R = df["R"].max()
+top_MI = df[df["R"] == top_R].groupby("conc_std")["MI"].mean().max()
+for cs, sub in df.groupby("conc_std"):
+    a = sub.groupby("R")["MI"].agg(["mean", "std"])
+    a["flag"] = pd.Series(sub.index.isin(bad.index), index=sub.index).groupby(sub["R"]).any()
+    col = ax._get_lines.get_next_color()
+    for hollow, b in a.groupby("flag"):
+        ax.errorbar(b.index, b["mean"], yerr=b["std"], fmt="o-", capsize=3, color=col,
+                    mfc="white" if hollow else col, lw=.8)
+    ax.plot([], [], "o", color=col, label=LAB[cs])
+rs = np.geomspace(D, top_R, 50)
+ax.plot(rs, top_MI + D * np.log2(rs / top_R), "k-.", lw=1.2, label=f"slope D log2 R (D = {D})")
+ax.plot([], [], "ko", mfc="white", label="estimate unreliable")
+ax.axvline(D, color="grey", lw=.8)
+ax.text(D * 1.02, .5, "R = D", rotation=90, fontsize=8, color="grey")
+ax.set_xscale("log", base=2); ax.set_ylim(bottom=0)
+ax.set_xlabel("R"); ax.set_ylabel("MI  [bits]")
 ax.legend(fontsize=7); plt.tight_layout(); plt.show()
 
 # %%

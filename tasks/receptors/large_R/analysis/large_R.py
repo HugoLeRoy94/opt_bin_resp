@@ -64,14 +64,18 @@ COL = dict(zip(CS, plt.rcParams["axes.prop_cycle"].by_key()["color"]))
 #   dashed  large-R expansion at U*, valid for R >> D^2
 fig, axes = plt.subplots(1, len(DS), figsize=(6.2 * len(DS), 4.4), squeeze=False)
 for ax, D in zip(axes[0], DS):
-    sub = ok[ok["D"] == D]
+    sub = X[X["D"] == D]
     rr = np.arange(2, X["R"].max() + 1)
     top = sub["MI"].max()
     for cs, s in sub.groupby("conc_std"):
         col = COL[cs]
         a = s.groupby("R")["MI"].agg(["mean", "std"])
-        ax.errorbar(a.index, a["mean"], yerr=a["std"].fillna(0), fmt="o", color=col,
-                    ms=6, capsize=3, zorder=3)
+        # hollow: at least one run of this point failed the estimator check
+        flag = s.index.isin(bad.index)
+        a["flag"] = pd.Series(flag, index=s.index).groupby(s["R"]).any()
+        for hollow, b in a.groupby("flag"):
+            ax.errorbar(b.index, b["mean"], yerr=b["std"].fillna(0), fmt="o", color=col,
+                        mfc="white" if hollow else col, ms=6, capsize=3, zorder=3)
         p0 = s["params"].iloc[0]
         o = T.lambert_optimum(p0)
         small = np.array([T.mi_eff(o["nu_min"], int(r))["MI"] for r in rr])
@@ -82,9 +86,11 @@ for ax, D in zip(axes[0], DS):
         top = max(top, big.max())
         ax.plot([], [], "s", color=col, label=f"conc_std = {cs:g}  (nu = {o['nu_min']:.2f})")
     ax.plot([], [], "ko", label="simulation")
+    ax.plot([], [], "ko", mfc="white", label="simulation, estimate unreliable")
     ax.plot([], [], "k-", lw=2.2, label="small-R theory (R <= D+1)")
     ax.plot([], [], "k:", lw=1.5, label="small-R theory, extrapolated")
     ax.plot([], [], "k--", lw=1.5, label="large-R expansion")
+    ax.plot(rr, D * np.log2(rr), "k-.", lw=1.0, label="D log2 R")
     ax.axvline(D ** 2, color="grey", lw=1.0)
     ax.text(D ** 2 * 1.04, 0.3, "R = D$^2$", color="grey", fontsize=8)
     # the extrapolated small-R line reaches R bits; let it leave the frame

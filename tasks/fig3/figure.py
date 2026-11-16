@@ -79,3 +79,4 @@ for ax in axes:
     ax.legend(fontsize=8)
 plt.tight_layout()
 plt.show()
+# %%

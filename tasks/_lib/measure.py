@@ -96,3 +96,63 @@ def measure_goal(data_root, prefixes, measurements, batch_size, label,
                                    eval_chunk_size, device, overwrite)
     print(f"\nmeasured {total} run(s) as {label!r}")
     return total
+
+
+def measure_exact_run(run_dir, n_samples, n_chains, device=None, label="exact"):
+    """Exact codeword entropy of one homomer run against its continuous ligand cloud.
+
+    See estimate/exact.py. Hard threshold, so H(Y|X) = 0 and this is the MI.
+    """
+    import math
+
+    import torch.nn.functional as F
+
+    from estimate.exact import exact_codeword_entropy
+    from train.io import RunLogger, load_config
+
+    config = load_config(run_dir)
+    assert (config.n_families == 1 and config.distribution_type == "gaussian"
+            and config.observation_noise_sigma == 0 and config.shared_unit_energies
+            and not config.use_interface_model), f"{run_dir}: outside the exact model"
+    env, _physics, receptor_indices, _readout = load_model(run_dir)
+    assert (receptor_indices == receptor_indices[:, :1]).all(), "homomers only"
+    conc = env.concentration_model
+    results = exact_codeword_entropy(
+        u=env.unit_latent[receptor_indices[:, 0]].double().numpy(),
+        m=env.family_latent[0].double().numpy(),
+        sigma=env.family_spread,
+        mu_c=conc.mu[0].item() * math.log(10),           # stored in log10
+        sigma_c=conc.log_sigma[0].exp().item() * math.log(10),
+        e_base=env.base_energies()[0].item(),
+        e_max=F.softplus(env.max_energies_raw())[0].item(),
+        lam=env.kernel_params[0],
+        n_samples=n_samples, n_chains=n_chains, device=device)
+    RunLogger(run_dir).save_results({k: [float(v)] for k, v in results.items()}, label)
+
+
+def measure_exact_goal(data_root, prefixes, n_samples, n_chains, device=None,
+                       overwrite=False, label="exact"):
+    """measure_exact_run on every finished run of the matching sweeps."""
+    from pathlib import Path
+
+    root = Path(data_root)
+    total = 0
+    for prefix in prefixes:
+        sweeps = [p for p in find_sweeps(root) if p.name.startswith(prefix)]
+        if not sweeps:
+            raise FileNotFoundError(
+                f"No sweep under {root} starting with {prefix!r}. Train it first.")
+        for sweep_root in sweeps:
+            print(f"\n{sweep_root.name}  ->  test_{label}.json  "
+                  f"({n_samples} codewords x {n_chains} chains)")
+            for path in sorted(sweep_root.rglob("config.json")):
+                run_dir = path.parent
+                if not is_finished(run_dir):
+                    continue
+                if not overwrite and (run_dir / f"test_{label}.json").is_file():
+                    continue
+                measure_exact_run(run_dir, n_samples, n_chains, device, label)
+                total += 1
+                print(f"  [{total}] {run_dir.relative_to(sweep_root)}")
+    print(f"\nmeasured {total} run(s) as {label!r}")
+    return total

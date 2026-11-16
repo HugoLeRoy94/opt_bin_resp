@@ -30,6 +30,7 @@ MI_PLUGIN = "codeword_entropy_plugin"
 MISS = "codeword_entropy_missing_mass"
 CEIL = "codeword_entropy_log2B"
 KT_LO, KT_UP = "mutual_information_kt", "mutual_information_kt_upper"
+EXACT = "entropy_exact"              # test_exact: continuous ligand cloud, no counting
 
 frame = runs(GOAL, latest_only=True)
 # nu is derived, not tagged: it is a function of the geometry and the dynamic
@@ -54,6 +55,8 @@ for colour, nu in zip(colours, nus):
     # The closed form, on the same axis. Eq. 48 below the crossover.
     ax.plot(R, [T.mi_predicted(nu, int(r))for r in R], "--",
             color=colour, linewidth=1, alpha=.8)
+    if EXACT in curve:
+        ax.plot(R, curve[EXACT], "s:", color=colour, markerfacecolor="none")
 
 ax.axvline(D, color="k", lw=.8, ls=":")
 ax.annotate(f"R = D = {D}", (D, ax.get_ylim()[1]), xytext=(4, -12),
@@ -61,7 +64,8 @@ ax.annotate(f"R = D = {D}", (D, ax.get_ylim()[1]), xytext=(4, -12),
 #ax.plot(sorted(points.n_genes.unique()), points.groupby("n_genes")[CEIL].first(),
 #        ":", color="0.4", lw=1, label="log2(B), the counting ceiling")
 ax.set(xlabel="receptors R (= genes, homomers)", ylabel="MI [bits]",
-       title="solid: measured codewords   dashed: closed form   band: 1 sd across worlds")
+       title="solid: counting   dotted squares: exact   dashed: closed form\n"
+             "band: 1 sd across worlds")
 ax.legend(fontsize=8)
 plt.tight_layout()
 plt.show()
@@ -78,11 +82,13 @@ for colour, nu in zip(colours, nus):
         axes[1].plot(curve.n_genes, curve[MI], "o-", color=colour)
         axes[1].fill_between(curve.n_genes, curve[KT_LO], curve[KT_UP],
                              color=colour, alpha=.15, linewidth=0)
+    if EXACT in curve:
+        axes[1].plot(curve.n_genes, curve[EXACT], "s:", color=colour, markerfacecolor="none")
 axes[0].set(xlabel="receptors R", ylabel="missing mass",
             title="probability never sampled", yscale="log")
 axes[0].legend(fontsize=8)
 axes[1].set(xlabel="receptors R", ylabel="MI [bits]",
-            title="counting (points) against the KT bracket (band)")
+            title="counting (points), exact (squares), KT bracket (band)")
 for a in axes:
     a.grid(alpha=.2)
 plt.tight_layout()

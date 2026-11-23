@@ -99,9 +99,11 @@ def measure_goal(data_root, prefixes, measurements, batch_size, label,
 
 
 def measure_exact_run(run_dir, n_samples, n_chains, device=None, label="exact"):
-    """Exact codeword entropy of one homomer run against its continuous ligand cloud.
+    """Exact codeword entropy of one run against its continuous ligand cloud.
 
     See estimate/exact.py. Hard threshold, so H(Y|X) = 0 and this is the MI.
+    Homomers go through the squared-distance path, heteromers through the
+    subunit-fraction matrix w.
     """
     import math
 
@@ -115,10 +117,14 @@ def measure_exact_run(run_dir, n_samples, n_chains, device=None, label="exact"):
             and config.observation_noise_sigma == 0 and config.shared_unit_energies
             and not config.use_interface_model), f"{run_dir}: outside the exact model"
     env, _physics, receptor_indices, _readout = load_model(run_dir)
-    assert (receptor_indices == receptor_indices[:, :1]).all(), "homomers only"
+    if (receptor_indices == receptor_indices[:, :1]).all():
+        u, w = env.unit_latent[receptor_indices[:, 0]], None
+    else:
+        u = env.unit_latent
+        w = F.one_hot(receptor_indices, u.shape[0]).double().mean(1).numpy()  # (R, G)
     conc = env.concentration_model
     results = exact_codeword_entropy(
-        u=env.unit_latent[receptor_indices[:, 0]].double().numpy(),
+        u=u.double().numpy(), w=w,
         m=env.family_latent[0].double().numpy(),
         sigma=env.family_spread,
         mu_c=conc.mu[0].item() * math.log(10),           # stored in log10

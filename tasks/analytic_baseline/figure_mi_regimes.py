@@ -32,7 +32,7 @@ CEIL = "codeword_entropy_log2B"
 KT_LO, KT_UP = "mutual_information_kt", "mutual_information_kt_upper"
 EXACT = "entropy_exact"              # test_exact: continuous ligand cloud, no counting
 
-frame = runs(GOAL, latest_only=True)
+frame = runs(GOAL, sweeps=["homomer_R"], latest_only=True)
 # nu is derived, not tagged: it is a function of the geometry and the dynamic
 # range, so every run yields it whether or not it was labelled at launch.
 frame = frame.assign(nu=[

@@ -1,1 +1,12 @@
 path,state,label
+analytic_baseline/gene_budget_m2_c2_20261123_144454,delete,
+analytic_baseline/gene_budget_m3_c2_20261123_144502,delete,
+analytic_baseline/gene_budget_m4_c2_20261123_144509,delete,
+analytic_baseline/gene_budget_m5_c2_20261123_144515,delete,
+analytic_baseline/heteromer_m2_R_20261123_120649,keep,fixed_G
+analytic_baseline/heteromer_m3_R_20261123_120717,keep,fixed G
+analytic_baseline/heteromer_m4_R_20261123_120725,keep,fixed G
+analytic_baseline/heteromer_m5_R_20261123_120731,keep,fixed G
+analytic_baseline/homomer_R_20261110_122332,keep,comparison with the analytical formula
+analytic_baseline/homomer_R_20261113_105605,delete,
+analytic_baseline/homomer_R_20261113_105647,delete,

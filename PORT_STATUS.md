@@ -2,7 +2,7 @@
 
 Temporary handoff note. Not part of the project.
 
-Old repo: `/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp` (frozen archive)
+Old repo: `/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp_old` (frozen archive)
 New repo: this one.
 
 ## Where we stopped

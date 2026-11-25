@@ -23,8 +23,8 @@
 set -e
 
 SERVER="${OCTOPUS_DATA_SERVER:-leroy@10.187.172.7}"
-REMOTE_ROOT="${OCTOPUS_REMOTE_ROOT:-/home/leroy/opt_bin_resp_2}"
-REMOTE_DATA="${OCTOPUS_REMOTE_DATA_ROOT:-/storage/leroy/data_2}"
+REMOTE_ROOT="${OCTOPUS_REMOTE_ROOT:-/home/leroy/opt_bin_resp}"
+REMOTE_DATA="${OCTOPUS_REMOTE_DATA_ROOT:-/storage/leroy/data}"
 COMPOSE="$REMOTE_ROOT/docker-compose.server.yaml"
 
 TASK="$1"; SCRIPT="$2"; GPU="${3:-0}"
@@ -52,7 +52,7 @@ if ! ssh "${SSH_OPTS[@]}" "$SERVER" "test -d '$REMOTE_ROOT/.git'" 2>/dev/null; t
     echo "No git repository at $SERVER:$REMOTE_ROOT" >&2
     echo >&2
     echo "Clone it once:" >&2
-    echo "  ssh $SERVER 'git clone https://github.com/HugoLeRoy94/opt_bin_resp_2.git $REMOTE_ROOT'" >&2
+    echo "  ssh $SERVER 'git clone https://github.com/HugoLeRoy94/opt_bin_resp.git $REMOTE_ROOT'" >&2
     echo >&2
     echo "Or point at an existing checkout:" >&2
     echo "  OCTOPUS_REMOTE_ROOT=/path/to/repo $0 $*" >&2
@@ -89,7 +89,7 @@ MON="mkdir -p $REMOTE_DATA/$TASK; $REMOTE_ROOT/ops/monitor_gpu.sh $GPU 5 $MEM_LO
 # -T disables the container TTY so output can be piped to tee. python3 -u:
 # without a TTY Python block-buffers stdout, so prints would not reach the pane
 # or the log until the buffer filled.
-SIM="MY_GPU=$GPU docker compose -f $COMPOSE run --rm -T gpu-runner \
+SIM="MY_GPU=$GPU OCTOPUS_REMOTE_DATA_ROOT=$REMOTE_DATA docker compose -f $COMPOSE run --rm -T gpu-runner \
 python3 -u -m tasks.${TASK}.${SCRIPT} --data_root /app/data/${TASK} $ARGS 2>&1 | tee -a $RUN_LOG"
 # On exit, stop the monitor by its recorded PID and move the logs into the sweep.
 # No pattern-based pkill: the pattern would also match this session's own shell,

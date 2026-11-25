@@ -22,7 +22,7 @@ matplotlib. A training container never needs it.
 ## Install, once
 
 ```bash
-cd opt_bin_resp_2
+cd opt_bin_resp
 pip install -e . --no-deps
 ```
 
@@ -50,7 +50,7 @@ python tasks/<task>/figure.py                     # draw
 ```
 
 Training and measuring are separate steps. Training writes `config.json`,
-`stats.csv` and `best_model.pt` and nothing else. A test script loads those
+`stats.csv` and `final_model.pt` and nothing else. A test script loads those
 checkpoints and writes `test_<label>.json`.
 
 They are separate because the estimators want incompatible budgets. Sampled
@@ -104,7 +104,7 @@ ssh leroy@10.187.172.7 'git config --global https.proxy http://proxy.unige.it:80
 The launcher pulls into an existing checkout; it does not create one.
 
 ```bash
-ssh leroy@10.187.172.7 'git clone https://github.com/HugoLeRoy94/opt_bin_resp_2.git /home/leroy/opt_bin_resp_2'
+ssh leroy@10.187.172.7 'git clone https://github.com/HugoLeRoy94/opt_bin_resp.git /home/leroy/opt_bin_resp'
 ```
 
 If that asks for credentials, store them once so later pulls are
@@ -112,7 +112,7 @@ non-interactive. A prompt inside `run_remote.sh` would never be seen, because
 the commands run over ssh with no terminal attached:
 
 ```bash
-ssh -t leroy@10.187.172.7 'cd /home/leroy/opt_bin_resp_2 && git config credential.helper store && git pull'
+ssh -t leroy@10.187.172.7 'cd /home/leroy/opt_bin_resp && git config credential.helper store && git pull'
 ```
 
 No install step and no rebuild: the container mounts the source and sets
@@ -139,7 +139,7 @@ Kill one run with `tmux kill-session`, never `tmux kill-server`: that kills
 every session on a shared machine.
 
 **The container is the existing one.** `requirements.txt` is a strict subset of
-what the `opt_bin_resp` image already installed, and `PYTHONPATH=/app` is set in
+what the `opt_bin_resp-gpu-runner` image already installed, and `PYTHONPATH=/app` is set in
 the compose file rather than baked into the image, so nothing needs rebuilding.
 If `docker images` shows a different tag:
 
@@ -157,8 +157,8 @@ python ops/manage_data.py curate [goal ...]     # label sweeps keep or delete
 python ops/manage_data.py sync   [goal ...]     # apply deletions, mirror down
 ```
 
-Raw data live on the cluster under `/storage/leroy/data_2`, separate from the
-old repo's `/storage/leroy/data`, so the two code bases never read each
+Raw data live on the cluster under `/storage/leroy/data`, separate from the
+old repo's `/storage/leroy/data_old`, so the two code bases never read each
 other's runs. Locally they mirror to this repo's `data/`.
 
 The cluster is authoritative for raw data; `curation.csv` is authoritative for

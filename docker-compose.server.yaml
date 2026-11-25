@@ -6,7 +6,7 @@
 # ops/run_remote.sh wraps this in tmux with a GPU monitor; prefer it.
 #
 # REUSES THE EXISTING IMAGE. requirements.txt is a strict subset of what the
-# opt_bin_resp image already installed, and PYTHONPATH is set below rather than
+# opt_bin_resp-gpu-runner image already installed, and PYTHONPATH is set below rather than
 # baked in, so nothing needs rebuilding. Check the name with `docker images`
 # and override it if it differs:
 #
@@ -34,7 +34,7 @@ services:
       - ./tasks:/app/tasks:ro,z
       - ./ops:/app/ops:ro,z
       # Results. The only writable mount.
-      - ${OCTOPUS_REMOTE_DATA_ROOT:-/storage/leroy/data_2}:/app/data:z
+      - ${OCTOPUS_REMOTE_DATA_ROOT:-/storage/leroy/data}:/app/data:z
     environment:
       - PYTHONPATH=/app
       - http_proxy=${http_proxy:-}

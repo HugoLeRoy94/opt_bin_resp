@@ -89,9 +89,8 @@ def main():
             initial_temperature="auto",
             n_presence_blocks=1, mu_sources=1, mu_ligands_per_source=1e-6,
             block_shared_conc_mean=False,
-            use_interface_model=False,
             shared_unit_energies=True,
-            fixed_max_energy=a.emax,
+            max_energy=a.emax,
             conc_mean=CONC_MEAN,
             k_sub=K_SUB, temperature=TEMPERATURE, kernel_params=(lam,),
             receptor_sampling_strategy="cascading",
@@ -114,7 +113,7 @@ def main():
               f"{'batch':>8}  array")
         for run in runs[:len(Gs) * len(stds)]:
             nu = T.nu_from_columns(run.latent_dim, run.family_spread,
-                                   run.kernel_params[0], run.fixed_max_energy,
+                                   run.kernel_params[0], run.max_energy,
                                    run.conc_std)
             print(f"  {run.n_genes:>3} {run.n_receptors:>3} "
                   f"{run.conc_std:>9.4f} {nu:>7.3f} {run.epochs:>7} "

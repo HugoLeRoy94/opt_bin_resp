@@ -1,8 +1,9 @@
 """Family moves: jump a receptor to a random family, accept by Metropolis on MI.
 
-Homomers only, so receptor r is gene r and its position is env.unit_latent[r].
-A move redraws the position as a member of a uniformly chosen family, drawn the
-way that family's ligands are. E_base is shared and left as is.
+Homomers only, so receptor r is gene r and its position is its pocket,
+0.5*(v_plus[r] + v_minus[r]). A move puts both faces at a new position drawn as
+a member of a uniformly chosen family, the way that family's ligands are.
+E_base is left as is.
 
 Acceptance: dMI = MI_after - MI_before on one fixed batch, accepted with
 probability min(1, exp(dMI / T_move)). T_move starts at the std of dMI over R
@@ -22,8 +23,7 @@ def place_near_families(env, genes):
     device = env.family_latent.device
     genes = torch.as_tensor(genes, device=device)
     families = torch.randint(0, env.family_latent.shape[0], (len(genes),), device=device)
-    with torch.no_grad():
-        env.unit_latent[genes] = env.sample_near_centers(env.family_latent[families])
+    env.set_homomer_positions(genes, env.sample_near_centers(env.family_latent[families]))
 
 
 class FamilyMoves:
@@ -51,12 +51,12 @@ class FamilyMoves:
             self.accepted += 1
             # Momentum from the old site is meaningless here. The squared-gradient
             # average is kept: its scale does not depend on where the receptor sits.
-            state = self.optimizer.state.get(self.env.unit_latent)
-            if state:
-                state["exp_avg"][gene] = 0.0
+            for face in self._faces():
+                state = self.optimizer.state.get(face)
+                if state:
+                    state["exp_avg"][gene] = 0.0
         else:
-            with torch.no_grad():
-                self.env.unit_latent[gene] = old
+            self._restore(gene, old)
 
     # -- internals ---------------------------------------------------------
 
@@ -65,7 +65,7 @@ class FamilyMoves:
         gene = torch.randint(0, self.env.n_genes, ()).item()
         seed = torch.randint(0, 2 ** 62, ()).item()
         before = self._mi(seed)
-        old = self.env.unit_latent[gene].detach().clone()
+        old = [face[gene].detach().clone() for face in self._faces()]
         place_near_families(self.env, [gene])
         return gene, old, seed, before
 
@@ -75,13 +75,20 @@ class FamilyMoves:
             self._refine(gene)
         dmi = self._mi(seed) - before
         if restore:
-            with torch.no_grad():
-                self.env.unit_latent[gene] = old
+            self._restore(gene, old)
         return dmi
+
+    def _faces(self):
+        return (self.env.unit_latent_plus, self.env.unit_latent_minus)
+
+    @torch.no_grad()
+    def _restore(self, gene, old):
+        for face, value in zip(self._faces(), old):
+            face[gene] = value
 
     def _mi(self, seed):
         """MI estimate on the batch fixed by `seed`, so two calls see the same sniffs."""
-        device = self.env.unit_latent.device
+        device = self.env.unit_latent_plus.device
         r = self.runner
         with torch.no_grad(), torch.random.fork_rng(
                 devices=[device.index or 0] if device.type == "cuda" else []):
@@ -98,16 +105,16 @@ class FamilyMoves:
         exactly in place, and the main optimizer's state is never touched.
         """
         r = self.runner
-        opt = torch.optim.Adam([self.env.unit_latent], lr=r.config.lr)
+        opt = torch.optim.Adam(list(self._faces()), lr=r.config.lr)
         for _ in range(self.every):
             self.env.zero_grad(set_to_none=True)
             energies, concs, _ = self.env.sample_batch(r.config.batch_size)
             activity = r._activity(self.physics, energies, concs, r.receptor_indices,
                                    self.env).float()
             self.loss_fn(activity).backward()
-            grad = self.env.unit_latent.grad
-            keep = grad[gene].clone()
-            grad.zero_()
-            grad[gene] = keep
+            for face in self._faces():
+                keep = face.grad[gene].clone()
+                face.grad.zero_()
+                face.grad[gene] = keep
             opt.step()
         self.env.zero_grad(set_to_none=True)

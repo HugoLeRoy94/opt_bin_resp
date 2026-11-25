@@ -7,18 +7,18 @@ coordinates). sample_batch() produces one training batch:
     presence mask -> concentrations -> noisy ligand coordinates -> energies
 
 Affinity kernel (Gaussian): E_open = E_base + E_max * (1 - exp(-d^2 / lambda^2))
-where d is the distance in latent space between a ligand and a binding site, and
-lambda = kernel_params[0] is the kernel width.
+where d is the distance in latent space between a ligand and a binding pocket,
+lambda = kernel_params[0] is the kernel width, and E_max is a fixed
+hyperparameter, never optimised.
 
-Classic model (use_interface_model=False)
-    One binding site per gene product. Learnable: unit_latent (U, D),
-    base_energy_u (U,), max_energy_u_raw (U,). sample_batch -> E_open (B, L, U).
-
-Interface model (use_interface_model=True)
-    Each unit has a (+) and a (-) face; a binding pocket sits at the interface
-    between adjacent units on the ring, so pocket i = 0.5*(v_plus[u_i] +
-    v_minus[u_{i+1 mod k}]). sample_batch(batch_size, receptor_indices) ->
-    E_open (B, L, R, k_sub), already gathered per interface.
+Interface model: each unit has a (+) and a (-) face, and a binding pocket sits
+at the interface between adjacent units on the ring. Pocket i of receptor
+(u_1..u_k) has position 0.5*(v_plus[u_i] + v_minus[u_{i+1 mod k}]) and E_base
+0.5*(E_plus[u_i] + E_minus[u_{i+1 mod k}]). A homomer's pocket sits at
+0.5*(v_plus[u] + v_minus[u]). Learnable: unit_latent_plus, unit_latent_minus
+(U, D), and E_base per face, or one scalar shared by all (shared_unit_energies).
+bind_receptors() must be called before sample_batch(), which returns one energy
+per distinct pocket, (B, S, P), S being the sparse ligand width.
 
 Presence sampling, hierarchical source -> ligand. ZTP = zero-truncated Poisson.
 Ligands are partitioned into K = n_presence_blocks source blocks by a partition
@@ -31,7 +31,7 @@ seeded from (n_ligands, K). Per sniff:
 Numerical notes:
   - ||a-b||^2 = ||a||^2 + ||b||^2 - 2<a,b> avoids the (B, L, U, D) broadcast.
   - UniformNBall: direction * radius^(1/D) is uniform in the N-ball.
-  - base_energy init = E[ln c], so EC50 is a typical concentration at step 0.
+  - E_base init = E[ln c], so EC50 is a typical concentration at step 0.
   - Gumbel-top-k: argsort of Gumbel noise gives a uniform subset draw.
 """
 import math
@@ -110,10 +110,9 @@ class LigandEnvironment(nn.Module):
                  latent_dim: int, family_spread: float, distribution_type: str,
                  avg_family_distance: float, n_presence_blocks: int,
                  mu_sources: float, mu_ligands_per_source: float,
-                 kernel_params: list = None,
-                 use_interface_model: bool = False, block_shared_conc_mean: bool = False,
+                 kernel_params: list, max_energy: float,
+                 block_shared_conc_mean: bool = False,
                  shared_unit_energies: bool = False,
-                 fixed_max_energy: Optional[float] = None,
                  family_weights: Optional[list] = None):
         """
         Args:
@@ -134,9 +133,8 @@ class LigandEnvironment(nn.Module):
             mu_ligands_per_source: Poisson rate for the zero-truncated draw of
                                    active ligands per source (capped at block size).
             kernel_params: [lambda], the width of the Gaussian affinity kernel.
-            use_interface_model: When True, each unit has two faces (+/−) and
-                                 binding energy is computed at the interface between
-                                 adjacent subunits in the ring.
+            max_energy: E_max, the fixed selectivity ceiling (natural-log units).
+            shared_unit_energies: one learnable E_base for every face of every unit.
             block_shared_conc_mean: When True and n_presence_blocks > 1, all ligands
                                     in the same block share one concentration mean.
             family_weights: probability that a pool ligand belongs to each family
@@ -152,31 +150,21 @@ class LigandEnvironment(nn.Module):
         self.mu_sources = mu_sources
         self.mu_ligands_per_source = mu_ligands_per_source
         self.observation_noise_sigma = observation_noise_sigma
-        self.kernel_params = kernel_params if kernel_params is not None else []
-        self.use_interface_model = use_interface_model
-        # One learnable (E_base, E_max) pair for the WHOLE array instead of one per
-        # gene. The analytics in analytics/homomer_array_mi.tex assumes this (A6):
-        # with per-gene energies the closed form is only the special case in which
-        # the optimiser happens to make them equal. Not implemented for the
-        # interface model, whose +/- faces would need a second convention.
+        self.kernel_params = list(kernel_params)
+        # One learnable E_base for the WHOLE array instead of one per face. The
+        # analytics in ../doc/theory/analytic/homomer_array_mi.tex assumes this (A6).
         self.shared_unit_energies = shared_unit_energies
-        if shared_unit_energies and use_interface_model:
-            raise NotImplementedError(
-                "shared_unit_energies is implemented for the classic per-unit model "
-                "only; use_interface_model splits each unit into +/- faces.")
-        # Fixed E_max: one value for every gene, stored as a buffer so it is saved
-        # with the model but never optimised.
-        self.fixed_max_energy = fixed_max_energy
         self.family_weights = family_weights
         if family_weights is not None and len(family_weights) != n_families:
             raise ValueError(f"family_weights has {len(family_weights)} entries, "
                              f"expected n_families = {n_families}")
-        if fixed_max_energy is not None and use_interface_model:
-            raise NotImplementedError(
-                "fixed_max_energy is implemented for the classic model only.")
-        # Composition binding (see bind_receptors). None → the original gather path.
-        self.composition = None        # (n_sources, R)
-        self.pocket_pairs = None       # (P, 2) interface only: distinct (+face, -face) genes
+        if not max_energy > 0:
+            raise ValueError(f"max_energy must be positive, got {max_energy}")
+        # A buffer: saved with the model, never optimised.
+        self.register_buffer('max_energy', torch.tensor(float(max_energy)))
+        # Set by bind_receptors.
+        self.composition = None        # (P, R)
+        self.pocket_pairs = None       # (P, 2) distinct (+face gene, -face gene)
         self._bound_receptors = None
         self.n_presence_blocks = n_presence_blocks
         self.block_shared_conc_mean = block_shared_conc_mean
@@ -272,24 +260,9 @@ class LigandEnvironment(nn.Module):
         # MECHANISTIC LATENT SPACE INITIALIZATION
         # ----------------------------------------------------------------------
 
-        _init_val = math.log(math.e ** 10.0 - 1.0)   # softplus(x) ≈ 10 at init
-
-        if use_interface_model:
-            # Each unit has two faces; pockets form at adjacent (+)/(−) interfaces.
-            self.unit_latent_plus  = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
-            self.unit_latent_minus = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
-            self.max_energy_u_raw_plus  = nn.Parameter(torch.full((n_genes,), _init_val))
-            self.max_energy_u_raw_minus = nn.Parameter(torch.full((n_genes,), _init_val))
-        else:
-            # Classic per-unit model.
-            self.unit_latent = nn.Parameter(torch.randn(n_genes, latent_dim) * 1.0)
-            if fixed_max_energy is not None:
-                raw = math.log(math.expm1(fixed_max_energy))   # inverse softplus
-                self.register_buffer('max_energy_u_raw_fixed', torch.full((1,), raw))
-            elif shared_unit_energies:
-                self.max_energy_u_raw_shared = nn.Parameter(torch.full((1,), _init_val))
-            else:
-                self.max_energy_u_raw = nn.Parameter(torch.full((n_genes,), _init_val))
+        # Each unit has two faces; pockets form at adjacent (+)/(−) interfaces.
+        self.unit_latent_plus  = nn.Parameter(torch.randn(n_genes, latent_dim))
+        self.unit_latent_minus = nn.Parameter(torch.randn(n_genes, latent_dim))
 
         # 2. The Environment is Fixed (Family Prototype Coordinates)
         fixed_families = self._generate_family_centers(n_families, latent_dim)
@@ -314,36 +287,40 @@ class LigandEnvironment(nn.Module):
         # E_base = E_o(u, ℓ_opt): open-state energy at the optimally matched ligand.
         # Initialised to E[ln c] so EC50 matches the expected concentration at start.
         global_avg_log_c = self.concentration_model.get_expected_log_c().mean().item()
-        if use_interface_model:
+        if shared_unit_energies:
+            self.base_energy_shared = nn.Parameter(torch.full((1,), global_avg_log_c))
+        else:
             self.base_energy_u_plus  = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
             self.base_energy_u_minus = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
-        elif shared_unit_energies:
-            self.base_energy_u_shared = nn.Parameter(torch.full((1,), global_avg_log_c))
-        else:
-            self.base_energy_u = nn.Parameter(torch.ones(n_genes) * global_avg_log_c)
 
     # ----------------------------------------------------------------------
-    # Energy accessors (classic model).
-    #
-    # Always return a (n_genes,) tensor so every caller can index it by gene,
-    # whether the underlying parameter is per-gene or a single shared scalar.
-    # expand() returns a view, so autograd accumulates the SUM over genes into
-    # the scalar, which is exactly the gradient of a genuinely shared parameter
-    # rather than an average of per-gene gradients.
+    # Pocket geometry and energies
     # ----------------------------------------------------------------------
-    def base_energies(self) -> torch.Tensor:
-        """Per-gene baseline energy E_base, shape (n_genes,)."""
+    def face_base_energies(self):
+        """(E_plus, E_minus), each (n_genes,). Under shared_unit_energies both are
+        views of one scalar, so autograd accumulates the SUM of their gradients
+        into it, which is the gradient of a genuinely shared parameter."""
         if self.shared_unit_energies:
-            return self.base_energy_u_shared.expand(self.n_genes)
-        return self.base_energy_u
+            e = self.base_energy_shared.expand(self.n_genes)
+            return e, e
+        return self.base_energy_u_plus, self.base_energy_u_minus
 
-    def max_energies_raw(self) -> torch.Tensor:
-        """Pre-softplus E_max, shape (n_genes,). Gaussian kernel only."""
-        if getattr(self, 'fixed_max_energy', None) is not None:
-            return self.max_energy_u_raw_fixed.expand(self.n_genes)
-        if self.shared_unit_energies:
-            return self.max_energy_u_raw_shared.expand(self.n_genes)
-        return self.max_energy_u_raw
+    def pocket(self, idx_i, idx_j):
+        """Position (..., D) and E_base (...) of the pocket between the (+) face of
+        gene idx_i and the (-) face of gene idx_j."""
+        e_plus, e_minus = self.face_base_energies()
+        v = 0.5 * (self.unit_latent_plus[idx_i] + self.unit_latent_minus[idx_j])
+        return v, 0.5 * (e_plus[idx_i] + e_minus[idx_j])
+
+    def homomer_positions(self) -> torch.Tensor:
+        """(n_genes, D) pocket position of each gene's homomer."""
+        return 0.5 * (self.unit_latent_plus + self.unit_latent_minus)
+
+    @torch.no_grad()
+    def set_homomer_positions(self, genes, positions):
+        """Put both faces of `genes` at `positions`, so their homomer pocket is there."""
+        self.unit_latent_plus[genes] = positions
+        self.unit_latent_minus[genes] = positions
 
 
 
@@ -390,22 +367,6 @@ class LigandEnvironment(nn.Module):
         loc_centers = torch.zeros(n_families, latent_dim)
         sampler = UniformNBall(loc=loc_centers, radius=target_radius, dim=latent_dim)
         return sampler.rsample()
-
-    @property
-    def interaction_mu(self) -> torch.Tensor:
-        """
-        Open-state energy for each unit against each ligand's exact center.
-        Shape: (n_genes, n_ligands).
-
-        Classic model only.  For the interface model call interaction_mu_interface().
-        """
-        diff = self.unit_latent.unsqueeze(1) - self.ligand_latent.unsqueeze(0)  # (U, L, D)
-        dist_sq = (diff ** 2).sum(dim=-1)  # (U, L)
-        base_e = self.base_energies()                  # (U,)
-        max_e = F.softplus(self.max_energies_raw())  # (U,)
-        lambda_sq = self.kernel_params[0] ** 2
-        return base_e.unsqueeze(1) + max_e.unsqueeze(1) * (1.0 - torch.exp(-dist_sq / lambda_sq))
-
 
     def _sample_masks(self, batch_size: int) -> torch.Tensor:
         """(B, L) float presence mask via the vectorized hierarchical source→ligand sampler.
@@ -506,172 +467,57 @@ class LigandEnvironment(nn.Module):
     # ------------------------------------------------------------------
 
     def bind_receptors(self, receptor_indices: torch.Tensor):
-        """Precompute the (n_sources, R) composition matrix for a receptor array.
+        """Precompute the (P, R) composition matrix for a receptor array.
 
-        A "source" is a distinct thing whose interaction energy has to be computed:
+        A pocket is identified by the (plus-face gene, minus-face gene) pair
+        straddling it. Its energy depends ONLY on that pair, not on which receptor
+        it sits in nor on its position in the ring, so there are at most n_genes^2
+        distinct pockets no matter how large the array is. composition[p, r]
+        counts how often pocket p occurs in receptor r.
 
-          classic model    → a GENE.  n_sources = n_genes.  composition[u, r] is the
-                             number of receptor r's k_sub slots filled by gene u.
-          interface model  → a POCKET, identified by the (plus-face gene, minus-face
-                             gene) pair straddling it.  A pocket's energy depends ONLY
-                             on that pair — not on which receptor it sits in, nor on
-                             its position in the ring — so there are at most n_genes^2
-                             distinct pockets no matter how large the array is.
-                             composition[p, r] counts how often pocket p occurs in r.
+        Binding lets sample_batch() evaluate each distinct pocket once and lets
+        physics turn (B, L, P) into (B, L, R) with a single matmul. A pool of 53k
+        receptors uses 267k pocket slots drawn from only ~644 distinct pockets.
 
-        Binding lets sample_batch() evaluate each distinct source once and lets
-        physics turn (B, L, n_sources) into (B, L, R) with a single matmul.  In the
-        interface model the redundancy removed is large: a pool of 53k receptors uses
-        267k pocket slots drawn from only ~644 distinct pockets (~400x).
-
-        Sets self.composition and (interface only) self.pocket_pairs, and returns the
-        composition matrix.  Call unbind() to restore the original gather path.
+        Sets self.composition and self.pocket_pairs, and returns the composition.
         """
-        ref = (self.unit_latent_plus if self.use_interface_model else self.unit_latent)
-        ri = receptor_indices.to(ref.device)
+        ri = receptor_indices.to(self.unit_latent_plus.device)
         R, k = ri.shape
-
-        if not self.use_interface_model:
-            n_sources = self.n_genes
-            src = ri.reshape(-1)                                        # (R*k,)
-            self.pocket_pairs = None
-        else:
-            idx_i = ri                                                  # (R, k)
-            idx_j = ri.roll(-1, dims=1)                                 # (R, k) cyclic
-            pair_id = (idx_i * self.n_genes + idx_j).reshape(-1)        # (R*k,)
-            uniq, inverse = torch.unique(pair_id, return_inverse=True)
-            n_sources = uniq.numel()
-            src = inverse                                               # (R*k,)
-            self.pocket_pairs = torch.stack(
-                [uniq // self.n_genes, uniq % self.n_genes], dim=1)     # (P, 2)
+        pair_id = (ri * self.n_genes + ri.roll(-1, dims=1)).reshape(-1)    # (R*k,)
+        uniq, src = torch.unique(pair_id, return_inverse=True)
+        self.pocket_pairs = torch.stack(
+            [uniq // self.n_genes, uniq % self.n_genes], dim=1)            # (P, 2)
 
         cols = torch.arange(R, device=ri.device).unsqueeze(1).expand(R, k).reshape(-1)
-        comp = torch.zeros(n_sources, R, device=ri.device, dtype=torch.float32)
+        comp = torch.zeros(uniq.numel(), R, device=ri.device, dtype=torch.float32)
         comp.index_put_((src, cols),
                         torch.ones(src.numel(), device=ri.device), accumulate=True)
         self.composition = comp
-        self._bound_receptors = ri
         return comp
 
+    def _compute_energies(self, v_ligands: torch.Tensor) -> torch.Tensor:
+        """(B, S, P): open-state energy of each present ligand at each distinct bound pocket.
 
-    def _compute_pocket_energies(self, v_ligands: torch.Tensor) -> torch.Tensor:
-        """(B, L, P) — one energy per DISTINCT pocket, for the bound receptor array.
-
-        Same formula as the interface branch of _compute_energies, evaluated on the
-        deduplicated (plus-face, minus-face) gene pairs instead of on every (receptor,
-        ring position) slot.  Bit-for-bit the same values, ~n_genes^2/(R*k_sub) of the work.
+        ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B, L, P, D) broadcast.
         """
-        idx_i = self.pocket_pairs[:, 0]                                  # (P,)
-        idx_j = self.pocket_pairs[:, 1]                                  # (P,)
-
-        v_pocket = 0.5 * (self.unit_latent_plus[idx_i]
-                          + self.unit_latent_minus[idx_j])               # (P, D)
-        E_base   = 0.5 * (self.base_energy_u_plus[idx_i]
-                          + self.base_energy_u_minus[idx_j])             # (P,)
-
+        if self.pocket_pairs is None:
+            raise RuntimeError("call bind_receptors() before sampling energies")
+        v_pocket, e_base = self.pocket(self.pocket_pairs[:, 0], self.pocket_pairs[:, 1])
         a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)             # (B, L, 1)
         b_sq    = (v_pocket ** 2).sum(dim=-1)                            # (P,)
         ab      = torch.einsum('bld,pd->blp', v_ligands, v_pocket)       # (B, L, P)
         dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0) # (B, L, P)
-
-        E_max = 0.5 * (F.softplus(self.max_energy_u_raw_plus[idx_i])
-                       + F.softplus(self.max_energy_u_raw_minus[idx_j]))   # (P,)
         lambda_sq = self.kernel_params[0] ** 2
-        return (E_base[None, None, :]
-                + E_max[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
+        return (e_base[None, None, :]
+                + self.max_energy * (1.0 - torch.exp(-dist_sq / lambda_sq)))
 
-    def _compute_energies(
-        self,
-        v_ligands: torch.Tensor,
-        receptor_indices: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Open-state energies from noisy ligand coordinates.
+    def sample_batch(self, batch_size: int, return_dense_conc: bool = False):
+        """Generate one batch of sensory environments. Requires bind_receptors().
 
-        Classic model   → (B, L, U)
-        Interface model → (B, L, R, k_sub)
-
-        ‖a−b‖² = ‖a‖²+‖b‖²−2⟨a,b⟩ avoids the (B, L, U, D) broadcast.
-        For the interface model, pockets are flattened to (R*k, D) then reshaped.
-        """
-        if not self.use_interface_model:
-            # ------------------------------------------------------------------
-            # Classic path: (B, L, U)
-            # ------------------------------------------------------------------
-            a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)               # (B, L, 1)
-            b_sq    = (self.unit_latent ** 2).sum(dim=-1)                      # (U,)
-            ab      = torch.einsum('bld,ud->blu', v_ligands, self.unit_latent) # (B, L, U)
-            dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)  # (B, L, U)
-            base_e = self.base_energies()                                     # (U,)
-            max_e     = F.softplus(self.max_energies_raw())                # (U,)
-            lambda_sq = self.kernel_params[0] ** 2
-            return (base_e[None, None, :]
-                    + max_e[None, None, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
-
-        # ----------------------------------------------------------------------
-        # Interface path
-        # ----------------------------------------------------------------------
-        # Bound: evaluate the ~n_genes^2 DISTINCT pockets once → (B, L, P).
-        # physics then contracts with the (P, R) composition. Unbound: the original
-        # per-slot path → (B, L, R, k_sub).
-        if self.composition is not None and self.pocket_pairs is not None:
-            return self._compute_pocket_energies(v_ligands)
-
-        if receptor_indices is None:
-            raise ValueError(
-                "receptor_indices must be supplied to _compute_energies() "
-                "when use_interface_model=True."
-            )
-        B, L, D = v_ligands.shape
-        R, k    = receptor_indices.shape
-
-        idx_i = receptor_indices                      # (R, k)
-        idx_j = receptor_indices.roll(-1, dims=1)     # (R, k) — next unit (cyclic)
-
-        # Pocket embedding: average of adjacent +/− faces
-        # (observation noise is on the ligand side only, matching the classic model)
-        v_pocket      = 0.5 * (self.unit_latent_plus[idx_i]
-                                + self.unit_latent_minus[idx_j])              # (R, k, D)
-        E_base_pocket = 0.5 * (self.base_energy_u_plus[idx_i]
-                                + self.base_energy_u_minus[idx_j])            # (R, k)
-
-        # Flatten pockets to (R*k, D), compute (B, L, R*k), then reshape
-        b       = v_pocket.reshape(R * k, D)                                   # (R*k, D)
-        a_sq    = (v_ligands ** 2).sum(dim=-1, keepdim=True)                   # (B, L, 1)
-        b_sq    = (b ** 2).sum(dim=-1)                                         # (R*k,)
-        ab      = torch.einsum('bld,kd->blk', v_ligands, b)                   # (B, L, R*k)
-        dist_sq = (a_sq + b_sq[None, None, :] - 2.0 * ab).clamp(min=0.0)     # (B, L, R*k)
-        dist_sq = dist_sq.view(B, L, R, k)                                    # (B, L, R, k)
-
-        E_max_pocket = 0.5 * (
-            F.softplus(self.max_energy_u_raw_plus[idx_i])
-            + F.softplus(self.max_energy_u_raw_minus[idx_j])
-        )  # (R, k)
-        lambda_sq = self.kernel_params[0] ** 2
-        return (E_base_pocket[None, None, :, :]
-                + E_max_pocket[None, None, :, :] * (1.0 - torch.exp(-dist_sq / lambda_sq)))
-
-    def sample_batch(
-        self,
-        batch_size: int,
-        receptor_indices: Optional[torch.Tensor] = None,
-        return_dense_conc: bool = False,
-    ):
-        """Generate one batch of sensory environments.
-
-        Args:
-            batch_size:       Number of samples B.
-            receptor_indices: (R, k_sub) ring layout; required when
-                              use_interface_model=True.
-
-        Returns (classic model):
-            E_open:        (B, s_upper, U) — open-state energy for present ligands only.
+        Returns:
+            E_open:        (B, s_upper, P) — open-state energy at each distinct pocket.
             concs:         (B, s_upper)    — concentrations for present ligands (0 for padding).
-            mixture_masks: (B, L)          — full presence mask (needed for MI metrics).
-
-        Returns (interface model):
-            E_open:        (B, s_upper, R, k_sub)
-            concs:         (B, s_upper)
-            mixture_masks: (B, L)
+            mixture_masks: (B, L)          — full presence mask.
 
         The sparse width s_upper starts at 1 and is a high-water mark: the returned
         ligand axis widens to the actual maximum count whenever a batch exceeds it, and
@@ -690,7 +536,7 @@ class LigandEnvironment(nn.Module):
         )                                                                       # (B, s_upper)
 
         v_ligands = self._sample_noisy_ligands(batch_size, sparse_idx)        # (B, s_upper, D)
-        E_open    = self._compute_energies(v_ligands, receptor_indices)        # (B, s_upper, *)
+        E_open    = self._compute_energies(v_ligands)                          # (B, s_upper, P)
 
         if return_dense_conc:
             # (B, L) per-ligand concentration aligned to ligand identity (0 if absent),

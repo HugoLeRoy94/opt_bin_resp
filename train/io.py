@@ -8,10 +8,10 @@ Layout:
         <axis>_<value>/.../run_<timestamp>/
             config.json           this run, fully resolved
             stats.csv             training history
-            best_model.pt         env + physics + receptor_indices
+            final_model.pt        env + physics + receptor_indices, last epoch
             test_<label>.json     one per measurement pass
 
-Training writes config.json, stats.csv and best_model.pt. It does NOT measure:
+Training writes config.json, stats.csv and final_model.pt. It does NOT measure:
 a test script does that afterwards and writes test_<label>.json, one file per
 estimator, because different estimators need very different batch sizes.
 
@@ -33,6 +33,9 @@ import pandas as pd
 import torch
 
 from train.config import Config
+
+CHECKPOINT = "final_model.pt"
+LEGACY_CHECKPOINT = "best_model.pt"   # name before the rename, still read
 
 # Fields whose values are sequences: they cannot go in a directory name.
 _UNNAMEABLE = {"receptor_indices", "cell_gene_sets", "cell_receptors",
@@ -115,7 +118,7 @@ class RunLogger:
         }
         if readout is not None:
             state["readout_state"] = {k: v.cpu() for k, v in readout.state_dict().items()}
-        torch.save(state, self.run_dir / "best_model.pt")
+        torch.save(state, self.run_dir / CHECKPOINT)
 
 
 class SweepLogger:
@@ -156,10 +159,49 @@ class SweepLogger:
 # Reading
 # --------------------------------------------------------------------------
 
+class LegacyRunError(ValueError):
+    """A run written under physics that no longer exists. Re-run it."""
+
+
+def _upgrade_legacy_config(data, run_dir):
+    """Configs written before the interface model and a fixed E_max were the only
+    options. A classic-model HOMOMER run with a fixed E_max converts exactly: its
+    pocket (u, u) sits at the unit's own position (upgrade_env_state). Anything
+    else changed physics and must be re-run."""
+    classic = not data.pop("use_interface_model", True)
+    if "fixed_max_energy" in data:
+        data["max_energy"] = data.pop("fixed_max_energy")
+    if data.get("max_energy") is None:
+        raise LegacyRunError(f"{run_dir}: trained with a learnable E_max. Re-run it.")
+    if classic and any(len(set(r)) > 1 for r in data["receptor_indices"]):
+        raise LegacyRunError(f"{run_dir}: classic-model heteromers have no exact "
+                             "interface-model equivalent. Re-run it.")
+    return data
+
+
+def upgrade_env_state(state, max_energy):
+    """Map a classic-model homomer checkpoint onto the interface model: both
+    faces at the unit's position, E_base unchanged, E_max from the config."""
+    if "unit_latent" not in state:
+        return state
+    state = dict(state)
+    v = state.pop("unit_latent")
+    state["unit_latent_plus"], state["unit_latent_minus"] = v.clone(), v.clone()
+    if "base_energy_u_shared" in state:
+        state["base_energy_shared"] = state.pop("base_energy_u_shared")
+    if "base_energy_u" in state:
+        b = state.pop("base_energy_u")
+        state["base_energy_u_plus"], state["base_energy_u_minus"] = b.clone(), b.clone()
+    state.pop("max_energy_u_raw_fixed", None)
+    state["max_energy"] = torch.tensor(float(max_energy))
+    return state
+
+
 def load_config(run_dir):
     """Just the Config. Reads no results, so a measuring pass is never blocked
     by what a previous pass wrote."""
     data = json.loads((Path(run_dir) / "config.json").read_text())
+    data = _upgrade_legacy_config(data, run_dir)
     return Config.from_dict({k: v for k, v in data.items() if k != "run_timestamp"})
 
 
@@ -199,9 +241,17 @@ def load_run(run_dir):
     return config, stats, results
 
 
+def checkpoint_path(run_dir):
+    """final_model.pt, or best_model.pt for runs written before the rename."""
+    run_dir = Path(run_dir)
+    new = run_dir / CHECKPOINT
+    return new if new.is_file() or not (run_dir / LEGACY_CHECKPOINT).is_file() \
+        else run_dir / LEGACY_CHECKPOINT
+
+
 def is_finished(run_dir):
     """A run is finished when it has a checkpoint, measured or not."""
-    return (Path(run_dir) / "best_model.pt").is_file()
+    return checkpoint_path(run_dir).is_file()
 
 
 def iter_runs(sweep_root, measured_only=True):

@@ -102,24 +102,23 @@ def _exact_inputs(run_dir):
     """Arguments of the estimate/exact.py estimators for one trained run.
 
     Homomers go through the squared-distance path (w = None), heteromers
-    through the subunit-fraction matrix w, shape (R, G).
+    through the pocket-fraction matrix w, shape (R, P), over the P distinct
+    pockets of the array.
     """
     import math
-
-    import torch.nn.functional as F
 
     from train.io import load_config
 
     config = load_config(run_dir)
     assert (config.n_families == 1 and config.distribution_type == "gaussian"
             and config.observation_noise_sigma == 0 and config.shared_unit_energies
-            and not config.use_interface_model), f"{run_dir}: outside the exact model"
+            ), f"{run_dir}: outside the exact model"
     env, _physics, receptor_indices, _readout = load_model(run_dir)
     if (receptor_indices == receptor_indices[:, :1]).all():
-        u, w = env.unit_latent[receptor_indices[:, 0]], None
+        u, w = env.homomer_positions()[receptor_indices[:, 0]], None
     else:
-        u = env.unit_latent
-        w = F.one_hot(receptor_indices, u.shape[0]).double().mean(1).numpy()
+        u, _ = env.pocket(env.pocket_pairs[:, 0], env.pocket_pairs[:, 1])
+        w = (env.composition / receptor_indices.shape[1]).T.double().numpy()
     conc = env.concentration_model
     return dict(
         u=u.double().numpy(), w=w,
@@ -127,8 +126,8 @@ def _exact_inputs(run_dir):
         sigma=env.family_spread,
         mu_c=conc.mu[0].item() * math.log(10),           # stored in log10
         sigma_c=conc.log_sigma[0].exp().item() * math.log(10),
-        e_base=env.base_energies()[0].item(),
-        e_max=F.softplus(env.max_energies_raw())[0].item(),
+        e_base=env.base_energy_shared.item(),
+        e_max=env.max_energy.item(),
         lam=env.kernel_params[0])
 
 

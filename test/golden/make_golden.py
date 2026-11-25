@@ -1,41 +1,22 @@
-"""Record reference numbers from the OLD repo. Run once, before porting.
+"""Re-record test/golden/*.json from THIS code.
 
     python3 test/golden/make_golden.py
 
-Writes receptor.json and cell.json next to this file. Everything the port does
-afterwards is checked against them by test/test_golden.py.
+Only after a deliberate change of the physics or of an estimator. Any other
+change that moves a number is a bug, and re-recording would hide it.
 """
 import json
+import pathlib
 import sys
-import tempfile
-from pathlib import Path
 
-OLD = Path("/mnt/hcleroy/PostDoc2/octopus_smelling/opt_bin_resp")
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(OLD))
+HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
 
-import torch
-from configs import (CELL, CELL_MEASURE, PINNED, RECEPTOR,
-                     RECEPTOR_MEASURE, SEED)
-from src.config import SingleRunConfig
-from src.IO import ExperimentLogger
-from src.run import SimulationRunner
+from configs import CELL, CELL_MEASURE, RECEPTOR, RECEPTOR_MEASURE   # noqa: E402
+from test_golden import _run                                          # noqa: E402
 
-
-def record(name, fields, measure):
-    """The old repo measures inside run(), so fold the measuring step back in."""
-    torch.manual_seed(SEED)
-    cfg = SingleRunConfig(**{**fields, **PINNED,
-                             "final_measurement_fns": measure["measurements"],
-                             "final_test_batch_size": measure["batch_size"]})
-    with tempfile.TemporaryDirectory() as tmp:
-        SimulationRunner(cfg, ExperimentLogger(tmp)).run()
-        result = json.loads((Path(tmp) / "test_results.json").read_text())
-    (HERE / f"{name}.json").write_text(json.dumps(result, indent=2, sort_keys=True))
-    print(f"{name}: " + ", ".join(f"{k}={v}" for k, v in sorted(result.items())))
-
-
-if __name__ == "__main__":
-    record("receptor", RECEPTOR, RECEPTOR_MEASURE)
-    record("cell", CELL, CELL_MEASURE)
+for name, fields, measure in [("receptor", RECEPTOR, RECEPTOR_MEASURE),
+                              ("cell", CELL, CELL_MEASURE)]:
+    (HERE / f"{name}.json").write_text(json.dumps(_run(fields, measure), indent=4))
+    print(f"wrote {name}.json")

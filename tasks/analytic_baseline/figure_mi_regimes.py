@@ -1,7 +1,7 @@
 # %%
 """analytic_baseline: measured MI against the closed form, across the R = D crossover.
 
-Reference: analytics/homomer_array_mi.tex.
+Reference: ../doc/theory/analytic/homomer_array_mi.tex.
 
 The closed form predicts that below R = D the array is exchangeable and the
 information grows linearly, MI = R eta(nu), while above it the receptors can no
@@ -37,7 +37,7 @@ frame = runs(GOAL, sweeps=["homomer_R"], latest_only=True)
 # range, so every run yields it whether or not it was labelled at launch.
 frame = frame.assign(nu=[
     round(T.nu_from_columns(r.latent_dim, r.family_spread, r.kernel_lambda,
-                            r.fixed_max_energy, r.conc_std), 4)
+                            r.max_energy, r.conc_std), 4)
     for r in frame.itertuples()])
 points = across_replicates(frame, keys=["nu", "n_genes"])
 nus = sorted(points.nu.unique())

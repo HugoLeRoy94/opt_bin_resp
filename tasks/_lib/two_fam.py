@@ -73,7 +73,7 @@ def array_of(env, ri) -> dict:
     mu = env.concentration_model.mu.detach().cpu().numpy()
     sd = np.exp(env.concentration_model.log_sigma.detach().cpu().numpy())
     return {
-        "pos": env.unit_latent.detach().cpu().numpy()[gene],
+        "pos": env.homomer_positions().detach().cpu().numpy()[gene],
         "Ebase": ebase(env)[gene],
         "Emax": emax(env)[gene],
         "lam": float(np.atleast_1d(env.kernel_params)[0]),

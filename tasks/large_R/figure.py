@@ -72,8 +72,8 @@ plt.show()
 norms = []
 for _, row in frame.iterrows():
     env, _physics, receptor_indices, _readout = load_model(row.run_dir)
-    # Homomers: one receptor per gene, so a receptor's position IS its unit's.
-    u = env.unit_latent.detach().cpu().numpy()[receptor_indices[:, 0].cpu().numpy()]
+    # Homomers: one receptor per gene, so a receptor's position IS its pocket's.
+    u = env.homomer_positions().detach().cpu().numpy()[receptor_indices[:, 0].cpu().numpy()]
     radius = np.linalg.norm(u, axis=1)
     norms.append(dict(latent_dim=row.latent_dim, n_genes=row.n_genes,
                       conc_std=row.conc_std,

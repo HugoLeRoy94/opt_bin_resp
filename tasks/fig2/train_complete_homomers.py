@@ -8,8 +8,8 @@ is stated outright.
 
 Writes to <data_root>/fig2_complete_homomers/, so the sweep directory names this file.
 
-    python -m tasks.fig2.complete_homomers --dry_run
-    python -m tasks.fig2.complete_homomers
+    python -m tasks.fig2.train_complete_homomers --dry_run
+    python -m tasks.fig2.train_complete_homomers
 """
 import argparse
 

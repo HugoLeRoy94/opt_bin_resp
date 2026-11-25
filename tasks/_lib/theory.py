@@ -1,4 +1,4 @@
-"""Closed-form homomer-array predictions from analytics/homomer_array_mi.tex.
+"""Closed-form homomer-array predictions from ../doc/theory/analytic/homomer_array_mi.tex.
 
 Gaussian (saturating) kernel throughout. Equation numbers refer to that document.
 All energies are in NATURAL log-concentration units. The simulator stores
@@ -39,9 +39,9 @@ class Params:
     """Environment and receptor parameters, natural-log energy units.
 
     D        latent dimension
-    sigma    per-coordinate spread of the ligand cloud (RunConfig.family_spread)
-    lam      affinity length scale (RunConfig.kernel_params[0])
-    Emax     selectivity ceiling, ln units (softplus(max_energy_u_raw))
+    sigma    per-coordinate spread of the ligand cloud (Config.family_spread)
+    lam      affinity length scale (Config.kernel_params[0])
+    Emax     selectivity ceiling, ln units (Config.max_energy, fixed)
     sigma_c  std of ln c
     m        mean of ln c
     """
@@ -487,7 +487,7 @@ def mi_large_R(p: Params, U: float, ebase: float, R, n: int = 400_000,
     return H_atoms + p_in * (core + D * np.log2(np.asarray(R, dtype=float)))
 
 
-def nu_from_columns(latent_dim, family_spread, kernel_lambda, fixed_max_energy,
+def nu_from_columns(latent_dim, family_spread, kernel_lambda, max_energy,
                     conc_std_log10, conc_mean_log10=0.0):
     """nu for one run, from the fields analysis.load already provides.
 
@@ -502,6 +502,6 @@ def nu_from_columns(latent_dim, family_spread, kernel_lambda, fixed_max_energy,
     """
     _, sigma_c = from_log10(conc_mean_log10, conc_std_log10)
     p = Params(D=int(latent_dim), sigma=float(family_spread),
-               lam=float(kernel_lambda), Emax=float(fixed_max_energy),
+               lam=float(kernel_lambda), Emax=float(max_energy),
                sigma_c=sigma_c)
     return float(lambert_optimum(p)["nu_min"])

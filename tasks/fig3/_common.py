@@ -79,6 +79,7 @@ TEST_BATCH_SIZE = 4096
 COUNTING_BATCH = 2 ** 26               # what test_counting.py will use
 EVAL_CHUNK_SIZE = 512
 TEMPERATURE = 0.05
+EMAX = 10.0             # fixed E_max, natural-log units
 INIT_TEMPERATURE = 3.0
 CELL_POOL_CHUNK = 128
 
@@ -117,8 +118,8 @@ def build(k_sub, dry_run=False):
         distribution_type="gaussian", observation_noise_sigma=0.0,
         n_presence_blocks=1, mu_sources=1.0, block_shared_conc_mean=False,
         n_genes=N_GENES, k_sub=k_sub, temperature=TEMPERATURE,
-        kernel_params=(1.0,), initial_temperature=INIT_TEMPERATURE,
-        use_interface_model=True, mi=MI, grouped=False,
+        kernel_params=(1.0,), max_energy=EMAX, initial_temperature=INIT_TEMPERATURE,
+        mi=MI, grouped=False,
         measurement_fns=MEASUREMENTS, epochs=EPOCHS, lr=LR,
         batch_size=BATCH_SIZE, test_batch_size=TEST_BATCH_SIZE,
         eval_chunk_size=EVAL_CHUNK_SIZE, per_epoch_measure=False,

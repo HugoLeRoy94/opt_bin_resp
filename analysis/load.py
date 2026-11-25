@@ -9,7 +9,8 @@ than each one re-implementing discovery.
 
 Replicates are INDEPENDENT WORLDS. Their spread is the quantity that belongs on
 an error bar, and with only a handful of them a standard error would be fiction,
-so `across_replicates` reports mean with min/max. Nothing here writes a file or
+so `across_replicates` reports the mean with the standard deviation across
+worlds by default (`spread='std'`), or the standard error (`spread='sem'`). Nothing here writes a file or
 prints on the happy path; it raises when the answer would otherwise be wrong.
 """
 import os
@@ -116,7 +117,7 @@ def runs(goal, data_root=None, sweeps=None, latest_only=False):
     if not rows:
         raise RuntimeError(
             f"{len(roots)} sweep(s) under {root} but nothing to load. A run is "
-            f"skipped when it has no best_model.pt (training was interrupted) "
+            f"skipped when it has no final_model.pt (training was interrupted) "
             f"or no test_*.json (it has not been measured yet: run the task's "
             f"test script).")
     return pd.DataFrame(rows)
@@ -222,16 +223,16 @@ def load_model(run_dir, device="cpu"):
     """
     from train.runner import Runner
 
-    from train.io import load_config
+    from train.io import checkpoint_path, load_config, upgrade_env_state
 
     run_dir = Path(run_dir)
     config = load_config(run_dir)
     runner = Runner(config, logger=None, device=device)
     env, physics, _loss, _opt, receptor_indices = runner.build(verbose=False)
 
-    state = torch.load(run_dir / "best_model.pt", map_location=device,
+    state = torch.load(checkpoint_path(run_dir), map_location=device,
                        weights_only=False)
-    env.load_state_dict(state["env_state"])
+    env.load_state_dict(upgrade_env_state(state["env_state"], config.max_energy))
     physics.load_state_dict(state["physics_state"])
     if runner.readout is not None and "readout_state" in state:
         runner.readout.load_state_dict(state["readout_state"])

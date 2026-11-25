@@ -167,7 +167,7 @@ def compute_kt_entropy(
 
     ALL-PAIRS, DIAGONAL INCLUDED, NORMALIZED BY TOTAL B. The inner j-loop
     spans the ENTIRE batch and the diagonal (logBC=0) is kept. This is NOT
-    the adjacent-chunk / diagonal-masked scheme of the collision estimator.
+    an adjacent-chunk or diagonal-masked scheme.
     Pairwise arithmetic is O(B²·R), independent of tile size. Inference also
     retains O(chunk·B) row buffers alongside the O(chunk²·R) tile.
 
@@ -183,7 +183,7 @@ def compute_kt_entropy(
         recompute:   if True, gradient-checkpoint each i-chunk's contribution so its
                      (m, n, R) / (m, B) tensors are recomputed in backward instead of
                      retained. Retained graph drops O(B²·R) → O(B·R), so the training
-                     batch is bounded by compute, not memory (see resolve_batch_sizes,
+                     batch is bounded by compute, not memory (see train/batching.py,
                      KT_COMPUTE_BUDGET). Exact — no effect on value or gradients.
                      Costs ~one extra forward of the inner loop in backward.
 

@@ -13,7 +13,6 @@ them is the quantity the figure is about.
 KT costs O(B^2 * R), quadratic in the batch, so the budget here is modest and
 has nothing to do with the training batch. Run after training:
 
-    python -m tasks.fig1.test_kt --dry_run
     python -m tasks.fig1.test_kt
 """
 import argparse

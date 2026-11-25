@@ -5,8 +5,8 @@ One invocation fixes n_genes and sweeps the heteromerization ratio
 R / n_genes = 1..5, inside each of N_WORLDS independently drawn environments.
 The figure wants n_genes in {2, 3, 5, 7, 10, 15}, so run it once per value:
 
-    python tasks/fig1/sweep.py --n_genes 2
-    python tasks/fig1/sweep.py --n_genes 3      # and so on
+    python -m tasks.fig1.train_heteromers --n_genes 2
+    python -m tasks.fig1.train_heteromers --n_genes 3      # and so on
 
 Ratio 1 IS the homomer condition. With strategy="cascading" the generator fills
 complexity tiers in order, and tier 1 (one distinct gene) holds exactly n_genes
@@ -66,7 +66,7 @@ def main():
     # than run a short array under its nominal label. The old code warned and
     # silently returned the whole pool, which put an 8-receptor run on the
     # ratio-5 curve where it duplicated the ratio-4 point.
-    available = pool_size(args.n_genes, K_SUB, use_interface_model=True)
+    available = pool_size(args.n_genes, K_SUB)
     reachable = [R for R in receptors if R <= available]
     if len(reachable) < len(receptors):
         dropped = [R for R in receptors if R > available]
@@ -106,12 +106,12 @@ def main():
             k_sub=K_SUB,
             temperature=0.1,
             kernel_params=(1.0,),
+            max_energy=10.0,              # fixed E_max, natural-log units
             distribution_type="gaussian",
             observation_noise_sigma=0.01,
             n_presence_blocks=1,
             mu_sources=1,
             block_shared_conc_mean=False,
-            use_interface_model=True,
             mi="kt",
             lr=0.05,
             per_epoch_measure=False,      # only the free training loss is logged

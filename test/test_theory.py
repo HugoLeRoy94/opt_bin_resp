@@ -1,6 +1,6 @@
 """Self-consistency of the closed-form homomer MI. No simulation, no data.
 
-Reference: analytics/homomer_array_mi.tex. Equation numbers are that document's.
+Reference: ../doc/theory/analytic/homomer_array_mi.tex. Equation numbers are that document's.
 Nothing downstream is trustworthy until these pass, which is why they are
 collected rather than left in a script someone has to remember to run.
 

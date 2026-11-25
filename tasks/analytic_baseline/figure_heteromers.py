@@ -35,7 +35,7 @@ def index_of(run_dir):
 frame = frame.assign(
     m=[index_of(d) for d in frame.run_dir],
     nu=[round(T.nu_from_columns(r.latent_dim, r.family_spread, r.kernel_lambda,
-                                r.fixed_max_energy, r.conc_std), 4)
+                                r.max_energy, r.conc_std), 4)
         for r in frame.itertuples()])
 points = across_replicates(frame, keys=["nu", "m", "n_genes"])
 nus = sorted(points.nu.unique())

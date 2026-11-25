@@ -1,10 +1,11 @@
-"""The ported code must reproduce the old code's numbers exactly.
+"""The code must reproduce the recorded numbers exactly.
 
-test/golden/*.json were recorded from the pre-refactor repo by
-test/golden/make_golden.py. They are the only remaining reference: the 189 MB
-of existing runs are not readable by this code, by design.
+test/golden/*.json were first recorded from the pre-refactor repo, then
+re-recorded from this code by test/golden/make_golden.py on 2026-11-25, when the
+interface model and a fixed E_max became the only physics.
 
-A refactor that changes a number here is a bug, not a simplification.
+A change that moves a number here is a bug unless the physics or an estimator
+was changed on purpose, in which case re-record and say so in the commit.
 """
 import json
 import pathlib
@@ -56,7 +57,7 @@ def test_training_does_not_measure():
     with tempfile.TemporaryDirectory() as tmp:
         Runner(Config(**RECEPTOR), RunLogger(tmp), device="cpu").run()
         written = {p.name for p in pathlib.Path(tmp).iterdir()}
-    assert {"best_model.pt", "config.json", "stats.csv"} <= written, written
+    assert {"final_model.pt", "config.json", "stats.csv"} <= written, written
     assert not [n for n in written if n.startswith("test_")], written
 
 
@@ -70,18 +71,3 @@ def test_evaluate_is_independent_of_the_training_batch():
         large = runner.evaluate(("mutual_information_kt",), batch_size=256)
     assert small["response_evaluation_samples"] == [64]
     assert large["response_evaluation_samples"] == [256]
-
-
-def test_a_chunk_local_measurement_records_what_it_actually_saw():
-    """full_array_entropy runs on ONE forward pass, not the whole budget.
-
-    Asking for a huge batch does not make it use one, so the sample count it
-    reports must be the number it really saw.
-    """
-    torch.manual_seed(SEED)
-    with tempfile.TemporaryDirectory() as tmp:
-        runner = Runner(Config(**dict(RECEPTOR, eval_chunk_size=32)),
-                        RunLogger(tmp), device="cpu")
-        runner.run()
-        out = runner.evaluate(("full_array_entropy",), batch_size=4096)
-    assert out["response_evaluation_samples"] == [32], out["response_evaluation_samples"]

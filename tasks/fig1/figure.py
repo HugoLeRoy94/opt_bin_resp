@@ -35,7 +35,7 @@ frame = frame.assign(ratio=(frame.n_receptors / frame.n_genes).round().astype(in
 frame = frame[frame.ratio.isin(RATIOS)]
 if frame.empty:
     raise SystemExit(f"No {GOAL} run with a ratio in {RATIOS}. "
-                     f"Run tasks/fig1/sweep.py first.")
+                     f"Run python -m tasks.fig1.train_heteromers first.")
 
 # One standard deviation across independently drawn worlds. Each world draws
 # its own n_families, n_ligands, latent_dim, family_spread and family distance,

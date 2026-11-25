@@ -47,7 +47,7 @@ def suggest(n_receptors, mi="kt", grouped=False, n_ligands=1, k_sub=1, mem_budge
                          "and guessing one silently sizes for a GPU you may not have.")
     grouped_kt = grouped and mi == "kt"
     if grouped_kt and not (grouped_n_groups and grouped_n_states):
-        raise ValueError("grouped_kt_mi needs grouped_n_groups and grouped_n_states.")
+        raise ValueError("mi='kt', grouped=True needs grouped_n_groups and grouped_n_states.")
     kt_width = grouped_n_groups if grouped_kt else n_receptors
     kind = "grouped_mi" if (grouped and mi == "shannon") else mi
 

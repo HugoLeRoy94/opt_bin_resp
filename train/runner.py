@@ -13,13 +13,13 @@ import math
 import torch
 import torch.optim as optim
 
-from estimate.entropy import (KT_EPS, compute_kt_entropy, compute_kt_upper_entropy,
+from estimate.entropy import (compute_kt_entropy, compute_kt_upper_entropy,
                               compute_response_conditional_entropy)
 from estimate.grouping import CellGrouping, GroupedResponseCounter
 from estimate.losses import (ExactMutualInformationLoss,
                              GroupedCellMutualInformationLoss,
                              GroupedKTMutualInformationLoss, KTMutualInformationLoss)
-from estimate.measurements import REGISTRY, codeword_entropy, response_counting_metrics
+from estimate.measurements import MEASUREMENTS, codeword_entropy
 from model.cells import CellArray, CellReadout, cell_activity
 from model.environment import LigandEnvironment, LogNormalConcentration
 from model.receptors import BinaryReceptor, compute_initial_temperature
@@ -27,14 +27,6 @@ from train.moves import FamilyMoves, place_near_families
 
 KT_TRAIN_TILE = 4096
 EVAL_TILE = 2048
-
-# Measurements that need the WHOLE evaluation batch, so the runner streams them
-# itself rather than calling the registry entry on one chunk.
-_STREAMED = {"entropy_kt", "entropy_kt_upper", "conditional_entropy_response",
-             "mutual_information_kt", "mutual_information_kt_upper",
-             "codeword_entropy", "mutual_information_counting",
-             "grouped_information", "grouped_counting"}
-
 
 def build_loss(config, grouping=None):
     """The objective picked by (config.mi, config.grouped).
@@ -85,7 +77,6 @@ class Runner:
             cells = CellArray(
                 (None if cfg.cell_receptors is not None else cfg.cell_gene_sets),
                 cfg.k_sub, stoichiometry=cfg.cell_stoichiometry,
-                use_interface_model=cfg.use_interface_model,
                 repertoires=cfg.cell_receptors).to(self.device)
             self.readout = CellReadout(cells.W, k_sub=cfg.k_sub).to(self.device)
             self.grouping = CellGrouping(cells.W).to(self.device)
@@ -103,27 +94,22 @@ class Runner:
             latent_dim=cfg.latent_dim, family_spread=cfg.family_spread,
             avg_family_distance=cfg.average_family_distance,
             n_presence_blocks=cfg.n_presence_blocks, kernel_params=cfg.kernel_params,
-            distribution_type=cfg.distribution_type,
-            use_interface_model=cfg.use_interface_model,
+            distribution_type=cfg.distribution_type, max_energy=cfg.max_energy,
             block_shared_conc_mean=cfg.block_shared_conc_mean,
             shared_unit_energies=cfg.shared_unit_energies,
-            fixed_max_energy=cfg.fixed_max_energy,
             family_weights=cfg.family_weights).to(self.device)
 
         physics = BinaryReceptor(cfg.n_genes, cfg.k_sub,
                                  temperature=cfg.temperature).to(self.device)
 
-        # Evaluate each DISTINCT energy source once and contract to receptors with
-        # one matmul. Removes the (B, L, R, k_sub) intermediate entirely.
+        # Evaluate each DISTINCT pocket once and contract to receptors with one
+        # matmul. Removes the (B, L, R, k_sub) intermediate entirely.
         env.bind_receptors(receptor_indices)
         n_src = env.composition.shape[0]
-        if verbose and cfg.use_interface_model:
+        if verbose:
             print(f"[composition] R={receptor_indices.shape[0]}  "
                   f"{receptor_indices.numel()} pocket slots -> {n_src} distinct "
                   f"({receptor_indices.numel() / max(n_src, 1):.0f}x fewer)")
-        elif verbose:
-            print(f"[composition] R={receptor_indices.shape[0]}  genes={n_src} "
-                  f"(drops the {cfg.k_sub}x-wide gather)")
 
         loss_fn = build_loss(cfg, self.grouping).to(self.device)
         if isinstance(loss_fn, GroupedCellMutualInformationLoss):
@@ -150,10 +136,10 @@ class Runner:
         """
         comp = env.composition
         if self.readout is None:
-            return physics(energies, concs, receptor_indices, composition=comp)
-        return cell_activity(physics, self.readout, energies, concs, receptor_indices,
-                             pre_gathered=False, chunk_size=self.config.cell_pool_chunk,
-                             recompute=self.config.recompute_backward, composition=comp)
+            return physics(energies, concs, comp)
+        return cell_activity(physics, self.readout, energies, concs, comp,
+                             chunk_size=self.config.cell_pool_chunk,
+                             recompute=self.config.recompute_backward)
 
     # -- evaluation --------------------------------------------------------
 
@@ -167,51 +153,33 @@ class Runner:
         cfg = self.config
         chunk = min(cfg.eval_chunk_size or cfg.batch_size, batch_size)
         requested = set(cfg.measurement_fns if measurement_fns is None else measurement_fns)
+        unknown = requested - MEASUREMENTS
+        if unknown:
+            raise ValueError(f"Unknown measurements {sorted(unknown)}. "
+                             f"Choose from {sorted(MEASUREMENTS)}.")
+        if not requested:
+            raise ValueError("No measurement requested.")
 
-        native_grouped = isinstance(loss_fn, GroupedCellMutualInformationLoss)
         native_grouped_kt = isinstance(loss_fn, GroupedKTMutualInformationLoss)
-        streamed = set(_STREAMED)
-        if native_grouped or native_grouped_kt:
-            streamed.add("full_array_entropy")
-
-        want_grouped = ("grouped_information" in requested
-                        or (native_grouped and "full_array_entropy" in requested))
-        want_lower = (bool(requested & {"entropy_kt", "mutual_information_kt"})
-                      or (native_grouped_kt and "full_array_entropy" in requested))
+        want_grouped = "grouped_information" in requested
+        want_lower = bool(requested & {"entropy_kt", "mutual_information_kt"})
         want_upper = bool(requested & {"entropy_kt_upper", "mutual_information_kt_upper"})
-        want_counting = "mutual_information_counting" in requested
         want_grouped_counting = "grouped_counting" in requested
         want_hard = "codeword_entropy" in requested
         grouped_est = self._grouped_estimator_for(loss_fn) if want_grouped else None
         counter = GroupedResponseCounter(self.grouping) if want_grouped_counting else None
 
-        ri_batch = receptor_indices if env.use_interface_model else None
         stat = {}
         with torch.no_grad():
-            E, concs, _ = env.sample_batch(chunk, receptor_indices=ri_batch)
+            E, concs, _ = env.sample_batch(chunk)
             activity = self._activity(physics, E, concs, receptor_indices, env)
 
-            # Chunk-local measurements: everything not in `streamed`.
-            for name in requested - streamed:
-                fn = REGISTRY[name]
-                out = fn(activity, loss_fn) if name in (
-                    "full_array_entropy", "entropy_kt", "entropy_kt_upper",
-                    "grouped_information", "grouped_counting") else fn(activity)
-                stat.update(out) if isinstance(out, dict) else stat.update({name: out})
-
-            if not (requested & streamed):
-                # Chunk-local measurements run on ONE forward pass, so they use
-                # `chunk` samples however large batch_size was. Recording it
-                # stops a 2^26 budget being read into a number that saw 512.
-                stat["response_evaluation_samples"] = activity.shape[0]
-                return stat
-
-            if (want_counting or want_grouped_counting) and self._response_generator is None:
+            if want_grouped_counting and self._response_generator is None:
                 # Output sampling must not perturb the world's or training RNG.
                 self._response_generator = torch.Generator(device=activity.device)
                 self._response_generator.manual_seed((torch.initial_seed() + 104729) % (2 ** 63))
 
-            acts, hard_codes, sampled_codes = [], [], []
+            acts, hard_codes = [], []
             cond_sum = torch.zeros((), dtype=torch.float64, device=activity.device)
             if want_grouped:
                 prob_sum = torch.zeros(grouped_est.n_states, dtype=torch.float64,
@@ -232,15 +200,10 @@ class Runner:
                     counter.update(activity, self._response_generator)
                 if want_hard:
                     hard_codes.append((activity > 0.5).cpu())
-                if want_counting:
-                    a = activity.clamp(KT_EPS, 1.0 - KT_EPS)
-                    sampled_codes.append(torch.bernoulli(
-                        a, generator=self._response_generator).bool().cpu())
                 n_have += n
                 if n_have >= batch_size:
                     break
-                E_k, concs_k, _ = env.sample_batch(min(chunk, batch_size - n_have),
-                                                   receptor_indices=ri_batch)
+                E_k, concs_k, _ = env.sample_batch(min(chunk, batch_size - n_have))
                 activity = self._activity(physics, E_k, concs_k, receptor_indices, env)
 
             h_cond = (cond_sum / n_have).item()
@@ -253,15 +216,11 @@ class Runner:
                     stat.update(grouped_n_groups=grouped_est.n_groups,
                                 grouped_n_states=grouped_est.n_states,
                                 grouped_count_entropy_upper=math.log2(grouped_est.n_states))
-                if native_grouped and "full_array_entropy" in requested:
-                    stat["full_array_entropy"] = metrics["response_entropy_grouped"].item()
             if requested & {"conditional_entropy_response", "mutual_information_kt",
-                            "mutual_information_kt_upper", "mutual_information_counting"}:
+                            "mutual_information_kt_upper"}:
                 stat["conditional_entropy_response"] = h_cond
             if want_hard:
                 stat.update(codeword_entropy(torch.cat(hard_codes)))
-            if want_counting:
-                stat.update(response_counting_metrics(torch.cat(sampled_codes), h_cond))
             if want_grouped_counting:
                 stat.update(counter.metrics())
             if want_lower or want_upper:
@@ -271,8 +230,6 @@ class Runner:
                     i_lower = compute_kt_entropy(
                         big_soft, chunk_size=EVAL_TILE, return_mi=True,
                         use_compile=self.config.compile_kt, multiplicities=mult).item()
-                    if native_grouped_kt and "full_array_entropy" in requested:
-                        stat["full_array_entropy"] = i_lower + h_cond
                     if "entropy_kt" in requested:
                         stat["full_array_entropy_kt"] = i_lower + h_cond
                     if "mutual_information_kt" in requested:
@@ -299,7 +256,6 @@ class Runner:
                       else float(cfg.initial_temperature))
         end_temp = cfg.temperature
         anneal_epochs = max(1, int(0.8 * cfg.epochs))
-        ri_batch = receptor_indices if env.use_interface_model else None
         log_every = max(1, cfg.epochs // 100)
         moves = None
         if cfg.family_moves:
@@ -314,7 +270,7 @@ class Runner:
                             if end_temp < start_temp else end_temp)
             physics.temperature = current_temp
 
-            energies, concs, _ = env.sample_batch(cfg.batch_size, receptor_indices=ri_batch)
+            energies, concs, _ = env.sample_batch(cfg.batch_size)
             activity = self._activity(physics, energies, concs, receptor_indices, env).float()
             loss = loss_fn(activity)
             loss.backward()

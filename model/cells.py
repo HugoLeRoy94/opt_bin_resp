@@ -1,37 +1,35 @@
 # Documented in:
-#   doc/theory/09_cell_arrays.md            (REFERENCE for this file: sampling, choices)
-#   doc/theory/07_optimization_pipeline.md  (stage 3b: where it sits in the pipeline)
-#   doc/theory/02_biophysics_mwc.md         (receptor activation this layer pools over)
+#   doc/cells.md                               (REFERENCE for this file: sampling, choices)
+#   doc/pipeline.md                            (where it sits in the pipeline)
+#   ../doc/theory/02_biophysics_mwc.md         (receptor activation this layer pools over)
 """
 cells.py — Cell-level readout layered on top of the receptor array.
 
 Point of view shift: the sensory unit is no longer a receptor but a CELL, defined
 by the set of subunit genes G_c it expresses.  A cell assembles EVERY receptor its
-genes allow, so the array is specified by C gene sets rather than by R receptors.
+genes allow (unless the repertoire is given explicitly), so the array is specified
+by C gene sets rather than by R receptors.
 
 Three objects:
   CellArray    — gene sets → deduplicated receptor pool + abundance matrix W (C, R_pool)
   CellReadout  — (B, R_pool) receptor activity → (B, C) cell activity
   cell_activity — chunked physics+readout so peak memory is O(B·L·chunk), not O(B·L·R_pool)
 
-Terminology (see doc/theory/01_nomenclature.md):
+Terminology (see ../doc/theory/01_nomenclature.md):
   k_sub    number of subunits per receptor (5)
   G_c      set of genes expressed by cell c;  g = |G_c|
   R_pool   size of the deduplicated union of all cells' repertoires
   w_cr     abundance of receptor r in cell c, normalised so sum_r w_cr = 1
-  S_bc     drive of cell c on sniff b: the abundance-weighted open fraction
-  theta    firing threshold, ONE scalar shared by all cells (learnable)
-  T_cell   sharpness of the cell firing step (annealed, as for the receptor step)
+  A_bc     activity of cell c on sniff b: the abundance-weighted open fraction
 
-Repertoire size grows fast in g: a cell expressing g genes makes C(g+k_sub-1, k_sub)
-multiset receptors (g=2 -> 6, g=5 -> 126, g=8 -> 792), or (1/k_sub) sum_{d|k_sub}
-phi(d) g^(k_sub/d) ring arrangements under the interface model.  R_pool is the
-binding cost of the whole pipeline; see doc/theory/06_computational_limits.md.
+Repertoire size grows fast in g: a cell expressing g genes makes
+(1/k_sub) sum_{d|k_sub} phi(d) g^(k_sub/d) ring arrangements (k_sub=5: g=2 -> 8,
+g=3 -> 51, g=5 -> 629).  R_pool is the
+binding cost of the whole pipeline; see doc/batching.md.
 """
 import itertools
 import math
 import random
-from math import factorial
 from typing import List, Optional, Sequence, Tuple
 
 import torch
@@ -45,40 +43,18 @@ from model.arrays import _canonical_rotation
 # Repertoire expansion
 # ---------------------------------------------------------------------------
 
-def expand_gene_set(genes: Sequence[int], k_sub: int,
-                    use_interface_model: bool = False) -> List[Tuple[int, ...]]:
-    """Every receptor a cell expressing `genes` can assemble.
-
-    Standard model: unordered multisets of size k_sub drawn from `genes`.
-        {0,2}, k_sub=5 -> (0,0,0,0,0) (0,0,0,0,2) (0,0,0,2,2)
-                          (0,0,2,2,2) (0,2,2,2,2) (2,2,2,2,2)
-
-    Interface model: canonical cyclic ring arrangements (rotations identified,
-    reflections distinct — the +/- face asymmetry breaks mirror symmetry, same
-    convention as geometry.generate_ordered_receptor_indices).
+def expand_gene_set(genes: Sequence[int], k_sub: int) -> List[Tuple[int, ...]]:
+    """Every receptor a cell expressing `genes` can assemble: canonical cyclic
+    ring arrangements (rotations identified, reflections distinct, the +/- face
+    asymmetry breaks mirror symmetry, same convention as model/arrays.py).
 
     Returns a sorted list, so the pool order is deterministic across runs.
     """
     genes = sorted(set(int(g) for g in genes))
     if not genes:
         raise ValueError("expand_gene_set: a cell must express at least one gene.")
-
-    if not use_interface_model:
-        return sorted(itertools.combinations_with_replacement(genes, k_sub))
-
     forms = {_canonical_rotation(w) for w in itertools.product(genes, repeat=k_sub)}
     return sorted(forms)
-
-
-def _multiset_multiplicity(receptor: Tuple[int, ...], k_sub: int) -> int:
-    """Number of ordered arrangements collapsing onto this multiset: k! / prod(n_i!)."""
-    counts: dict = {}
-    for u in receptor:
-        counts[u] = counts.get(u, 0) + 1
-    denom = 1
-    for n in counts.values():
-        denom *= factorial(n)
-    return factorial(k_sub) // denom
 
 
 def _ring_multiplicity(receptor: Tuple[int, ...]) -> int:
@@ -88,17 +64,15 @@ def _ring_multiplicity(receptor: Tuple[int, ...]) -> int:
 
 
 def repertoire_weights(receptors: Sequence[Tuple[int, ...]], n_genes_expressed: int,
-                       k_sub: int, stoichiometry: str = "multinomial",
-                       use_interface_model: bool = False) -> List[float]:
+                       k_sub: int, stoichiometry: str = "multinomial") -> List[float]:
     """Abundance of each receptor in a cell, normalised to sum to 1.
 
     stoichiometry='multinomial' (random assembly): all subunits are produced in
       equal amounts and assemble independently into the k_sub slots, so each of
       the g^k_sub ordered words is equally likely and a receptor's abundance is
-      proportional to how many words collapse onto it:
-        multiset model  w_r ∝ k_sub! / prod_i n_i!     (n_i = copies of gene i)
-        interface model w_r ∝ number of distinct rotations of the ring word
-      This suppresses homomers (1 word out of k_sub!) relative to mixed receptors.
+      proportional to how many words collapse onto it, the number of distinct
+      rotations of the ring word. This suppresses homomers (1 word) relative to
+      mixed receptors (up to k_sub words).
 
     stoichiometry='uniform': every receptor type the cell can make is present in
       equal amount; implies per-type assembly control rather than random mixing.
@@ -110,10 +84,7 @@ def repertoire_weights(receptors: Sequence[Tuple[int, ...]], n_genes_expressed: 
         raise ValueError(f"Unknown stoichiometry {stoichiometry!r}. "
                          f"Choose 'multinomial' or 'uniform'.")
 
-    if use_interface_model:
-        mult = [float(_ring_multiplicity(r)) for r in receptors]
-    else:
-        mult = [float(_multiset_multiplicity(r, k_sub)) for r in receptors]
+    mult = [float(_ring_multiplicity(r)) for r in receptors]
     total = sum(mult)
     return [m / total for m in mult]
 
@@ -136,7 +107,6 @@ class CellArray:
 
     def __init__(self, gene_sets: Optional[Sequence[Sequence[int]]], k_sub: int,
                  stoichiometry: str = "multinomial",
-                 use_interface_model: bool = False,
                  repertoires: Optional[Sequence[Sequence[Sequence[int]]]] = None):
         """Build from GENE SETS (the usual way) or from explicit REPERTOIRES.
 
@@ -158,7 +128,6 @@ class CellArray:
         """
         self.k_sub = k_sub
         self.stoichiometry = stoichiometry
-        self.use_interface_model = use_interface_model
         self.explicit = repertoires is not None
 
         if self.explicit:
@@ -174,14 +143,14 @@ class CellArray:
                     if len(r) != k_sub:
                         raise ValueError(f"receptor {r} has {len(r)} subunits, expected k_sub={k_sub}.")
                     # canonicalise so an explicitly-listed receptor is the SAME object the
-                    # gene-set path would have produced (sorted multiset / min rotation).
-                    cell.append(_canonical_rotation(r) if use_interface_model else tuple(sorted(r)))
+                    # gene-set path would have produced (min rotation).
+                    cell.append(_canonical_rotation(r))
                 per_cell.append(sorted(set(cell)))
             # derived, for __repr__ and for anything that inspects which genes are in play
             self.gene_sets = [tuple(sorted({u for r in reps for u in r})) for reps in per_cell]
         else:
             self.gene_sets = [tuple(sorted(set(int(g) for g in gs))) for gs in gene_sets]
-            per_cell = [expand_gene_set(gs, k_sub, use_interface_model) for gs in self.gene_sets]
+            per_cell = [expand_gene_set(gs, k_sub) for gs in self.gene_sets]
 
         pool = sorted({r for reps in per_cell for r in reps})
         pos = {r: i for i, r in enumerate(pool)}
@@ -189,8 +158,7 @@ class CellArray:
         W = torch.zeros(len(self.gene_sets), len(pool), dtype=torch.float32)
         for c, (gs, reps) in enumerate(zip(self.gene_sets, per_cell)):
             weights = ([1.0 / len(reps)] * len(reps) if self.explicit else
-                       repertoire_weights(reps, len(gs), k_sub,
-                                          stoichiometry, use_interface_model))
+                       repertoire_weights(reps, len(gs), k_sub, stoichiometry))
             for r, w in zip(reps, weights):
                 W[c, pos[r]] = w
 
@@ -229,7 +197,7 @@ def sample_gene_sets_bernoulli(n_cells: int, n_genes: int,
     """Each gene is expressed independently with probability gene_probs[u].
 
     Cells expressing nothing are rejected and redrawn.  max_genes (optional) caps
-    the repertoire size per cell — C(g+k_sub-1, k_sub) grows fast in g and R_pool
+    the repertoire size per cell — (1/k_sub) sum_{d|k_sub} phi(d) g^(k_sub/d) grows fast in g and R_pool
     is the memory bottleneck.
     """
     rng = random.Random(seed)
@@ -387,7 +355,6 @@ def build_cell_array(
     max_genes: Optional[int] = None,
     seed: Optional[int] = None,
     stoichiometry: str = "multinomial",
-    use_interface_model: bool = False,
     repertoires: Optional[Sequence[Sequence[Sequence[int]]]] = None,
 ) -> CellArray:
     """Unified entry point: explicit repertoires, explicit gene sets, or sampled ones.
@@ -399,8 +366,7 @@ def build_cell_array(
     gene_probs then weights WHICH genes are drawn at the chosen size.
     """
     if repertoires is not None:
-        return CellArray(None, k_sub, use_interface_model=use_interface_model,
-                         repertoires=repertoires)
+        return CellArray(None, k_sub, repertoires=repertoires)
 
     if gene_sets is None:
         if n_cells is None:
@@ -418,8 +384,7 @@ def build_cell_array(
         else:
             raise ValueError(f"Unknown strategy {strategy!r}. Choose 'bernoulli' or 'size_pmf'.")
 
-    return CellArray(gene_sets, k_sub, stoichiometry=stoichiometry,
-                     use_interface_model=use_interface_model)
+    return CellArray(gene_sets, k_sub, stoichiometry=stoichiometry)
 
 
 # ---------------------------------------------------------------------------
@@ -474,42 +439,32 @@ class CellReadout(nn.Module):
 
 def cell_activity(physics, readout: CellReadout,
                   energies: torch.Tensor, concentrations: torch.Tensor,
-                  receptor_indices: torch.Tensor,
-                  pre_gathered: bool = False,
+                  composition: torch.Tensor,
                   chunk_size: Optional[int] = None,
-                  recompute: bool = False,
-                  composition: Optional[torch.Tensor] = None) -> torch.Tensor:
+                  recompute: bool = False) -> torch.Tensor:
     """Receptor physics + cell pooling, traversing the receptor pool in chunks.
 
-    The physics tensors are (B, L, R_pool[, k_sub]) — R_pool is the union of every
-    cell's repertoire and is the memory bottleneck of the cell picture.  Because
-    CellReadout.accumulate is linear in the pool axis, the pool can be walked in
-    slices of `chunk_size` receptors and the (B, C) accumulator summed, so the
-    peak forward tensor is O(B·L·chunk) instead of O(B·L·R_pool).
+    The physics output is (B, R_pool), R_pool being the union of every cell's
+    repertoire, and the (B, L, R_pool) ln EC50 inside it is the memory bottleneck
+    of the cell picture. Because CellReadout.accumulate is linear in the pool
+    axis, the pool can be walked in slices of `chunk_size` receptors (columns of
+    the composition) and the (B, C) accumulator summed, so the peak forward
+    tensor is O(B·L·chunk) instead of O(B·L·R_pool).
 
-    chunk_size=None runs the pool in one pass (identical result, matching the
-    receptor-array behaviour).
+    chunk_size=None runs the pool in one pass (identical result).
 
     recompute=True gradient-checkpoints each chunk so its activations are
     recomputed in backward rather than retained: without it the retained graph is
     still O(B·L·R_pool) during training and chunking only helps under no_grad.
-    Exact — no effect on values or gradients (same convention as
-    Config.recompute_backward).
+    Exact, no effect on values or gradients (Config.recompute_backward).
     """
-    R_pool = receptor_indices.shape[0]
+    R_pool = composition.shape[1]
     if chunk_size is None or chunk_size >= R_pool:
-        return readout(physics(energies, concentrations, receptor_indices,
-                               pre_gathered=pre_gathered, composition=composition))
+        return readout(physics(energies, concentrations, composition))
 
     def _chunk(r0: int, r1: int) -> torch.Tensor:
-        if composition is not None:
-            # Slice the composition COLUMNS (one per receptor); the per-source energy
-            # tensor is shared by every chunk and must not be sliced.
-            p = physics(energies, concentrations, receptor_indices[r0:r1],
-                        composition=composition[:, r0:r1])
-        else:
-            e = energies[:, :, r0:r1] if pre_gathered else energies
-            p = physics(e, concentrations, receptor_indices[r0:r1], pre_gathered=pre_gathered)
+        # The per-pocket energy tensor is shared by every chunk and is not sliced.
+        p = physics(energies, concentrations, composition[:, r0:r1])
         return readout.accumulate(p, r0, r1)
 
     acc = None
@@ -525,13 +480,5 @@ def cell_activity(physics, readout: CellReadout,
         acc = part if acc is None else acc + part
 
     return readout.finalize(acc)
-
-
-# ---------------------------------------------------------------------------
-# Calibration
-# ---------------------------------------------------------------------------
-
-
-
 
 

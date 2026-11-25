@@ -136,7 +136,7 @@ class GroupedCellMutualInformationLoss(ResponseEntropy):
         if self.n_states > max_states:
             raise ValueError(
                 f"Grouped cell alphabet has {self.n_states} states, exceeding "
-                f"cell_grouped_max_states={max_states}. Select grouped_kt_mi with "
+                f"cell_grouped_max_states={max_states}. Select mi='kt', grouped=True with "
                 "grouped_counting instead of exact grouped_information, or raise "
                 "the limit after checking memory.")
         radices = sizes + 1

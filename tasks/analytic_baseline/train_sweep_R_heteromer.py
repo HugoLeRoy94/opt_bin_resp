@@ -6,13 +6,14 @@ distinct genes (m = heteromerization index, m = 1 is the homomer sweep), and
 there are as many genes as receptors, n_genes = R. Only the mixing changes, so
 the curves overlay on the homomer one at the same nu.
 
-Receptor draw: uniform over the multisets of k_sub subunits that contain exactly
-m distinct genes, without replacement. Equivalently m genes at random, then one
-of the C(k_sub-1, m-1) stoichiometries at random. A fresh draw per run, never a
-shared seed. The array is stored in config.json as receptor_indices.
+Receptor draw: uniform over the rings of k_sub subunits (rotations identified,
+reflections distinct) that contain exactly m distinct genes, without
+replacement. Equivalently m genes at random, then one of the n_m ring patterns
+on m letters at random. A fresh draw per run, never a shared seed. The array is
+stored in config.json as receptor_indices.
 
-The pool C(R, m) C(k_sub-1, m-1) can be smaller than R at small R (m=5 needs
-R >= 6). Those points are skipped and listed. Where pool = R the array is forced.
+The pool C(R, m) n_m can be smaller than R at small R. Those points are skipped
+and listed. Where pool = R the array is forced.
 
 One process per m, so the four arms can run in parallel:
 
@@ -27,6 +28,7 @@ import time
 
 import numpy as np
 
+from model.arrays import _canonical_rotation, _tier_canonical_forms
 from tasks._lib import theory as T
 from train.batching import suggest
 from train.config import sweep
@@ -37,24 +39,32 @@ from tasks.analytic_baseline.train_sweep_R import (
     R_DEFAULT, SIGMA, TEMPERATURE, theory_table)
 
 
-def tier(n_genes, k_sub, m):
-    """All multisets of k_sub genes out of n_genes with exactly m distinct genes."""
-    out = []
-    for genes in itertools.combinations(range(n_genes), m):
-        for cuts in itertools.combinations(range(1, k_sub), m - 1):
-            counts = np.diff((0, *cuts, k_sub))
-            out.append([g for g, c in zip(genes, counts) for _ in range(c)])
-    return out
+def patterns(k_sub, m):
+    """Canonical rings over the letters 0..m-1 that use every letter."""
+    return sorted(_tier_canonical_forms(m, k_sub, m))
 
 
 def pool(n_genes, k_sub, m):
-    return math.comb(n_genes, m) * math.comb(k_sub - 1, m - 1)
+    return math.comb(n_genes, m) * len(patterns(k_sub, m))
 
 
 def draw_array(n_genes, k_sub, m, R, rng):
-    """R distinct receptors, uniform over the exactly-m tier."""
-    candidates = tier(n_genes, k_sub, m)
-    return [candidates[i] for i in sorted(rng.choice(len(candidates), R, replace=False))]
+    """R distinct receptors, uniform over the exactly-m tier.
+
+    Every gene set has the same patterns, so (m genes, one pattern) drawn
+    uniformly is uniform over the tier. Distinct draws by rejection, or the
+    whole tier when it is no larger than R.
+    """
+    pats = patterns(k_sub, m)
+    if pool(n_genes, k_sub, m) <= R:
+        return [list(_canonical_rotation(tuple(genes[c] for c in pat)))
+                for genes in itertools.combinations(range(n_genes), m) for pat in pats]
+    chosen = set()
+    while len(chosen) < R:
+        genes = sorted(rng.choice(n_genes, m, replace=False).tolist())
+        pat = pats[rng.integers(len(pats))]
+        chosen.add(_canonical_rotation(tuple(genes[c] for c in pat)))
+    return [list(r) for r in sorted(chosen)]
 
 
 def parse_args():
@@ -114,9 +124,8 @@ def main():
             initial_temperature="auto",
             n_presence_blocks=1, mu_sources=1, mu_ligands_per_source=1e-6,
             block_shared_conc_mean=False,
-            use_interface_model=False,
             shared_unit_energies=True,
-            fixed_max_energy=a.emax,
+            max_energy=a.emax,
             conc_mean=CONC_MEAN,
             k_sub=K_SUB, temperature=TEMPERATURE, kernel_params=(lam,),
             mi="kt", grouped=False, lr=0.01, per_epoch_measure=False,
@@ -136,7 +145,7 @@ def main():
         print(f"  {'R':>3} {'conc_std':>9} {'nu':>7} {'epochs':>7} {'batch':>8}  array")
         for run in runs[:len(Rs) * len(stds)]:
             nu = T.nu_from_columns(run.latent_dim, run.family_spread,
-                                   run.kernel_params[0], run.fixed_max_energy,
+                                   run.kernel_params[0], run.max_energy,
                                    run.conc_std)
             print(f"  {run.n_genes:>3} {run.conc_std:>9.4f} {nu:>7.3f} "
                   f"{run.epochs:>7} {run.batch_size:>8}  {run.receptor_indices}")

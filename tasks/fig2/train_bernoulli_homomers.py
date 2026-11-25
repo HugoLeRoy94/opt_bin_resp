@@ -6,8 +6,8 @@ single-gene receptors. The two independent choices of fig2, crossed.
 
 Writes to <data_root>/fig2_bernoulli_homomers/, so the sweep directory names this file.
 
-    python -m tasks.fig2.bernoulli_homomers --dry_run
-    python -m tasks.fig2.bernoulli_homomers
+    python -m tasks.fig2.train_bernoulli_homomers --dry_run
+    python -m tasks.fig2.train_bernoulli_homomers
 """
 import argparse
 

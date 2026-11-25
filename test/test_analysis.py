@@ -17,12 +17,12 @@ from train.io import SweepLogger
 HERE = pathlib.Path(__file__).resolve().parent
 from configs import RECEPTOR                      # noqa: E402
 
-RESULT = {"full_array_entropy": [1.5], "mutual_information_kt": [0.5]}
+RESULT = {"conditional_entropy_response": [1.5], "mutual_information_kt": [0.5]}
 
 
 def _checkpoint(run_logger):
     """A run is finished when it has a checkpoint, so fabricated runs need one."""
-    (run_logger.run_dir / "best_model.pt").write_bytes(b"")
+    (run_logger.run_dir / "final_model.pt").write_bytes(b"")
 
 
 def _write_sweep(data_root, name, n_genes_values, offset=0.0, measure=True):
@@ -162,7 +162,7 @@ def test_across_replicates_reports_n():
         points = across_replicates(runs("goal", data_root=tmp), keys=["n_genes"])
         assert points["n"].tolist() == [2, 2]
         row = points[points.n_genes == 3].iloc[0]
-        assert row["full_array_entropy lo"] < row["full_array_entropy hi"]
+        assert row["conditional_entropy_response lo"] < row["conditional_entropy_response hi"]
 
 
 def test_minmax_is_refused_with_a_reason():
@@ -181,7 +181,7 @@ def test_one_world_gives_no_band():
         _write_sweep(pathlib.Path(tmp) / "goal", "demo", [3, 4])
         points = across_replicates(runs("goal", data_root=tmp), keys=["n_genes"])
         assert (points["n"] == 1).all()
-        assert points["full_array_entropy lo"].isna().all()
+        assert points["conditional_entropy_response lo"].isna().all()
 
 
 def test_tags_become_columns():

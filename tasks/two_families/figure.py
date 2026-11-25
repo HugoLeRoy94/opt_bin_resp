@@ -45,7 +45,7 @@ R_values = np.sort(frame.n_genes.unique())
 # Analytic G(n), the closed form at this run's nu. G(0) = 0.
 r0 = frame.iloc[0]
 D = int(r0.latent_dim)
-nu = T.nu_from_columns(D, r0.family_spread, r0.kernel_lambda, r0.fixed_max_energy,
+nu = T.nu_from_columns(D, r0.family_spread, r0.kernel_lambda, r0.max_energy,
                        r0.conc_std)
 G_table = np.array([0.0] + [T.mi_eff(nu, n)["MI"] for n in range(1, R_values.max() + 1)])
 G = lambda n: G_table[np.asarray(n, int)]

@@ -7,8 +7,8 @@ abundance.
 
 Writes to <data_root>/fig2_complete_heteromers/, so the sweep directory names this file.
 
-    python -m tasks.fig2.complete_heteromers --dry_run
-    python -m tasks.fig2.complete_heteromers
+    python -m tasks.fig2.train_complete_heteromers --dry_run
+    python -m tasks.fig2.train_complete_heteromers
 """
 import argparse
 

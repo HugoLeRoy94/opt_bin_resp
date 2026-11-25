@@ -17,7 +17,7 @@ import argparse
 
 from tasks._lib.measure import measure_goal
 
-MEASUREMENTS = ("codeword_entropy", "mutual_information_counting")
+MEASUREMENTS = ("codeword_entropy",)
 LABEL = "counting"
 BATCH_SIZE = 2 ** 18        # log2 B = 18, the ceiling on any counting estimate
 EVAL_CHUNK = 4096

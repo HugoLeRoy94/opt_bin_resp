@@ -13,8 +13,8 @@ Two steps, kept separate so one fit can serve several panels:
 
 What is drawn: one coloured KDE cloud per ligand family, its exact centre, the
 ligands belonging to it, and every receptor as a numbered marker placed at its
-centroid in latent space. For the interface model a receptor's centroid is the
-mean of its pocket midpoints, 0.5*(unit_latent_plus[i] + unit_latent_minus[j]),
+centroid in latent space. A receptor's centroid is the mean of its pocket
+midpoints, 0.5*(unit_latent_plus[i] + unit_latent_minus[j]),
 which is where the pocket actually binds, not either face on its own.
 
 umap-learn and seaborn are imported lazily and declared in the `analysis` extra:
@@ -44,13 +44,8 @@ def latent_embedding(env, receptor_indices, n_samples_per_family=1000,
     v_ligands = env.ligand_latent.detach().cpu().numpy()
     assignments = env.ligand_family_assignments.detach().cpu().numpy()
 
-    if env.use_interface_model:
-        idx_i = receptor_indices
-        idx_j = receptor_indices.roll(-1, dims=1)
-        pockets = 0.5 * (env.unit_latent_plus[idx_i] + env.unit_latent_minus[idx_j])
-        v_receptors = pockets.mean(dim=1).detach().cpu().numpy()
-    else:
-        v_receptors = env.unit_latent[receptor_indices].mean(dim=1).detach().cpu().numpy()
+    pockets, _ = env.pocket(receptor_indices, receptor_indices.roll(-1, dims=1))
+    v_receptors = pockets.mean(dim=1).detach().cpu().numpy()
 
     labels = np.repeat(np.arange(n_families), n_samples_per_family)
     centers = env.family_latent[torch.as_tensor(labels, device=env.family_latent.device)]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """analytic_baseline: a homomer array against the closed form, sweeping R at fixed D.
 
-Reference: analytics/homomer_array_mi.tex. The closed form assumes exactly the
+Reference: ../doc/theory/analytic/homomer_array_mi.tex. The closed form assumes exactly the
 setting built here: one Gaussian ligand family, a saturating (gaussian) kernel,
 exactly one ligand per sniff, homomers only, and a near-hard threshold.
 
@@ -115,9 +115,8 @@ def main():
             # Exactly one ligand per sniff (A2).
             n_presence_blocks=1, mu_sources=1, mu_ligands_per_source=1e-6,
             block_shared_conc_mean=False,
-            use_interface_model=False,
             shared_unit_energies=True,            # A6, see the docstring
-            fixed_max_energy=a.emax,
+            max_energy=a.emax,
             conc_mean=CONC_MEAN,
             k_sub=K_SUB, temperature=TEMPERATURE, kernel_params=(lam,),
             mi="kt", grouped=False, lr=0.01, per_epoch_measure=False,
@@ -139,7 +138,7 @@ def main():
         print(f"  {'R':>3} {'conc_std':>9} {'nu':>7} {'epochs':>7} {'batch':>8}")
         for run in runs[:len(Rs) * len(stds)]:
             nu = T.nu_from_columns(run.latent_dim, run.family_spread,
-                                   run.kernel_params[0], run.fixed_max_energy,
+                                   run.kernel_params[0], run.max_energy,
                                    run.conc_std)
             print(f"  {run.n_genes:>3} {run.conc_std:>9.4f} "
                   f"{nu:>7.3f} {run.epochs:>7} {run.batch_size:>8}")

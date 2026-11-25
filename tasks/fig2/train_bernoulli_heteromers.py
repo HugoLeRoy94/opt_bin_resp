@@ -7,8 +7,8 @@ cell assembles every receptor its genes allow.
 
 Writes to <data_root>/fig2_bernoulli_heteromers/, so the sweep directory names this file.
 
-    python -m tasks.fig2.bernoulli_heteromers --dry_run
-    python -m tasks.fig2.bernoulli_heteromers
+    python -m tasks.fig2.train_bernoulli_heteromers --dry_run
+    python -m tasks.fig2.train_bernoulli_heteromers
 """
 import argparse
 

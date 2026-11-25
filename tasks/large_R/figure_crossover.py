@@ -30,7 +30,7 @@ LARGE_R_FROM = 2 * D
 # nu is derived from the geometry and the concentration spread, not tagged.
 frame = frame.assign(nu=[
     round(T.nu_from_columns(r.latent_dim, r.family_spread, r.kernel_lambda,
-                            r.fixed_max_energy, r.conc_std), 3)
+                            r.max_energy, r.conc_std), 3)
     for r in frame.itertuples()])
 
 
@@ -39,10 +39,10 @@ def expansion(r):
     if r.n_genes <= r.latent_dim:
         return np.nan
     env, *_ = load_model(r.run_dir)
-    u = (env.unit_latent - env.family_latent[0]).numpy()
+    u = (env.homomer_positions() - env.family_latent[0]).numpy()
     m, sigma_c = T.from_log10(r.conc_mean, r.conc_std)
     p = T.Params(D=r.latent_dim, sigma=r.family_spread, lam=r.kernel_lambda,
-                 Emax=r.fixed_max_energy, sigma_c=sigma_c, m=m)
+                 Emax=r.max_energy, sigma_c=sigma_c, m=m)
     U = float(np.linalg.norm(u, axis=1).mean())
     return float(T.mi_large_R(p, U, float(E.ebase(env).mean()), [r.n_genes])[0])
 

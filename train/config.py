@@ -30,7 +30,7 @@ class Config:
     latent_dim: int
     family_spread: float
     average_family_distance: float
-    distribution_type: str                     # "gaussian" or "uniform"
+    distribution_type: str                     # "gaussian", "uniform" or "shell"
     observation_noise_sigma: float
 
     # --- Presence: hierarchical source -> ligand sampler ---
@@ -48,6 +48,7 @@ class Config:
     k_sub: int                                 # subunits per receptor
     temperature: float                         # width of the activation threshold
     kernel_params: Tuple[float, ...]           # (lambda,) Gaussian affinity width
+    max_energy: float                          # E_max, fixed selectivity ceiling (ln units)
 
     # --- Objective and training ---
     # Every objective maximizes a bound on I(Y;X) = H(Y) - H(Y|X). There is no
@@ -61,9 +62,7 @@ class Config:
 
     # --- Optional environment structure ---
     family_weights: Optional[Tuple[float, ...]] = None
-    shared_unit_energies: bool = False
-    fixed_max_energy: Optional[float] = None
-    use_interface_model: bool = False
+    shared_unit_energies: bool = False         # one E_base for every face of every unit
     # Cells with IDENTICAL abundance rows become one group and only the count
     # per group is kept. Lossless, and exactly a no-op when all cells differ.
     # Requires cell mode: receptors have nothing to group.
@@ -80,13 +79,13 @@ class Config:
     initial_temperature: Union[float, str] = "auto"   # "auto" calibrates from a batch
     recompute_backward: bool = False           # gradient-checkpoint the KT inner loop
     compile_kt: bool = False
-    per_epoch_measure: bool = True
+    per_epoch_measure: bool = False
     eval_chunk_size: Optional[int] = None
 
-    # --- What to record DURING training, for the convergence curve ---
+    # --- What to record DURING training, when per_epoch_measure is on ---
     # The final measurement is not here: it is a separate step, because
     # different estimators want different batch sizes. See tasks/_lib/measure.py.
-    measurement_fns: Tuple[str, ...] = ("full_array_entropy",)
+    measurement_fns: Tuple[str, ...] = ()
 
     # --- Receptor array. Give receptor_indices, or n_receptors to sample them. ---
     receptor_indices: Optional[List[List[int]]] = None
@@ -104,7 +103,7 @@ class Config:
     cell_sampling_seed: Optional[int] = None
     cell_stoichiometry: str = "multinomial"
     cell_pool_chunk: Optional[int] = None
-    # Exact enumeration only. grouped_kt_mi / grouped_counting do not use it.
+    # Exact enumeration only. mi='kt' with grouped=True, and grouped_counting, do not use it.
     cell_grouped_max_states: int = 65536
 
     # --- Labels. Descriptive only; nothing in model/, estimate/ or train/ ever
@@ -131,6 +130,9 @@ class Config:
             raise ValueError("Grouping requires cell mode: receptors have "
                              "nothing to group.")
 
+        if self.per_epoch_measure and not self.measurement_fns:
+            raise ValueError("per_epoch_measure needs measurement_fns.")
+
         if self.family_moves and self.is_cell_mode():
             raise ValueError("family_moves requires one homomer per gene.")
 
@@ -140,8 +142,7 @@ class Config:
                 n_genes=self.n_genes, gene_sets=self.cell_gene_sets,
                 n_cells=self.n_cells, strategy=self.cell_sampling_strategy,
                 size_pmf=self.cell_size_pmf, max_genes=self.cell_max_genes,
-                seed=self.cell_sampling_seed, stoichiometry=self.cell_stoichiometry,
-                use_interface_model=self.use_interface_model)
+                seed=self.cell_sampling_seed, stoichiometry=self.cell_stoichiometry)
             # Persist what the cells TURNED OUT to be, derived or not.
             self.cell_gene_sets = [list(gs) for gs in cells.gene_sets]
             self.n_cells = cells.n_cells
@@ -153,15 +154,13 @@ class Config:
                 self.receptor_indices = build_heteromer_array(
                     self.n_genes, self.k_sub, self.n_receptors,
                     strategy=self.receptor_sampling_strategy,
-                    seed=self.receptor_sampling_seed,
-                    use_interface_model=self.use_interface_model).tolist()
+                    seed=self.receptor_sampling_seed).tolist()
             else:
                 # No array asked for: one homomer per gene.
                 self.receptor_indices = [[i] * self.k_sub for i in range(self.n_genes)]
 
         homomers = [[i] * self.k_sub for i in range(self.n_genes)]
-        if self.family_moves and (self.use_interface_model
-                                  or self.receptor_indices != homomers):
+        if self.family_moves and self.receptor_indices != homomers:
             raise ValueError("family_moves requires one homomer per gene.")
 
     def to_dict(self) -> Dict[str, Any]:

@@ -77,6 +77,9 @@ EMAX = 10.0             # fixed E_max, natural-log units
 INIT_TEMPERATURE = 3.0
 CELL_POOL_CHUNK = 128
 
+# Single-ligand arms: ZTP(mu) truncated at 0 gives 1 ligand with P = 1 - mu/2.
+SINGLE_LIGAND_MU = 1e-6
+
 
 def targets(n_genes):
     """Mean genes per cell, from 1 to n_genes in GENE_STEP increments."""
@@ -84,7 +87,7 @@ def targets(n_genes):
             for t in np.arange(1.0, n_genes + 1e-9, GENE_STEP)]
 
 
-def design(strategy):
+def design(strategy, n_genes_list=N_GENES_LIST, n_cells_list=N_CELLS_LIST):
     """One row per planned run: world x G x C x mean genes per cell.
 
     The gene-set seed is a function of (world, G, C, target) only, so the two
@@ -92,8 +95,8 @@ def design(strategy):
     """
     rows = []
     for world in range(WORLDS):
-        for n_genes in N_GENES_LIST:
-            for n_cells in N_CELLS_LIST:
+        for n_genes in n_genes_list:
+            for n_cells in n_cells_list:
                 for target in targets(n_genes):
                     seed = (world * 1_000_000 + n_genes * 10_000
                             + n_cells * 100 + int(round(target * 4)))
@@ -128,9 +131,14 @@ def draw_worlds():
     )
 
 
-def build(strategy, condition, data_root, dry_run=False):
-    """The runs for one arm, after the pre-flight budget check."""
-    rows = design(strategy)
+def build(strategy, condition, data_root, dry_run=False, single_ligand=False,
+          n_genes_list=N_GENES_LIST, n_cells_list=N_CELLS_LIST):
+    """The runs for one arm, after the pre-flight budget check.
+
+    single_ligand: every sniff holds exactly one ligand (P(2 or more) ~ 5e-7),
+    instead of a mixture with mu_ligands_per_source drawn per world.
+    """
+    rows = design(strategy, n_genes_list, n_cells_list)
     worlds = draw_worlds()
     per_world = [w for w in worlds["n_ligands"] for _ in range(len(rows) // WORLDS)]
 
@@ -179,6 +187,8 @@ def build(strategy, condition, data_root, dry_run=False):
     else:
         axes["cell_gene_sets"] = [r["gene_sets"] for r in rows]
 
+    if single_ligand:
+        axes["mu_ligands_per_source"] = [SINGLE_LIGAND_MU] * len(rows)
     runs = sweep(base, **axes)
     if dry_run:
         _report(strategy, condition, rows, runs)
@@ -198,10 +208,10 @@ def _report(strategy, condition, rows, runs):
               f"{run.latent_dim:>3} {run.n_ligands:>4} {run.mu_ligands_per_source:>5.2f}")
 
 
-def launch(strategy, condition, data_root, dry_run=False):
+def launch(strategy, condition, data_root, dry_run=False, name=None, **build_kw):
     """Build and run one arm. The sweep name matches the calling script."""
-    name = f"fig2_{strategy}_{condition}"
-    runs = build(strategy, condition, data_root, dry_run)
+    name = name or f"fig2_{strategy}_{condition}"
+    runs = build(strategy, condition, data_root, dry_run, **build_kw)
     if runs is None:
         return
     start = time.time()

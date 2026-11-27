@@ -86,3 +86,5 @@ axes[1].set(xlabel="genes expressed per cell", ylabel="independent worlds, n",
 axes[1].legend(fontsize=8)
 plt.tight_layout()
 plt.show()
+
+# %%
